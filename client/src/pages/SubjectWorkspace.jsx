@@ -51,12 +51,20 @@ export default function SubjectWorkspace() {
     <div>
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-2xl font-semibold">Notes</h1>
-        <Link
-          to={`/subjects/${subjectId}/graph`}
-          className="text-sm font-semibold text-primary hover:underline"
-        >
-          View knowledge graph →
-        </Link>
+        <div className="flex items-center gap-4">
+          <Link
+            to={`/subjects/${subjectId}/tests`}
+            className="text-sm font-semibold text-primary hover:underline"
+          >
+            Tests →
+          </Link>
+          <Link
+            to={`/subjects/${subjectId}/graph`}
+            className="text-sm font-semibold text-primary hover:underline"
+          >
+            View knowledge graph →
+          </Link>
+        </div>
       </div>
 
       <form onSubmit={handleSubmit} className="rounded-xl border border-black/10 bg-surface p-5 mb-8 space-y-3">

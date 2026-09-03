@@ -9,8 +9,15 @@ import { generateId } from "./ids.js";
 // Swap to a real MongoDB Atlas cluster any time by setting MONGODB_URI -
 // see mongoStore.js, which implements this exact same interface.
 
+// A filter value that's an array (or an explicit {$in: [...]}) matches if
+// the doc's field equals any element - the same shorthand real MongoDB
+// filters use, kept minimal since this store only ever needs equality/$in.
 function matches(doc, filter) {
-  return Object.entries(filter).every(([k, v]) => String(doc[k]) === String(v));
+  return Object.entries(filter).every(([k, v]) => {
+    const candidates = Array.isArray(v) ? v : v && typeof v === "object" && "$in" in v ? v.$in : null;
+    if (candidates) return candidates.some((c) => String(doc[k]) === String(c));
+    return String(doc[k]) === String(v);
+  });
 }
 
 class MemoryCollection {

@@ -28,3 +28,8 @@ export async function createNote({
 export async function findNotesBySubject(subjectId) {
   return notes().find({ subjectId }, { sort: { createdAt: -1 } });
 }
+
+export async function findNotesByIds(ids) {
+  if (!ids.length) return [];
+  return notes().find({ _id: ids });
+}

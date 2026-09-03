@@ -5,6 +5,9 @@ import SignIn from "./pages/SignIn.jsx";
 import Home from "./pages/Home.jsx";
 import SubjectWorkspace from "./pages/SubjectWorkspace.jsx";
 import KnowledgeGraph from "./pages/KnowledgeGraph.jsx";
+import Tests from "./pages/Tests.jsx";
+import TestAttempt from "./pages/TestAttempt.jsx";
+import Insights from "./pages/Insights.jsx";
 
 function RequireAuth({ children }) {
   const { user, loading } = useAuth();
@@ -29,6 +32,9 @@ export default function App() {
             <Route path="/" element={<Home />} />
             <Route path="/subjects/:subjectId" element={<SubjectWorkspace />} />
             <Route path="/subjects/:subjectId/graph" element={<KnowledgeGraph />} />
+            <Route path="/subjects/:subjectId/tests" element={<Tests />} />
+            <Route path="/tests/:testId/attempt" element={<TestAttempt />} />
+            <Route path="/attempts/:attemptId/feedback" element={<Insights />} />
           </Route>
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

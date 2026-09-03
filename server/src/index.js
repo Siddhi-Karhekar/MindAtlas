@@ -5,6 +5,8 @@ import { connectDB } from "./db/index.js";
 import authRoutes from "./routes/auth.js";
 import subjectRoutes from "./routes/subjects.js";
 import noteRoutes from "./routes/notes.js";
+import testRoutes from "./routes/tests.js";
+import attemptRoutes from "./routes/attempts.js";
 
 const app = express();
 app.use(cors());
@@ -16,6 +18,10 @@ app.use("/api/auth", authRoutes);
 app.use("/api/subjects", subjectRoutes);
 // notes routes are nested under /api/subjects/:id/notes
 app.use("/api/subjects", noteRoutes);
+// tests routes cover both /api/subjects/:id/tests and /api/tests/:id
+app.use("/api", testRoutes);
+// attempts routes cover both /api/tests/:id/attempts and /api/attempts/:id/...
+app.use("/api", attemptRoutes);
 
 app.use((err, req, res, next) => {
   console.error(err);

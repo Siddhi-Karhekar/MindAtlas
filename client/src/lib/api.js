@@ -47,4 +47,17 @@ export const api = {
   },
 
   getGraph: (subjectId) => request(`/subjects/${subjectId}/graph`),
+
+  listTests: (subjectId) => request(`/subjects/${subjectId}/tests`),
+  createTest: (subjectId, { title, noteIds, mcqCount, marksPerQuestion, durationMinutes }) =>
+    request(`/subjects/${subjectId}/tests`, {
+      method: "POST",
+      body: { title, noteIds, mcqCount, marksPerQuestion, durationMinutes },
+    }),
+
+  startAttempt: (testId) => request(`/tests/${testId}/attempts`, { method: "POST" }),
+  submitResponse: (attemptId, { questionId, answer, timeMs }) =>
+    request(`/attempts/${attemptId}/responses`, { method: "POST", body: { questionId, answer, timeMs } }),
+  submitAttempt: (attemptId) => request(`/attempts/${attemptId}/submit`, { method: "POST" }),
+  getFeedback: (attemptId) => request(`/attempts/${attemptId}/feedback`),
 };

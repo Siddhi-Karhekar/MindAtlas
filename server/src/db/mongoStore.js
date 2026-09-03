@@ -6,10 +6,18 @@ import { MongoClient, ObjectId } from "mongodb";
 
 const ID_FIELDS = new Set(["_id", "ownerId", "subjectId", "sourceNoteId", "targetNoteId"]);
 
+function toMongoValue(field, v) {
+  return ID_FIELDS.has(field) && typeof v === "string" && ObjectId.isValid(v) ? new ObjectId(v) : v;
+}
+
+// Mirrors memoryStore.js's minimal $in shorthand: an array filter value
+// (or an explicit {$in: [...]}) becomes a real Mongo $in query, with id
+// fields converted to ObjectId element-by-element.
 function toMongoFilter(filter) {
   const out = {};
   for (const [k, v] of Object.entries(filter)) {
-    out[k] = ID_FIELDS.has(k) && typeof v === "string" && ObjectId.isValid(v) ? new ObjectId(v) : v;
+    const candidates = Array.isArray(v) ? v : v && typeof v === "object" && "$in" in v ? v.$in : null;
+    out[k] = candidates ? { $in: candidates.map((c) => toMongoValue(k, c)) } : toMongoValue(k, v);
   }
   return out;
 }
