@@ -1,0 +1,50 @@
+const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:4000/api";
+
+function getToken() {
+  return localStorage.getItem("mindatlas_token");
+}
+
+export function setToken(token) {
+  if (token) localStorage.setItem("mindatlas_token", token);
+  else localStorage.removeItem("mindatlas_token");
+}
+
+async function request(path, { method = "GET", body, isForm = false } = {}) {
+  const headers = {};
+  const token = getToken();
+  if (token) headers.Authorization = `Bearer ${token}`;
+  if (body && !isForm) headers["Content-Type"] = "application/json";
+
+  const res = await fetch(`${API_BASE}${path}`, {
+    method,
+    headers,
+    body: body ? (isForm ? body : JSON.stringify(body)) : undefined,
+  });
+
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(data.error || `Request failed (${res.status})`);
+  }
+  return data;
+}
+
+export const api = {
+  register: (email, password) => request("/auth/register", { method: "POST", body: { email, password } }),
+  login: (email, password) => request("/auth/login", { method: "POST", body: { email, password } }),
+  me: () => request("/auth/me"),
+
+  listSubjects: () => request("/subjects"),
+  createSubject: (name) => request("/subjects", { method: "POST", body: { name } }),
+
+  listNotes: (subjectId) => request(`/subjects/${subjectId}/notes`),
+  createNote: (subjectId, { title, content }) =>
+    request(`/subjects/${subjectId}/notes`, { method: "POST", body: { title, content } }),
+  uploadNoteImage: (subjectId, file, title) => {
+    const form = new FormData();
+    form.append("file", file);
+    if (title) form.append("title", title);
+    return request(`/subjects/${subjectId}/notes`, { method: "POST", body: form, isForm: true });
+  },
+
+  getGraph: (subjectId) => request(`/subjects/${subjectId}/graph`),
+};
