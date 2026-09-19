@@ -2,6 +2,22 @@ import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { api } from "../lib/api.js";
 
+// The feedback text (template or LLM) may contain **bold** spans. Render
+// those as <strong> instead of showing literal asterisks. Deliberately
+// minimal - only **bold** is supported, and everything else stays plain
+// text (React escapes it), so LLM output can never inject markup.
+function renderInline(text) {
+  return String(text || "")
+    .split(/(\*\*[^*]+\*\*)/g)
+    .map((part, i) =>
+      part.startsWith("**") && part.endsWith("**") && part.length > 4 ? (
+        <strong key={i}>{part.slice(2, -2)}</strong>
+      ) : (
+        part
+      )
+    );
+}
+
 export default function Insights() {
   const { attemptId } = useParams();
   const [feedback, setFeedback] = useState(null);
@@ -27,7 +43,12 @@ export default function Insights() {
       </p>
 
       <div className="rounded-xl border border-black/10 bg-surface p-5 mb-6">
-        <p className="text-sm leading-relaxed">{feedback.feedbackText}</p>
+        {typeof feedback.marksPossible === "number" && feedback.marksPossible > 0 && (
+          <p className="text-lg font-semibold mb-2">
+            {feedback.marksAwarded} / {feedback.marksPossible} marks
+          </p>
+        )}
+        <p className="text-sm leading-relaxed">{renderInline(feedback.feedbackText)}</p>
         <p className="text-xs text-ink-soft mt-3">phrased via {feedback.generatedBy === "llm" ? "LLM" : "template"}</p>
       </div>
 

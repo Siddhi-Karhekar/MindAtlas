@@ -1,34 +1,55 @@
 import { Router } from "express";
 import { findOwnedTest } from "../models/Test.js";
 import { findQuestionsByTest, findQuestionsByIds } from "../models/Question.js";
-import { createAttempt, findOwnedAttempt, markAttemptSubmitted } from "../models/Attempt.js";
-import { upsertResponse, findResponsesByAttempt } from "../models/Response.js";
+import { createAttempt, findOwnedAttempt, markAttemptSubmitted, recordQuestionShown } from "../models/Attempt.js";
+import { upsertResponse, findResponsesByAttempt, updateResponseGrade } from "../models/Response.js";
 import { createFeedbackReport, findFeedbackByAttempt } from "../models/FeedbackReport.js";
 import { requireAuth } from "../middleware/auth.js";
-import { computeTopicScores, phraseFeedback } from "../services/feedbackEngine.js";
+import { computeTopicScores, computeMarksSummary, phraseFeedback } from "../services/feedbackEngine.js";
+import { gradeAttemptResponses, quickTheoryScore } from "../services/gradingEngine.js";
+import { initialDifficulty, nextDifficulty, pickNextQuestion } from "../services/adaptiveEngine.js";
 
 const router = Router();
 router.use(requireAuth);
 
 function forAttemptTaking(question) {
-  // never send the answer key or supporting excerpt to the client while a
-  // test is in progress - only after submission, via the feedback report.
-  const { answerKey, supportingExcerpt, ...safe } = question;
+  // never send the answer key, supporting excerpt, or (for theory
+  // questions) the grading rubric to the client while a test is in
+  // progress - only after submission, via the feedback report.
+  const { answerKey, supportingExcerpt, keyPoints, ...safe } = question;
   return safe;
 }
 
-// POST /api/tests/:id/attempts - start an attempt.
+function progressOf(attempt) {
+  return { shown: attempt.shownQuestionIds.length, target: attempt.targetCount };
+}
+
+// POST /api/tests/:id/attempts - start an attempt. Delivery is adaptive
+// (adaptiveEngine.js): this hands back just the FIRST question, picked at
+// the staircase's starting ("medium") difficulty, not the whole set - see
+// POST /responses below for how the rest are chosen.
 router.post("/tests/:id/attempts", async (req, res) => {
   const test = await findOwnedTest(req.params.id, req.user.id);
   if (!test) return res.status(404).json({ error: "test not found" });
 
-  const questions = await findQuestionsByTest(test._id, { onlyAccepted: true });
-  if (questions.length === 0) {
+  const pool = await findQuestionsByTest(test._id, { onlyAccepted: true });
+  if (pool.length === 0) {
     return res.status(400).json({ error: "this test has no accepted questions to attempt" });
   }
 
-  const attempt = await createAttempt({ testId: test._id, ownerId: req.user.id });
-  res.status(201).json({ attempt, questions: questions.map(forAttemptTaking) });
+  const targetCount = Math.min(test.targetQuestionCount || pool.length, pool.length);
+  const difficulty = initialDifficulty();
+  const firstQuestion = pickNextQuestion(pool, [], difficulty);
+
+  const attempt = await createAttempt({
+    testId: test._id,
+    ownerId: req.user.id,
+    targetCount,
+    currentDifficulty: difficulty,
+    shownQuestionIds: [firstQuestion._id],
+  });
+
+  res.status(201).json({ attempt, question: forAttemptTaking(firstQuestion), progress: progressOf(attempt) });
 });
 
 async function loadOwnedAttempt(req, res, next) {
@@ -38,7 +59,17 @@ async function loadOwnedAttempt(req, res, next) {
   next();
 }
 
-// POST /api/attempts/:id/responses - record (or update) one answer.
+// POST /api/attempts/:id/responses - record one answer, then (if the
+// attempt isn't at its target count yet) pick and return the next
+// question. mcq answers are scored - and the staircase stepped - the
+// instant they're submitted. Theory answers can't be authoritatively
+// graded that fast (the good path is an LLM call), so two different
+// scores exist for a theory response: a fast keyword-overlap "quick
+// score" computed here only to decide whether the next question should
+// be easier or harder, and the authoritative score (LLM-preferred)
+// computed later at submission by gradeAttemptResponses. Using the quick
+// score for scoring itself would be a regression; it never gets persisted
+// as the response's real score.
 router.post("/attempts/:id/responses", loadOwnedAttempt, async (req, res) => {
   if (req.attempt.status !== "in_progress") {
     return res.status(400).json({ error: "this attempt has already been submitted" });
@@ -47,26 +78,71 @@ router.post("/attempts/:id/responses", loadOwnedAttempt, async (req, res) => {
   const { questionId, answer, timeMs = 0 } = req.body || {};
   if (!questionId) return res.status(400).json({ error: "questionId is required" });
 
+  // Only the question the attempt is currently waiting on can be answered:
+  // the most recently shown one. This stops a client from answering
+  // questions the staircase never served it, or from probing the pool.
+  const shownIds = req.attempt.shownQuestionIds.map(String);
+  if (shownIds[shownIds.length - 1] !== String(questionId)) {
+    return res.status(409).json({ error: "that is not the question currently awaiting an answer" });
+  }
+
+  // Answers are final. Without this, an upsert would let a client re-submit
+  // the same question with a different answer.
+  const alreadyAnswered = (await findResponsesByAttempt(req.attempt._id)).some(
+    (r) => String(r.questionId) === String(questionId)
+  );
+  if (alreadyAnswered) {
+    return res.status(409).json({ error: "this question has already been answered" });
+  }
+
   const [question] = await findQuestionsByIds([questionId]);
   if (!question || String(question.testId) !== String(req.attempt.testId)) {
     return res.status(404).json({ error: "question not found on this test" });
   }
 
-  const isCorrect = question.type === "mcq" ? answer === question.answerKey : null;
+  const isMcq = question.type === "mcq";
+  const isCorrect = isMcq ? answer === question.answerKey : null;
+  const score = isMcq ? (isCorrect ? 1 : 0) : null; // null = "not graded yet"
 
   const response = await upsertResponse({
     attemptId: req.attempt._id,
     questionId,
     answer,
     isCorrect,
+    score,
     timeMs,
   });
 
-  res.json({ response: { ...response, isCorrect } });
+  const wasGood = isMcq ? isCorrect : quickTheoryScore(question, answer) >= 0.5;
+  const nextTier = nextDifficulty(req.attempt.currentDifficulty, wasGood);
+
+  let nextQuestion = null;
+  let shownQuestionIds = req.attempt.shownQuestionIds;
+  let currentDifficulty = req.attempt.currentDifficulty;
+
+  if (req.attempt.shownQuestionIds.length < req.attempt.targetCount) {
+    const pool = await findQuestionsByTest(req.attempt.testId, { onlyAccepted: true });
+    nextQuestion = pickNextQuestion(pool, req.attempt.shownQuestionIds, nextTier);
+    if (nextQuestion) {
+      shownQuestionIds = [...req.attempt.shownQuestionIds, nextQuestion._id];
+      currentDifficulty = nextTier;
+      await recordQuestionShown(req.attempt._id, { shownQuestionIds, currentDifficulty });
+    }
+  }
+
+  res.json({
+    // Deliberately no isCorrect / score here: correctness is only revealed
+    // after submission, via the feedback report, so it can't be used to
+    // work out the answer key mid-attempt.
+    response: { _id: response._id, questionId: response.questionId, timeMs: response.timeMs },
+    nextQuestion: nextQuestion ? forAttemptTaking(nextQuestion) : null,
+    progress: { shown: shownQuestionIds.length, target: req.attempt.targetCount },
+  });
 });
 
-// POST /api/attempts/:id/submit - close the attempt, compute the
-// deterministic per-topic score, then phrase it (LLM or template).
+// POST /api/attempts/:id/submit - close the attempt, grade any ungraded
+// theory responses, compute the deterministic per-topic score, then
+// phrase it (LLM or template).
 router.post("/attempts/:id/submit", loadOwnedAttempt, async (req, res) => {
   if (req.attempt.status !== "in_progress") {
     const existing = await findFeedbackByAttempt(req.attempt._id);
@@ -79,7 +155,21 @@ router.post("/attempts/:id/submit", loadOwnedAttempt, async (req, res) => {
   ]);
   const questionsById = new Map(allQuestions.map((q) => [String(q._id), q]));
 
+  const gradeUpdates = await gradeAttemptResponses(responses, questionsById);
+  await Promise.all(
+    gradeUpdates.map((u) =>
+      updateResponseGrade({
+        attemptId: u.attemptId,
+        questionId: u.questionId,
+        score: u.score,
+        gradedBy: u.gradedBy,
+        graderNote: u.note,
+      })
+    )
+  );
+
   const topicScores = computeTopicScores(questionsById, responses);
+  const { marksAwarded, marksPossible } = computeMarksSummary(questionsById, responses);
   const { text, generatedBy } = await phraseFeedback(topicScores);
 
   const attempt = await markAttemptSubmitted(req.attempt._id);
@@ -89,6 +179,8 @@ router.post("/attempts/:id/submit", loadOwnedAttempt, async (req, res) => {
     topicScores,
     feedbackText: text,
     generatedBy,
+    marksAwarded,
+    marksPossible,
   });
 
   res.json({ attempt, feedback });

@@ -1,27 +1,60 @@
 # Mind Atlas
 
-A working vertical slice of the Mind Atlas capstone: sign up → create a
-subject → add notes (typed or scanned via OCR) → watch Mind Atlas
-automatically link related notes into a knowledge graph you can see.
+A capstone project that turns a student's notes into a knowledge graph and
+then into adaptive, grounded tests with deterministic feedback:
 
-This is deliberately the first slice, not the whole system described in
-`Mind_Atlas_System_Design_Architecture.docx`. It proves the core loop end
-to end with real, running code. Test-taking, proctoring, and the
-feedback/recommendation engine are not built yet - see "What's next" below.
+sign up → create a subject → add notes (typed or scanned via OCR) → Mind
+Atlas links related notes into a graph → build a test from selected notes →
+take it one adaptive question at a time → see which topics need attention.
+
+The larger design lives in `Mind_Atlas_System_Design_Architecture.docx`; this
+repo is the working implementation of its core loop. The test-generation and
+feedback workstream is assessed in
+[`docs/Test_Generation_Feedback_Feasibility_Report.docx`](docs/Test_Generation_Feedback_Feasibility_Report.docx).
+Team roles and branch conventions are in [`CONTRIBUTING.md`](CONTRIBUTING.md).
+
+## What works today
+
+**Notes and knowledge graph**
+- Email/password auth (bcrypt + JWT), subjects, and notes that are typed or
+  uploaded as an image and read with Tesseract OCR.
+- Every new note gets a TF-IDF vector and top keywords; cosine similarity
+  against the other notes in the subject creates weighted graph edges
+  (threshold 0.12), rendered with Cytoscape.js.
+
+**Tests, attempts and feedback**
+- **Grounded question generation** - MCQ and theory (short-answer) questions,
+  in any mix. With a `GROQ_API_KEY` an LLM drafts them from the selected
+  notes only; every question must quote a supporting excerpt that appears
+  verbatim in those notes (the "hallucination gate") or it is discarded.
+  Without a key, a rule-based fallback builds cloze MCQs and
+  explain-the-keyword theory questions from TF-IDF keywords.
+- **Adaptive delivery** - each test builds a pool about 1.5x larger than
+  what a student sees; a 1-up-1-down staircase over easy/medium/hard tiers
+  picks the next question one at a time, in a timed "focus mode".
+- **Grading** - MCQs are scored instantly; theory answers are graded at
+  submission (LLM meaning-based score, or keyword-overlap fallback), 0 to 1.
+- **Feedback** - a deterministic per-topic
+  `attentionScore = 0.7 x (1 - accuracy) + 0.3 x normalizedTime` ranks topics
+  weakest-first, with total marks. An LLM (or a template) only *phrases* the
+  already-fixed ranking; it never influences it.
+- **Integrity** - answer keys, excerpts and rubrics are never sent to the
+  client mid-attempt; an attempt only accepts an answer for the question it
+  is currently waiting on, answers are final, and correctness is revealed
+  only after submission.
+
+Every LLM-backed step degrades gracefully to a deterministic or template
+path, so the whole app runs with no API key at all.
 
 ## Stack
 
-- **client/** - React (Vite) + Tailwind CSS + React Router. Renders the
-  knowledge graph with Cytoscape.js, matching the architecture doc.
-- **server/** - Node.js + Express REST API. JWT auth, notes ingestion +
-  OCR (tesseract.js), and the knowledge-graph pipeline (TF-IDF keyword
-  extraction + cosine-similarity edge scoring).
-- **Database** - no setup required out of the box. With no `MONGODB_URI`
-  configured, the server uses a small built-in in-memory database (see
-  "Why not mongodb-memory-server" below) so you can run everything
-  immediately. Data resets whenever the server restarts. Set
-  `MONGODB_URI` in `server/.env` to point at a real MongoDB Atlas cluster
-  any time - no code changes needed, same API either way.
+- **client/** - React (Vite) + Tailwind CSS + React Router; Cytoscape.js for
+  the graph.
+- **server/** - Node.js + Express REST API.
+- **Database** - no setup required. With no `MONGODB_URI` the server uses a
+  small built-in in-memory database (data resets on restart). Set
+  `MONGODB_URI` in `server/.env` to use MongoDB Atlas - same API, no code
+  changes. See "Why not mongodb-memory-server?" below.
 
 ## Running it locally
 
@@ -36,75 +69,94 @@ npm run dev        # listens on http://localhost:4000
 # terminal 2 - frontend
 cd client
 npm install
-npm run dev         # opens on http://localhost:5173
+npm run dev        # opens on http://localhost:5173
 ```
 
-Open http://localhost:5173, create an account, create a subject, and add
-a couple of notes on related topics - you'll see them connect on the
-"Knowledge graph" page.
+Open http://localhost:5173, create an account and a subject, add a couple of
+notes on related topics (they connect on the "Knowledge graph" page), then
+open "Tests" to build and take a test.
 
-## Going from dev to real infrastructure
+The end-to-end browser checks in `verify/` (Playwright, Python) run against
+the two dev servers above:
 
-Copy the `.env.example` files to `.env` in both `server/` and (as
-`.env.local`) `client/`, then fill in:
+```bash
+pip install playwright && playwright install chromium
+python verify/e2e_adaptive_test.py     # screenshots land in verify/
+python verify/e2e_mixed_test.py
+# different frontend URL:  MINDATLAS_URL=http://localhost:4173 python ...
+```
 
-- `server/.env` → `MONGODB_URI` (MongoDB Atlas connection string),
-  `JWT_SECRET` (any long random string), `GROQ_API_KEY` (for the
-  LLM-drafted test questions feature, not used by this slice yet).
-- `client/.env.local` → `VITE_API_BASE` if the API isn't on
-  `localhost:4000`.
+## Configuration
+
+Copy `server/.env.example` to `server/.env` and `client/.env.example` to
+`client/.env.local`. Every server variable is optional in development:
+
+| Variable | Purpose |
+| --- | --- |
+| `MONGODB_URI` | MongoDB Atlas connection string; blank = in-memory dev DB |
+| `JWT_SECRET` | 32+ random characters. **Required in production** (server refuses to start without it); dev falls back to an insecure default with a warning |
+| `GROQ_API_KEY` | Enables LLM question drafting, theory grading and feedback phrasing |
+| `NODE_ENV` | Set to `production` when deployed |
+| `CORS_ORIGIN` | Comma-separated allowed browser origins. Blank in dev allows `localhost:5173`; blank in production blocks cross-origin browser access |
+| `TRUST_PROXY` | Reverse-proxy hop count (`1` on most hosts) so rate limiting sees real client IPs |
+| `RATE_LIMIT_*` | Optional per-IP limits per 15 minutes (API 600, auth 30, test builds 20) |
+
+`client/.env.local` takes `VITE_API_BASE` if the API isn't on
+`localhost:4000`.
 
 ## Why not mongodb-memory-server?
 
-The usual way to get a zero-setup MongoDB for local dev
-(`mongodb-memory-server`) downloads a real `mongod` binary from
-mongodb.org on first run. That download is blocked in the sandboxed
-environment this project was built in, so `server/src/db/` instead
-implements a tiny MongoDB-shaped interface
-(`insertOne`/`findOne`/`find`/`findOneAndUpdate`) with two
-interchangeable backends: an in-memory one (`memoryStore.js`, zero
-setup) and a real one (`mongoStore.js`, the official `mongodb` driver
-talking to Atlas). `server/src/db/index.js` picks one based on whether
-`MONGODB_URI` is set. On your own machine you're free to install
-`mongodb-memory-server` or a local MongoDB instead if you'd rather - the
-interface in `db/index.js` is the only place that would need to change.
+The usual zero-setup MongoDB for dev (`mongodb-memory-server`) downloads a
+real `mongod` binary on first run, which was blocked in the sandbox this
+project started in. `server/src/db/` instead implements a tiny MongoDB-shaped
+interface (`insertOne` / `findOne` / `find` / `findOneAndUpdate`) with two
+interchangeable backends - `memoryStore.js` (in-memory) and `mongoStore.js`
+(the official driver, for Atlas) - selected in `db/index.js` by whether
+`MONGODB_URI` is set.
 
 ## What's next
 
-Roughly in the order the architecture doc's own diagrams suggest:
-
-1. **Diagram 3 - Test → proctor → feedback.** Test builder UI +
-   LLM-drafted questions (Groq) grounded in a subject's notes, adaptive
-   difficulty, and the deterministic feedback-scoring engine.
-2. **Swap the TF-IDF similarity vector for a real sentence embedding**
-   (e.g. `@xenova/transformers` running MiniLM in Node - no Python
-   needed) - the note schema and similarity code are already shaped so
-   this is a one-file change (`server/src/services/tfidf.js` /
-   `graphEngine.js`).
-3. **Cross-subject term disambiguation** (Section B.3 of the deep-dive
-   doc) - currently notes only link within their own subject.
-4. **Video proctoring & expression analysis service.**
-5. **Split into the five independently-deployable microservices** the
-   architecture describes - right now notes ingestion, OCR, and the
-   graph engine are cleanly separated modules inside one API for
-   simplicity, but nothing about the code shape blocks pulling any of
-   them out into their own service later.
-6. **Auth hardening for production**: rate limiting, CORS allowlist,
-   security headers, real secret rotation - `server/.env.example` calls
-   out where these plug in.
+1. **Bayesian Knowledge Tracing** - per-topic mastery that accumulates across
+   attempts instead of a single-attempt snapshot (the feasibility report's
+   top recommendation).
+2. **Notes ingestion** - PDF/DOCX upload and summarization (`Note.sourceType`
+   already has `pdf` and `docx`; no handlers yet), then textbook linking.
+3. **Better graph** - real sentence embeddings in place of TF-IDF vectors
+   (a contained change to `services/tfidf.js`), cross-subject term
+   disambiguation, and a graph-edge correction loop.
+4. **Test timer** - `durationMinutes` is stored and shown but not yet
+   enforced with a countdown in the attempt screen.
+5. **Quality upgrades from the report** - distractor gating for the LLM path,
+   TextRank keywords, fuzzy (non-verbatim) excerpt matching, stricter theory
+   grading prompt, calibrated Rasch difficulties once there is response data.
+6. **Optional proctoring** and splitting the API into independently
+   deployable services.
+7. **Deployment** - Dockerfiles, docker-compose, CI (lint, build, tests,
+   `npm audit`, secret scan) and hosting configs.
+8. **Production hardening still open** - the API now has a CORS allowlist,
+   per-IP rate limiting, a hard failure on a missing production
+   `JWT_SECRET`, and basic security headers; consider `helmet`, a shared
+   rate-limit store for multi-instance deploys, and secret rotation.
 
 ## Project layout
 
 ```
 server/src/
   db/            in-memory + real-MongoDB backends behind one interface
-  models/        thin repositories (users, subjects, notes, graph_edges)
-  middleware/    JWT auth
-  routes/        auth, subjects, notes (+ nested graph endpoint)
-  services/      OCR, TF-IDF/similarity, graph-edge creation
+  models/        thin repositories (users, subjects, notes, graph_edges,
+                 tests, questions, attempts, responses, feedback_reports)
+  middleware/    JWT auth, in-memory rate limiter
+  routes/        auth, subjects (+ graph), notes, tests, attempts
+  services/      ocr, tfidf, graphEngine, llm, testEngine (question
+                 generation + gate), adaptiveEngine (staircase),
+                 gradingEngine (theory answers), feedbackEngine (scoring)
 
 client/src/
   lib/           API client + auth context
   components/    shared app shell (nav, sign-out)
-  pages/         SignIn, Home, SubjectWorkspace, KnowledgeGraph
+  pages/         SignIn, Home, SubjectWorkspace, KnowledgeGraph,
+                 Tests (builder), TestAttempt (focus mode), Insights
+
+verify/          Playwright end-to-end scripts + their screenshots
+docs/            feasibility report
 ```

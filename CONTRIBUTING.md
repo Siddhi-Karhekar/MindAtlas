@@ -95,12 +95,18 @@ What's missing, in order:
    the architecture's intent.
 
 ### Member 3 — Test generation & feedback
-**Owns:** entirely new — `server/src/routes/tests.js`,
-`server/src/services/testEngine.js`, `server/src/services/feedbackEngine.js`,
-new `client/src/pages/TestBuilder.jsx` / `TestAttempt.jsx` / `Insights.jsx`.
+**Owns:** `server/src/routes/tests.js`, `server/src/routes/attempts.js`,
+`server/src/services/testEngine.js`, `adaptiveEngine.js`, `gradingEngine.js`,
+`feedbackEngine.js`, and `client/src/pages/Tests.jsx` / `TestAttempt.jsx` /
+`Insights.jsx`.
 
-Nothing here exists yet — this is the biggest open piece of the project.
-Build order, following Diagram 3 in the deep-dive doc:
+**Status:** steps 1-4 below are built and verified end to end (grounded MCQ
+and theory generation with the hallucination gate, an adaptive staircase
+attempt flow, deterministic per-topic feedback). Still open: a countdown
+timer that enforces `durationMinutes`, optional webcam proctoring, and the
+Bayesian Knowledge Tracing upgrade recommended in
+`docs/Test_Generation_Feedback_Feasibility_Report.docx`. The original build
+order, following Diagram 3 in the deep-dive doc, is kept below for reference:
 1. **Test model + builder UI** — subject, topics, MCQ/theory mix, marks,
    duration (the `tests` collection is already in the schema doc).
 2. **LLM-drafted questions**, RAG-only against the subject's own notes

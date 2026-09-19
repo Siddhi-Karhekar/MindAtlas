@@ -9,6 +9,7 @@ export default function Tests() {
   const [title, setTitle] = useState("");
   const [selectedNoteIds, setSelectedNoteIds] = useState([]);
   const [mcqCount, setMcqCount] = useState(4);
+  const [theoryCount, setTheoryCount] = useState(0);
   const [marksPerQuestion, setMarksPerQuestion] = useState(2);
   const [durationMinutes, setDurationMinutes] = useState(10);
   const [error, setError] = useState("");
@@ -32,6 +33,7 @@ export default function Tests() {
     setResult(null);
     if (!title.trim()) return setError("title is required");
     if (selectedNoteIds.length === 0) return setError("pick at least one note to build the test from");
+    if (Number(mcqCount) + Number(theoryCount) < 1) return setError("pick at least 1 MCQ or theory question");
 
     setBusy(true);
     try {
@@ -39,6 +41,7 @@ export default function Tests() {
         title: title.trim(),
         noteIds: selectedNoteIds,
         mcqCount: Number(mcqCount),
+        theoryCount: Number(theoryCount),
         marksPerQuestion: Number(marksPerQuestion),
         durationMinutes: Number(durationMinutes),
       });
@@ -100,15 +103,26 @@ export default function Tests() {
           )}
         </div>
 
-        <div className="grid grid-cols-3 gap-3">
+        <div className="grid grid-cols-4 gap-3">
           <div>
-            <label className="block text-xs text-ink-soft mb-1">Questions</label>
+            <label className="block text-xs text-ink-soft mb-1">MCQ questions</label>
             <input
               type="number"
-              min={1}
+              min={0}
               max={20}
               value={mcqCount}
               onChange={(e) => setMcqCount(e.target.value)}
+              className="w-full rounded-lg border border-black/15 px-3 py-2 text-sm"
+            />
+          </div>
+          <div>
+            <label className="block text-xs text-ink-soft mb-1">Theory questions</label>
+            <input
+              type="number"
+              min={0}
+              max={20}
+              value={theoryCount}
+              onChange={(e) => setTheoryCount(e.target.value)}
               className="w-full rounded-lg border border-black/15 px-3 py-2 text-sm"
             />
           </div>
@@ -144,9 +158,18 @@ export default function Tests() {
         {error && <p className="text-sm text-error">{error}</p>}
         {result && (
           <p className="text-sm text-secondary">
-            Generated {result.accepted} question{result.accepted === 1 ? "" : "s"} grounded in your notes
-            {result.discarded > 0 ? ` (${result.discarded} discarded — not supported by the source text)` : ""}.{" "}
-            <span className="text-ink-soft">via {result.generatedBy === "llm" ? "LLM" : "rule-based fallback"}</span>
+            Generated a pool of {result.accepted} question{result.accepted === 1 ? "" : "s"} grounded in your notes
+            {result.discarded > 0 ? ` (${result.discarded} discarded — not supported by the source text)` : ""} — each
+            attempt adaptively picks {result.deliverable} of them based on how the student is doing.{" "}
+            <span className="text-ink-soft">
+              {result.mcqGeneratedBy && result.mcqGeneratedBy !== "none"
+                ? `MCQs via ${result.mcqGeneratedBy === "llm" ? "LLM" : "rule-based fallback"}`
+                : ""}
+              {result.mcqGeneratedBy !== "none" && result.theoryGeneratedBy !== "none" ? " · " : ""}
+              {result.theoryGeneratedBy && result.theoryGeneratedBy !== "none"
+                ? `Theory via ${result.theoryGeneratedBy === "llm" ? "LLM" : "rule-based fallback"}`
+                : ""}
+            </span>
           </p>
         )}
       </form>

@@ -18,7 +18,7 @@ const STOPWORDS = new Set([
   "out", "over", "under", "again", "further", "once", "very", "just",
 ]);
 
-function tokenize(text) {
+export function tokenize(text) {
   return (text.toLowerCase().match(/[a-z0-9][a-z0-9'-]{1,}/g) || []).filter(
     (t) => !STOPWORDS.has(t) && t.length > 2
   );

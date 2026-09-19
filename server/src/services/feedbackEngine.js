@@ -16,9 +16,21 @@ function attentionScore({ accuracy, normalizedTime }) {
   return Number((0.7 * correctnessComponent + 0.3 * normalizedTime).toFixed(4));
 }
 
+// A response's `score` is a 0..1 fraction - 1/0 for mcq (set the instant
+// it's answered), fractional partial credit for theory (filled in by
+// gradingEngine at submit time). Treating both as "score" is what lets a
+// mixed mcq+theory test collapse into one accuracy number per topic
+// instead of needing type-specific branches here.
+function responseScore(r) {
+  if (typeof r.score === "number") return r.score;
+  return r.isCorrect ? 1 : 0; // defensive fallback, shouldn't normally trigger
+}
+
 /**
  * Deterministic fusion step: correctness + time -> per-topic attention
- * score, ranked weakest-first. No LLM calls happen here.
+ * score, ranked weakest-first. No LLM calls happen here. Works the same
+ * whether the underlying questions are mcq, theory, or a mix of both -
+ * `accuracy` is really "average score" once partial credit is involved.
  */
 export function computeTopicScores(questionsById, responses) {
   const byTopic = new Map();
@@ -27,22 +39,29 @@ export function computeTopicScores(questionsById, responses) {
     const q = questionsById.get(String(r.questionId));
     if (!q) continue;
     const topic = q.topic || "General";
-    if (!byTopic.has(topic)) byTopic.set(topic, { correct: 0, total: 0, totalTimeMs: 0 });
+    if (!byTopic.has(topic)) byTopic.set(topic, { totalScore: 0, total: 0, totalTimeMs: 0 });
     const bucket = byTopic.get(topic);
     bucket.total += 1;
-    if (r.isCorrect) bucket.correct += 1;
+    bucket.totalScore += responseScore(r);
     bucket.totalTimeMs += r.timeMs || 0;
   }
 
-  const avgTimes = [...byTopic.values()].map((b) => b.totalTimeMs / b.total);
-  const minTime = Math.min(...avgTimes, 0);
-  const maxTime = Math.max(...avgTimes, 1);
-  const range = Math.max(maxTime - minTime, 1);
+  // Response time is normalized against the attempt's own overall average
+  // response time: a topic exactly as fast as the attempt average scores
+  // 0.5, one twice as slow (or slower) scores 1, and an instant one scores 0.
+  // This is scale-free (a slow reader and a fast one are each compared to
+  // themselves) and, unlike min-max across topics, it can't blow a 100 ms
+  // difference between two topics up into a full 0-to-1 swing that outweighs
+  // a real accuracy gap. A single topic, or identical times everywhere, comes
+  // out neutral (0.5) rather than a spurious extreme.
+  const totalResponses = [...byTopic.values()].reduce((n, b) => n + b.total, 0);
+  const totalTimeMs = [...byTopic.values()].reduce((n, b) => n + b.totalTimeMs, 0);
+  const overallAvgMs = totalResponses > 0 ? totalTimeMs / totalResponses : 0;
 
   const scores = [...byTopic.entries()].map(([topic, b]) => {
-    const accuracy = b.correct / b.total;
+    const accuracy = b.totalScore / b.total;
     const avgTimeMs = b.totalTimeMs / b.total;
-    const normalizedTime = (avgTimeMs - minTime) / range;
+    const normalizedTime = overallAvgMs > 0 ? Math.min(1, avgTimeMs / (2 * overallAvgMs)) : 0.5;
     return {
       topic,
       accuracy: Number(accuracy.toFixed(4)),
@@ -57,17 +76,44 @@ export function computeTopicScores(questionsById, responses) {
   return scores;
 }
 
+/**
+ * Total marks awarded vs. possible across the whole attempt, using the
+ * same per-response score (partial credit included). Kept separate from
+ * computeTopicScores since marks are a test-wide summary number, not a
+ * per-topic one.
+ */
+export function computeMarksSummary(questionsById, responses) {
+  let marksAwarded = 0;
+  let marksPossible = 0;
+  for (const r of responses) {
+    const q = questionsById.get(String(r.questionId));
+    if (!q) continue;
+    marksAwarded += responseScore(r) * (q.marks || 0);
+    marksPossible += q.marks || 0;
+  }
+  return {
+    marksAwarded: Number(marksAwarded.toFixed(2)),
+    marksPossible: Number(marksPossible.toFixed(2)),
+  };
+}
+
 function fallbackFeedbackText(topicScores) {
   if (topicScores.length === 0) return "No questions were answered on this attempt.";
-  const weakest = topicScores[0];
-  const strongest = topicScores[topicScores.length - 1];
+  // Topics are ranked by attentionScore (accuracy AND response time), not
+  // by accuracy alone, so the template must not call the last-ranked topic
+  // "strongest" by percent-correct: a slow 50% topic can outrank a fast 33%
+  // one, and the text would then contradict its own numbers.
+  const top = topicScores[0];
+  const least = topicScores[topicScores.length - 1];
+  const pct = (t) => `${Math.round(t.accuracy * 100)}% correct`;
   const lines = [
-    `You're weakest on **${weakest.topic}** right now (${Math.round(weakest.accuracy * 100)}% correct) - that's the best place to focus your next study session.`,
+    `**${top.topic}** needs the most attention right now (${pct(top)}) - that's the best place to focus your next study session.`,
   ];
   if (topicScores.length > 1) {
-    lines.push(
-      `**${strongest.topic}** is your strongest area (${Math.round(strongest.accuracy * 100)}% correct) - a quick review is enough there.`
-    );
+    lines.push(`**${least.topic}** needs the least (${pct(least)}) - a quick review is enough there.`);
+    if (top.accuracy > least.accuracy) {
+      lines.push("The ranking also weighs how long you took on each topic, so it can differ from raw accuracy.");
+    }
   }
   return lines.join(" ");
 }

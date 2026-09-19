@@ -49,10 +49,10 @@ export const api = {
   getGraph: (subjectId) => request(`/subjects/${subjectId}/graph`),
 
   listTests: (subjectId) => request(`/subjects/${subjectId}/tests`),
-  createTest: (subjectId, { title, noteIds, mcqCount, marksPerQuestion, durationMinutes }) =>
+  createTest: (subjectId, { title, noteIds, mcqCount, theoryCount, marksPerQuestion, durationMinutes }) =>
     request(`/subjects/${subjectId}/tests`, {
       method: "POST",
-      body: { title, noteIds, mcqCount, marksPerQuestion, durationMinutes },
+      body: { title, noteIds, mcqCount, theoryCount, marksPerQuestion, durationMinutes },
     }),
 
   startAttempt: (testId) => request(`/tests/${testId}/attempts`, { method: "POST" }),
