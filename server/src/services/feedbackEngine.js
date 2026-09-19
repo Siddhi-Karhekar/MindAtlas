@@ -35,12 +35,18 @@ function responseScore(r) {
 export function computeTopicScores(questionsById, responses) {
   const byTopic = new Map();
 
+  // Grouping is by topicId (a note id) rather than the note's title, so a
+  // student's per-topic record survives a note being renamed and lines up
+  // with the mastery store. Questions written before topicId existed fall
+  // back to their title, which is exactly what they were keyed on then.
   for (const r of responses) {
     const q = questionsById.get(String(r.questionId));
     if (!q) continue;
-    const topic = q.topic || "General";
-    if (!byTopic.has(topic)) byTopic.set(topic, { totalScore: 0, total: 0, totalTimeMs: 0 });
-    const bucket = byTopic.get(topic);
+    const key = String(q.topicId || q.topic || "General");
+    if (!byTopic.has(key))
+      byTopic.set(key, { label: q.topic || key, totalScore: 0, total: 0, totalTimeMs: 0 });
+    const bucket = byTopic.get(key);
+    if (q.topic) bucket.label = q.topic; // keep the freshest display label
     bucket.total += 1;
     bucket.totalScore += responseScore(r);
     bucket.totalTimeMs += r.timeMs || 0;
@@ -58,12 +64,13 @@ export function computeTopicScores(questionsById, responses) {
   const totalTimeMs = [...byTopic.values()].reduce((n, b) => n + b.totalTimeMs, 0);
   const overallAvgMs = totalResponses > 0 ? totalTimeMs / totalResponses : 0;
 
-  const scores = [...byTopic.entries()].map(([topic, b]) => {
+  const scores = [...byTopic.entries()].map(([topicId, b]) => {
     const accuracy = b.totalScore / b.total;
     const avgTimeMs = b.totalTimeMs / b.total;
     const normalizedTime = overallAvgMs > 0 ? Math.min(1, avgTimeMs / (2 * overallAvgMs)) : 0.5;
     return {
-      topic,
+      topicId,
+      topic: b.label,
       accuracy: Number(accuracy.toFixed(4)),
       avgTimeMs: Math.round(avgTimeMs),
       questionsAnswered: b.total,
@@ -97,7 +104,45 @@ export function computeMarksSummary(questionsById, responses) {
   };
 }
 
-function fallbackFeedbackText(topicScores) {
+// A topic's mastery has to move by more than this before the feedback claims
+// it changed. Without a floor, a single question nudges the number a little
+// and the report would announce "improved" after every attempt regardless of
+// whether anything real happened - which is how a progress report stops being
+// believed. A team-chosen threshold, not a published one.
+const MASTERY_MOVE_THRESHOLD = 0.08;
+
+/**
+ * Turn the per-topic mastery movement recorded for this attempt into one
+ * plain sentence. Returns null when nothing moved enough to be worth saying,
+ * or when this is the student's first attempt on every topic - in which case
+ * there is no trajectory to describe yet and claiming one would be false.
+ */
+function progressSentence(masteryDeltas) {
+  if (!Array.isArray(masteryDeltas) || masteryDeltas.length === 0) return null;
+  const pct = (x) => `${Math.round(x * 100)}%`;
+  const moved = masteryDeltas
+    .map((d) => ({ ...d, change: d.after - d.before }))
+    .filter((d) => Math.abs(d.change) >= MASTERY_MOVE_THRESHOLD);
+  if (moved.length === 0) return null;
+
+  const gained = moved.filter((d) => d.change > 0).sort((a, b) => b.change - a.change);
+  const slipped = moved.filter((d) => d.change < 0).sort((a, b) => a.change - b.change);
+
+  const parts = [];
+  if (gained.length) {
+    const g = gained[0];
+    parts.push(`Your grasp of **${g.topicLabel}** moved from ${pct(g.before)} to ${pct(g.after)} with this attempt`);
+  }
+  if (slipped.length) {
+    const sl = slipped[0];
+    parts.push(
+      `${parts.length ? "but " : ""}**${sl.topicLabel}** slipped from ${pct(sl.before)} to ${pct(sl.after)}`
+    );
+  }
+  return parts.join(", ") + ".";
+}
+
+function fallbackFeedbackText(topicScores, masteryDeltas) {
   if (topicScores.length === 0) return "No questions were answered on this attempt.";
   // Topics are ranked by attentionScore (accuracy AND response time), not
   // by accuracy alone, so the template must not call the last-ranked topic
@@ -115,22 +160,29 @@ function fallbackFeedbackText(topicScores) {
       lines.push("The ranking also weighs how long you took on each topic, so it can differ from raw accuracy.");
     }
   }
+  const progress = progressSentence(masteryDeltas);
+  if (progress) lines.push(progress);
   return lines.join(" ");
 }
 
-/**
- * Phrase an already-fixed topicScores ranking as readable feedback. Falls
- * back to a plain template if no GROQ_API_KEY is configured - the ranking
- * itself (computeTopicScores, above) is identical either way.
- */
-export async function phraseFeedback(topicScores) {
-  if (!llmAvailable()) return { text: fallbackFeedbackText(topicScores), generatedBy: "template" };
+export async function phraseFeedback(topicScores, masteryDeltas = []) {
+  if (!llmAvailable()) {
+    return { text: fallbackFeedbackText(topicScores, masteryDeltas), generatedBy: "template" };
+  }
+
+  // The mastery trajectory is handed over as data alongside the ranking, so
+  // the LLM can mention improvement or decline across attempts. It still gets
+  // no say in either: both the ranking and the before/after numbers are fixed
+  // before this call, and the instruction is explicitly to phrase, not judge.
+  const movement = masteryDeltas.length
+    ? `\n\nPer-topic mastery before and after this attempt (0-1 scale, from the student's full history - state changes only if they are meaningful, and never invent a direction the numbers do not show):\n${JSON.stringify(masteryDeltas, null, 2)}`
+    : "";
 
   const prompt = `A student just finished a test. Here is their deterministic per-topic performance ranking (weakest first, do not change the ranking or the numbers - only phrase it clearly and encouragingly, 3-5 sentences, no markdown headers):
 
-${JSON.stringify(topicScores, null, 2)}`;
+${JSON.stringify(topicScores, null, 2)}${movement}`;
 
   const text = await callLLM(prompt, { temperature: 0.5 });
-  if (!text) return { text: fallbackFeedbackText(topicScores), generatedBy: "template" };
+  if (!text) return { text: fallbackFeedbackText(topicScores, masteryDeltas), generatedBy: "template" };
   return { text: text.trim(), generatedBy: "llm" };
 }

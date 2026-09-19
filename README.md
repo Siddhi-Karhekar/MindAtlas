@@ -76,6 +76,18 @@ Open http://localhost:5173, create an account and a subject, add a couple of
 notes on related topics (they connect on the "Knowledge graph" page), then
 open "Tests" to build and take a test.
 
+The database-backend checks run with no servers and no MongoDB needed:
+
+```bash
+cd server && npm test
+```
+
+These exercise the real MongoDB wrapper against a stand-in collection that
+matches values **type-sensitively**, the way a real server does. That is the
+one behaviour the in-memory dev store cannot reproduce (it compares with
+`String()` on both sides), so it is where id-type bugs get caught without a
+live Atlas cluster. See "One id type everywhere" below.
+
 The end-to-end browser checks in `verify/` (Playwright, Python) run against
 the two dev servers above:
 
@@ -113,6 +125,22 @@ interface (`insertOne` / `findOne` / `find` / `findOneAndUpdate`) with two
 interchangeable backends - `memoryStore.js` (in-memory) and `mongoStore.js`
 (the official driver, for Atlas) - selected in `db/index.js` by whether
 `MONGODB_URI` is set.
+
+## One id type everywhere
+
+Every id in the API is a plain 24-hex string, on both database backends. The
+MongoDB store generates them itself (`db/ids.js`) instead of letting the
+driver assign BSON `ObjectId`s.
+
+This matters more than it looks. MongoDB's equality matching is
+type-sensitive, so the string `"507f..."` does not match `ObjectId("507f...")`.
+Mixing the two means a query silently matches nothing and returns `null`
+rather than raising an error - and because the in-memory dev store compares
+with `String()` on both sides, it treats them as equal and the mismatch never
+shows up locally. Keeping a single id type removes the whole class of bug.
+
+If you add a field holding an id, store it and query it as a string, and add
+a case to `server/test/mongoStore.test.mjs`.
 
 ## What's next
 

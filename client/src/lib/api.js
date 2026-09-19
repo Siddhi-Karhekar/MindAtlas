@@ -60,4 +60,6 @@ export const api = {
     request(`/attempts/${attemptId}/responses`, { method: "POST", body: { questionId, answer, timeMs } }),
   submitAttempt: (attemptId) => request(`/attempts/${attemptId}/submit`, { method: "POST" }),
   getFeedback: (attemptId) => request(`/attempts/${attemptId}/feedback`),
+
+  getProgress: (subjectId) => request(`/subjects/${subjectId}/progress`),
 };

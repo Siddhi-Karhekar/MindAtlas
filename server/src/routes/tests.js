@@ -5,6 +5,7 @@ import { createTest, findTestsBySubject, findOwnedTest } from "../models/Test.js
 import { createQuestions, findQuestionsByTest } from "../models/Question.js";
 import { requireAuth } from "../middleware/auth.js";
 import { generateQuestions } from "../services/testEngine.js";
+import { masteryMapForSubject } from "../models/Mastery.js";
 
 const router = Router();
 router.use(requireAuth);
@@ -63,10 +64,17 @@ router.post("/subjects/:id/tests", async (req, res) => {
     targetQuestionCount,
   });
 
+  // The student's accumulated per-topic mastery steers WHICH notes the pool is
+  // drawn from: weak and untested topics get more questions than ones already
+  // demonstrated. Empty on a first-ever test, in which case generation falls
+  // back to an even spread across the selected notes.
+  const masteryMap = await masteryMapForSubject(req.user.id, subject._id);
+
   const { accepted, discarded, mcqGeneratedBy, theoryGeneratedBy } = await generateQuestions(notesInSubject, {
     mcqCount: poolSizeFor(safeMcqCount),
     theoryCount: poolSizeFor(safeTheoryCount),
     marksPerQuestion,
+    masteryMap,
   });
 
   const stored = await createQuestions([...accepted, ...discarded].map((q) => ({ ...q, testId: test._id })));

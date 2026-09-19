@@ -1,13 +1,18 @@
 import { Router } from "express";
 import { findOwnedTest } from "../models/Test.js";
 import { findQuestionsByTest, findQuestionsByIds } from "../models/Question.js";
-import { createAttempt, findOwnedAttempt, markAttemptSubmitted, recordQuestionShown } from "../models/Attempt.js";
+import { createAttempt, findAttemptsBySubject, findOwnedAttempt, markAttemptSubmitted, recordQuestionShown } from "../models/Attempt.js";
 import { upsertResponse, findResponsesByAttempt, updateResponseGrade } from "../models/Response.js";
-import { createFeedbackReport, findFeedbackByAttempt } from "../models/FeedbackReport.js";
+import { createFeedbackReport, findFeedbackByAttempt, findFeedbackBySubject } from "../models/FeedbackReport.js";
 import { requireAuth } from "../middleware/auth.js";
 import { computeTopicScores, computeMarksSummary, phraseFeedback } from "../services/feedbackEngine.js";
 import { gradeAttemptResponses, quickTheoryScore } from "../services/gradingEngine.js";
-import { initialDifficulty, nextDifficulty, pickNextQuestion } from "../services/adaptiveEngine.js";
+import { nextDifficulty, pickNextQuestion, startingDifficulty } from "../services/adaptiveEngine.js";
+import { applyAttemptToMastery } from "../services/masteryEngine.js";
+import { findMasteryBySubject, masteryMapForSubject, upsertMastery } from "../models/Mastery.js";
+import { findOwnedSubject } from "../models/Subject.js";
+import { difficultyForMastery } from "../services/masteryEngine.js";
+import { findTestsBySubject } from "../models/Test.js";
 
 const router = Router();
 router.use(requireAuth);
@@ -38,18 +43,32 @@ router.post("/tests/:id/attempts", async (req, res) => {
   }
 
   const targetCount = Math.min(test.targetQuestionCount || pool.length, pool.length);
-  const difficulty = initialDifficulty();
-  const firstQuestion = pickNextQuestion(pool, [], difficulty);
+
+  // Cross-attempt adaptivity: the opening tier comes from what this student
+  // has shown on these topics before, not from a fixed "medium". With no
+  // history (or too little to be meaningful) this returns "medium", so a
+  // first attempt behaves exactly as it did before mastery existed.
+  const masteryMap = await masteryMapForSubject(req.user.id, test.subjectId);
+  const topicIds = [...new Set(pool.map((q) => String(q.topicId || q.topic)))];
+  const difficulty = startingDifficulty(topicIds, masteryMap);
+  const firstQuestion = pickNextQuestion(pool, [], difficulty, masteryMap);
 
   const attempt = await createAttempt({
     testId: test._id,
+    subjectId: test.subjectId,
     ownerId: req.user.id,
     targetCount,
     currentDifficulty: difficulty,
     shownQuestionIds: [firstQuestion._id],
   });
 
-  res.status(201).json({ attempt, question: forAttemptTaking(firstQuestion), progress: progressOf(attempt) });
+  res.status(201).json({
+    attempt,
+    // Lets the focus-mode screen show the test's name and enforce its time limit.
+    test: { _id: test._id, title: test.title, subjectId: test.subjectId, durationMinutes: test.durationMinutes },
+    question: forAttemptTaking(firstQuestion),
+    progress: progressOf(attempt),
+  });
 });
 
 async function loadOwnedAttempt(req, res, next) {
@@ -121,8 +140,11 @@ router.post("/attempts/:id/responses", loadOwnedAttempt, async (req, res) => {
   let currentDifficulty = req.attempt.currentDifficulty;
 
   if (req.attempt.shownQuestionIds.length < req.attempt.targetCount) {
-    const pool = await findQuestionsByTest(req.attempt.testId, { onlyAccepted: true });
-    nextQuestion = pickNextQuestion(pool, req.attempt.shownQuestionIds, nextTier);
+    const [pool, masteryMap] = await Promise.all([
+      findQuestionsByTest(req.attempt.testId, { onlyAccepted: true }),
+      masteryMapForSubject(req.user.id, req.attempt.subjectId),
+    ]);
+    nextQuestion = pickNextQuestion(pool, req.attempt.shownQuestionIds, nextTier, masteryMap);
     if (nextQuestion) {
       shownQuestionIds = [...req.attempt.shownQuestionIds, nextQuestion._id];
       currentDifficulty = nextTier;
@@ -170,13 +192,39 @@ router.post("/attempts/:id/submit", loadOwnedAttempt, async (req, res) => {
 
   const topicScores = computeTopicScores(questionsById, responses);
   const { marksAwarded, marksPossible } = computeMarksSummary(questionsById, responses);
-  const { text, generatedBy } = await phraseFeedback(topicScores);
+
+  // Fold this attempt into the student's running per-topic mastery. This is
+  // the step that makes testing adaptive ACROSS attempts: what happens here
+  // decides the opening difficulty, and which topics get questioned, next
+  // time. Before/after is kept so the feedback can say what moved rather than
+  // only where the student now stands.
+  const existingMastery = await masteryMapForSubject(req.user.id, req.attempt.subjectId);
+  const deltas = applyAttemptToMastery({ responses, questionsById, existing: existingMastery });
+  await Promise.all(
+    [...deltas.values()].map((d) =>
+      upsertMastery({
+        ownerId: req.user.id,
+        subjectId: req.attempt.subjectId,
+        topicId: d.topicId,
+        topicLabel: d.topicLabel,
+        pKnown: d.after,
+        observations: d.observations,
+      })
+    )
+  );
+  const masteryDeltas = [...deltas.values()].map(({ topicId, topicLabel, before, after, responses: n }) => ({
+    topicId, topicLabel, before, after, responses: n,
+  }));
+
+  const { text, generatedBy } = await phraseFeedback(topicScores, masteryDeltas);
 
   const attempt = await markAttemptSubmitted(req.attempt._id);
   const feedback = await createFeedbackReport({
     attemptId: req.attempt._id,
     ownerId: req.user.id,
+    subjectId: req.attempt.subjectId,
     topicScores,
+    masteryDeltas,
     feedbackText: text,
     generatedBy,
     marksAwarded,
@@ -189,7 +237,87 @@ router.post("/attempts/:id/submit", loadOwnedAttempt, async (req, res) => {
 router.get("/attempts/:id/feedback", loadOwnedAttempt, async (req, res) => {
   const feedback = await findFeedbackByAttempt(req.attempt._id);
   if (!feedback) return res.status(404).json({ error: "no feedback yet - submit the attempt first" });
-  res.json({ feedback });
+  // Extra context for the results screen (test name, subject, timing). Purely additive.
+  const test = await findOwnedTest(req.attempt.testId, req.user.id);
+  res.json({
+    feedback,
+    attempt: {
+      _id: req.attempt._id,
+      startedAt: req.attempt.startedAt,
+      submittedAt: req.attempt.submittedAt,
+      targetCount: req.attempt.targetCount,
+    },
+    test: test ? { _id: test._id, title: test.title, subjectId: test.subjectId, durationMinutes: test.durationMinutes } : null,
+  });
+});
+
+// GET /api/subjects/:id/progress - everything the progress view needs in one
+// call: where the student stands per topic, how that has moved across
+// attempts, and the attempt history itself. Deliberately one round trip,
+// because these three are only meaningful read together.
+router.get("/subjects/:id/progress", async (req, res) => {
+  const subject = await findOwnedSubject(req.params.id, req.user.id);
+  if (!subject) return res.status(404).json({ error: "subject not found" });
+
+  const [masteryRows, reports, attempts, tests] = await Promise.all([
+    findMasteryBySubject(req.user.id, subject._id),
+    findFeedbackBySubject(req.user.id, subject._id),
+    findAttemptsBySubject(req.user.id, subject._id),
+    findTestsBySubject(subject._id),
+  ]);
+
+  const testTitleById = new Map(tests.map((t) => [String(t._id), t.title]));
+
+  // Per topic, the trajectory of mastery across every submitted attempt, in
+  // chronological order, so the client can draw a trend without recomputing
+  // anything from raw responses.
+  const trendByTopic = new Map();
+  for (const r of reports) {
+    for (const d of r.masteryDeltas || []) {
+      const key = String(d.topicId);
+      if (!trendByTopic.has(key)) trendByTopic.set(key, []);
+      trendByTopic.get(key).push({ at: r.createdAt, value: d.after });
+    }
+  }
+
+  const topics = masteryRows
+    .map((m) => ({
+      topicId: m.topicId,
+      topic: m.topicLabel,
+      pKnown: m.pKnown,
+      observations: m.observations,
+      // What tier this topic alone would be served at - the visible link
+      // between the progress view and what the next test will feel like.
+      tier: difficultyForMastery(m.pKnown),
+      updatedAt: m.updatedAt,
+      trend: trendByTopic.get(String(m.topicId)) || [],
+    }))
+    .sort((a, b) => a.pKnown - b.pKnown); // weakest first
+
+  const submitted = attempts.filter((a) => a.status === "submitted");
+  const feedbackByAttempt = new Map(reports.map((r) => [String(r.attemptId), r]));
+  const history = submitted.map((a) => {
+    const fb = feedbackByAttempt.get(String(a._id));
+    return {
+      attemptId: a._id,
+      testId: a.testId,
+      testTitle: testTitleById.get(String(a.testId)) || "Untitled test",
+      startedAt: a.startedAt,
+      submittedAt: a.submittedAt,
+      questionsAnswered: a.shownQuestionIds?.length || 0,
+      marksAwarded: fb?.marksAwarded ?? null,
+      marksPossible: fb?.marksPossible ?? null,
+    };
+  });
+
+  res.json({
+    subject: { _id: subject._id, name: subject.name },
+    topics,
+    history,
+    // Weakest three with at least one observation - what the test builder
+    // suggests drawing the next test from.
+    recommendedTopicIds: topics.filter((t) => t.observations > 0).slice(0, 3).map((t) => t.topicId),
+  });
 });
 
 export default router;

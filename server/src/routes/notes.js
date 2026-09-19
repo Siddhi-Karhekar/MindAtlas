@@ -4,6 +4,7 @@ import { findOwnedSubject } from "../models/Subject.js";
 import { createNote, findNotesBySubject } from "../models/Note.js";
 import { requireAuth } from "../middleware/auth.js";
 import { extractTextFromImage } from "../services/ocr.js";
+import { classifyUpload, extractTextFromDocument, titleFromFilename } from "../services/documentText.js";
 import { computeTfidf } from "../services/tfidf.js";
 import { updateGraphForNote } from "../services/graphEngine.js";
 
@@ -14,7 +15,8 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 
 
 // POST /api/subjects/:id/notes
 // Accepts either JSON { title, content } for a typed note, or a
-// multipart/form-data upload with a `file` field (image) for OCR ingestion.
+// multipart/form-data upload with a `file` field: an image (read with OCR) or an
+// existing document - PDF, .docx, .txt/.md (text is extracted directly).
 router.post("/:id/notes", upload.single("file"), async (req, res) => {
   const subject = await findOwnedSubject(req.params.id, req.user.id);
   if (!subject) return res.status(404).json({ error: "subject not found" });
@@ -24,11 +26,33 @@ router.post("/:id/notes", upload.single("file"), async (req, res) => {
   let ocrFailed = false;
 
   if (req.file) {
-    sourceType = "image";
-    const { text, ocrFailed: failed } = await extractTextFromImage(req.file.buffer);
-    content = text;
-    ocrFailed = failed;
-    title = title || req.file.originalname;
+    const kind = classifyUpload(req.file);
+    if (!kind) {
+      return res.status(400).json({
+        error: "unsupported file type - upload a PDF, Word (.docx), text/markdown file or an image",
+      });
+    }
+    if (kind === "image") {
+      // scanned / photographed notes: read with OCR
+      sourceType = "image";
+      const { text, ocrFailed: failed } = await extractTextFromImage(req.file.buffer);
+      content = text;
+      ocrFailed = failed;
+    } else {
+      // an existing digital document: pull the text straight out of it
+      sourceType = "file";
+      try {
+        ({ text: content } = await extractTextFromDocument(req.file, kind));
+      } catch (err) {
+        return res.status(400).json({ error: err.message });
+      }
+      if (!content) {
+        return res.status(400).json({
+          error: "no readable text found in this file (if it is a scanned PDF, upload the pages as images instead)",
+        });
+      }
+    }
+    title = title || titleFromFilename(req.file.originalname) || req.file.originalname;
   }
 
   if (!title || !title.trim()) return res.status(400).json({ error: "title is required" });

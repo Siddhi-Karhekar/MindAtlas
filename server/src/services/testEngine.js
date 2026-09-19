@@ -1,5 +1,6 @@
 import { callLLM, llmAvailable, parseJsonLoose } from "./llm.js";
 import { tokenize } from "./tfidf.js";
+import { topicWeight } from "./masteryEngine.js";
 
 // Mirrors Diagram 3, step 1 of the architecture doc: an LLM drafts
 // candidate questions, but every single one passes through a decision
@@ -188,6 +189,55 @@ function pickDistractors(note, notes, keyword, sentence) {
   return picked;
 }
 
+// Which note should each successive question be drawn from?
+//
+// The original rule was strict round-robin (`notes[i % notes.length]`), which
+// spreads questions evenly no matter how the student is doing. Once mastery
+// exists, an even spread is the wrong default: a test is more useful when it
+// leans toward what the student is weak on, or what we have least evidence
+// about.
+//
+// `masteryMap` may be empty (a first-ever test, or generation with no student
+// context), in which case every weight is equal and this degrades to exactly
+// the old round-robin. Allocation uses largest-remainder so the per-note counts
+// sum to `count` without drift, and every note is guaranteed at least one
+// question whenever there are enough to go round - leaning toward weakness must
+// not become ignoring a topic outright, or the student never gets the chance to
+// show they have improved on it.
+function weightedNoteOrder(notes, count, masteryMap) {
+  if (notes.length === 0 || count <= 0) return [];
+  if (!masteryMap || masteryMap.size === 0) {
+    return Array.from({ length: count }, (_, i) => notes[i % notes.length]);
+  }
+
+  const weights = notes.map((n) => topicWeight(n._id, masteryMap));
+  const total = weights.reduce((a, b) => a + b, 0) || 1;
+  const guaranteed = count >= notes.length ? 1 : 0;
+  const spare = count - guaranteed * notes.length;
+
+  const exact = weights.map((w) => guaranteed + (spare * w) / total);
+  const alloc = exact.map((x) => Math.floor(x));
+  let remaining = count - alloc.reduce((a, b) => a + b, 0);
+  const byRemainder = exact
+    .map((x, i) => ({ i, rem: x - Math.floor(x) }))
+    .sort((a, b) => b.rem - a.rem);
+  for (let k = 0; remaining > 0; k++, remaining--) alloc[byRemainder[k % notes.length].i] += 1;
+
+  // Interleave rather than emitting one note's questions in a block, so the
+  // adaptive walk meets a mix of topics as it steps through difficulty tiers.
+  const order = [];
+  const left = [...alloc];
+  while (order.length < count) {
+    let progressed = false;
+    for (let i = 0; i < notes.length; i++) {
+      if (left[i] > 0) { order.push(notes[i]); left[i] -= 1; progressed = true; }
+      if (order.length === count) break;
+    }
+    if (!progressed) break;
+  }
+  return order;
+}
+
 /**
  * Choose a keyword for `note` at the wanted tier that hasn't already been
  * used for a question, so a small note can't produce the same blank twice.
@@ -209,13 +259,13 @@ function pickUnusedKeyword(note, wantedTier, startIndex, used) {
   return null;
 }
 
-function generateMcqFallback(notes, mcqCount) {
+function generateMcqFallback(notes, mcqCount, masteryMap) {
   const drafts = [];
-
   const used = new Set(); // "note title|keyword" already turned into a question
+  const order = weightedNoteOrder(notes, mcqCount, masteryMap);
 
   for (let i = 0; i < mcqCount; i++) {
-    const note = notes[i % notes.length];
+    const note = order[i] || notes[i % notes.length];
     const wanted = DIFFICULTY_TIERS[i % DIFFICULTY_TIERS.length];
     const picked = pickUnusedKeyword(note, wanted, Math.floor(i / notes.length), used);
     if (!picked) continue; // this note is out of distinct questions; don't repeat one
@@ -229,6 +279,7 @@ function generateMcqFallback(notes, mcqCount) {
     const options = shuffle([...pickDistractors(note, notes, keyword, sentence), keyword]);
 
     drafts.push({
+      topicId: note._id,
       topic: note.title,
       prompt: `Fill in the blank: "${blanked}"`,
       options,
@@ -276,13 +327,13 @@ Include 2 to 4 keyPoints per question. Return ONLY the JSON array, no other text
 // construction - the supporting excerpt IS the sentence the keyword came
 // from. Difficulty uses the same tier-first keywordForTier scheme as the
 // MCQ fallback.
-function generateTheoryFallback(notes, theoryCount) {
+function generateTheoryFallback(notes, theoryCount, masteryMap) {
   const drafts = [];
-
   const used = new Set();
+  const order = weightedNoteOrder(notes, theoryCount, masteryMap);
 
   for (let i = 0; i < theoryCount; i++) {
-    const note = notes[i % notes.length];
+    const note = order[i] || notes[i % notes.length];
     if (!note.keywords?.length) continue;
 
     const wanted = DIFFICULTY_TIERS[i % DIFFICULTY_TIERS.length];
@@ -296,6 +347,7 @@ function generateTheoryFallback(notes, theoryCount) {
     const sentence = sentences.find((s) => normalize(s).includes(primary)) || sentences[0] || note.rawText;
 
     drafts.push({
+      topicId: note._id,
       topic: note.title,
       prompt: `In your own words, explain what "${note.title}" says about "${primary}".`,
       modelAnswer: sentence,
@@ -326,11 +378,37 @@ function isValidDraft(d, type, contextText) {
   return false;
 }
 
+// Which note did this draft actually come from? The LLM is asked to name the
+// note title, but a model that paraphrases or invents a title would silently
+// mis-attribute the question - and topicId is what a student's mastery history
+// is keyed on, so a wrong answer here corrupts the record rather than just
+// mislabelling one item. The supporting excerpt is a stronger signal than the
+// claimed title, because the hallucination gate has already verified it appears
+// verbatim in the source: whichever note contains it IS the source note.
+// Title match is the fallback, and only then the first note.
+function resolveSourceNote(draft, notes) {
+  const excerpt = normalize(draft?.supportingExcerpt);
+  if (excerpt.length >= 8) {
+    const byExcerpt = notes.find((n) => normalize(n.rawText).includes(excerpt));
+    if (byExcerpt) return byExcerpt;
+  }
+  const claimed = normalize(draft?.topic);
+  if (claimed) {
+    const byTitle = notes.find((n) => normalize(n.title) === claimed);
+    if (byTitle) return byTitle;
+  }
+  return notes[0];
+}
+
 function toQuestionItem(d, type, marksPerQuestion, notes, contextText, generatedBy) {
   const supported = isValidDraft(d, type, contextText);
+  const sourceNote = resolveSourceNote(d, notes);
   const base = {
     type,
-    topic: d?.topic || notes[0]?.title || "General",
+    // topicId is the durable key (a note id); topic is the human-readable
+    // label shown in the UI and refreshed from the note on every generation.
+    topicId: d?.topicId || sourceNote?._id || null,
+    topic: sourceNote?.title || d?.topic || "General",
     prompt: d?.prompt,
     supportingExcerpt: d?.supportingExcerpt,
     difficulty: normalizeDifficulty(d?.difficulty),
@@ -347,18 +425,18 @@ function toQuestionItem(d, type, marksPerQuestion, notes, contextText, generated
   return { ...base, answerKey: d?.modelAnswer, keyPoints: d?.keyPoints };
 }
 
-async function generateBatch({ notes, count, generateLLM, generateFallback }) {
+async function generateBatch({ notes, count, generateLLM, generateFallback, masteryMap }) {
   if (count <= 0) return { drafts: [], generatedBy: "none" };
 
   let drafts = null;
   let generatedBy = "rule-based-fallback";
 
   if (llmAvailable()) {
-    drafts = await generateLLM(notes, count);
+    drafts = await generateLLM(notes, count, masteryMap);
     if (drafts) generatedBy = "llm";
   }
   if (!drafts || drafts.length === 0) {
-    drafts = generateFallback(notes, count);
+    drafts = generateFallback(notes, count, masteryMap);
     generatedBy = "rule-based-fallback";
   }
   return { drafts, generatedBy };
@@ -372,14 +450,14 @@ async function generateBatch({ notes, count, generateLLM, generateFallback }) {
  * routes/tests.js) so there's a real pool to be adaptive over.
  * Returns { accepted, discarded, mcqGeneratedBy, theoryGeneratedBy }.
  */
-export async function generateQuestions(notes, { mcqCount = 0, theoryCount = 0, marksPerQuestion }) {
+export async function generateQuestions(notes, { mcqCount = 0, theoryCount = 0, marksPerQuestion, masteryMap = new Map() }) {
   const contextText = buildContext(notes);
   const accepted = [];
   const discarded = [];
 
   const [mcqBatch, theoryBatch] = await Promise.all([
-    generateBatch({ notes, count: mcqCount, generateLLM: generateMcqWithLLM, generateFallback: generateMcqFallback }),
-    generateBatch({ notes, count: theoryCount, generateLLM: generateTheoryWithLLM, generateFallback: generateTheoryFallback }),
+    generateBatch({ notes, count: mcqCount, generateLLM: generateMcqWithLLM, generateFallback: generateMcqFallback, masteryMap }),
+    generateBatch({ notes, count: theoryCount, generateLLM: generateTheoryWithLLM, generateFallback: generateTheoryFallback, masteryMap }),
   ]);
 
   for (const [type, batch] of [

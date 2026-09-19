@@ -8,9 +8,12 @@ const attempts = () => getCollection("attempts");
 // tier to draw the next one from. targetCount is how many questions this
 // attempt will deliver in total before routes/attempts.js tells the
 // client to submit.
-export async function createAttempt({ testId, ownerId, targetCount, currentDifficulty, shownQuestionIds = [] }) {
+export async function createAttempt({ testId, subjectId, ownerId, targetCount, currentDifficulty, shownQuestionIds = [] }) {
   return attempts().insertOne({
     testId,
+    // denormalised from the test so mastery lookups during an attempt do not
+    // have to re-read it on every response
+    subjectId,
     ownerId,
     status: "in_progress",
     startedAt: new Date(),
@@ -23,6 +26,11 @@ export async function createAttempt({ testId, ownerId, targetCount, currentDiffi
 
 export async function findOwnedAttempt(id, ownerId) {
   return attempts().findOne({ _id: id, ownerId });
+}
+
+/** Attempt history for a subject, newest first - powers the progress page. */
+export async function findAttemptsBySubject(ownerId, subjectId) {
+  return attempts().find({ ownerId, subjectId }, { sort: { startedAt: -1 } });
 }
 
 export async function markAttemptSubmitted(id) {

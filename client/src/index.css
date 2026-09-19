@@ -2,11 +2,166 @@
 @tailwind components;
 @tailwind utilities;
 
-html, body, #root {
+/* ---------------------------------------------------------------------------
+   Mind Atlas colour tokens. Tailwind reads these through tailwind.config.js;
+   the .dark block is applied by ThemeProvider (src/lib/theme.jsx).
+   ------------------------------------------------------------------------- */
+:root {
+  color-scheme: light;
+  --c-background:#f4f3ee;
+  --c-surface:#f4f3ee;
+  --c-surface-bright:#f4f3ee;
+  --c-surface-dim:#e9e7db;
+  --c-surface-container-lowest:#ffffff;
+  --c-surface-container-low:#fbfaf6;
+  --c-surface-container:#f8f7f1;
+  --c-surface-container-high:#efeee6;
+  --c-surface-container-highest:#e6e4d8;
+  --c-surface-variant:#e6e4d8;
+  --c-surface-tint:#364156;
+  --c-outline:#b9b6a6;
+  --c-outline-variant:#e3e1d3;
+  --c-on-background:#33352e;
+  --c-on-surface:#33352e;
+  --c-on-surface-variant:#6a6d63;
+  --c-primary:#364156;
+  --c-on-primary:#ffffff;
+  --c-primary-container:#dfe3e8;
+  --c-on-primary-container:#263140;
+  --c-secondary:#5d7a68;
+  --c-on-secondary:#ffffff;
+  --c-secondary-container:#dbe6df;
+  --c-on-secondary-container:#2f4a3a;
+  --c-tertiary:#c98e3d;
+  --c-on-tertiary:#ffffff;
+  --c-tertiary-container:#f3e2c4;
+  --c-on-tertiary-container:#6b4a1a;
+  --c-error:#ef4444;
+  --c-on-error:#ffffff;
+  --c-error-container:#fde2e2;
+  --c-on-error-container:#921f1f;
+  --c-inverse-surface:#33352e;
+  --c-inverse-on-surface:#f4f3ee;
+  --c-inverse-primary:#a9c4cc;
+  --c-secondary-fixed-dim:#b3cabd;
+  --c-on-primary-fixed:#1b232d;
+  --c-secondary-fixed:#dbe6df;
+  --c-tertiary-fixed-dim:#e4c48c;
+  --c-primary-fixed:#dfe3e8;
+  --c-on-primary-fixed-variant:#364156;
+  --c-on-tertiary-fixed-variant:#6b4a1a;
+  --c-primary-fixed-dim:#b7c2cc;
+  --c-tertiary-fixed:#f3e2c4;
+  --c-on-tertiary-fixed:#402c08;
+  --c-on-secondary-fixed:#1c2c22;
+  --c-on-secondary-fixed-variant:#3f5c4c;
+}
+
+html.dark {
+  color-scheme: dark;
+  --c-secondary-fixed-dim:#b3cabd;
+  --c-on-primary-fixed:#1b232d;
+  --c-secondary-fixed:#dbe6df;
+  --c-tertiary-fixed-dim:#e4c48c;
+  --c-primary-fixed:#dfe3e8;
+  --c-on-primary-fixed-variant:#364156;
+  --c-on-tertiary-fixed-variant:#6b4a1a;
+  --c-primary-fixed-dim:#b7c2cc;
+  --c-tertiary-fixed:#f3e2c4;
+  --c-on-tertiary-fixed:#402c08;
+  --c-on-secondary-fixed:#1c2c22;
+  --c-on-secondary-fixed-variant:#3f5c4c;
+  --c-background:#1c1c18;
+  --c-surface:#1c1c18;
+  --c-surface-dim:#141412;
+  --c-surface-bright:#2a2a24;
+  --c-surface-container-lowest:#121210;
+  --c-surface-container-low:#201f1b;
+  --c-surface-container:#24231e;
+  --c-surface-container-high:#2a2924;
+  --c-surface-container-highest:#302f29;
+  --c-surface-variant:#2a2924;
+  --c-surface-tint:#b7c2cc;
+  --c-outline:#5c5c52;
+  --c-outline-variant:#38372f;
+  --c-on-background:#ece9dd;
+  --c-on-surface:#ece9dd;
+  --c-on-surface-variant:#a8a496;
+  --c-primary:#b7c2cc;
+  --c-on-primary:#1b232d;
+  --c-primary-container:#45505f;
+  --c-on-primary-container:#dfe3e8;
+  --c-secondary:#9fc0ac;
+  --c-on-secondary:#1c2c22;
+  --c-secondary-container:#3f5c4c;
+  --c-on-secondary-container:#dbe6df;
+  --c-tertiary:#e4c48c;
+  --c-on-tertiary:#402c08;
+  --c-tertiary-container:#6b4a1a;
+  --c-on-tertiary-container:#f3e2c4;
+  --c-error:#ff8a80;
+  --c-on-error:#690000;
+  --c-error-container:#921f1f;
+  --c-on-error-container:#fde2e2;
+  --c-inverse-surface:#ece9dd;
+  --c-inverse-on-surface:#1c1c18;
+  --c-inverse-primary:#364156;
+}
+
+html,
+body,
+#root {
   height: 100%;
 }
 
 body {
-  @apply bg-page text-ink font-sans;
   margin: 0;
+  overscroll-behavior: none;
+}
+
+/* Material Symbols icon font (loaded from index.html) */
+.material-symbols-outlined {
+  font-family: "Material Symbols Outlined";
+  font-weight: normal;
+  font-style: normal;
+  line-height: 1;
+  letter-spacing: normal;
+  text-transform: none;
+  display: inline-block;
+  white-space: nowrap;
+  word-wrap: normal;
+  direction: ltr;
+  -webkit-font-feature-settings: "liga";
+  font-feature-settings: "liga";
+  -webkit-font-smoothing: antialiased;
+  font-variation-settings: "FILL" 0, "wght" 400, "GRAD" 0, "opsz" 24;
+}
+
+.material-symbols-outlined.filled {
+  font-variation-settings: "FILL" 1, "wght" 400, "GRAD" 0, "opsz" 24;
+}
+
+/* Quiet, always-visible scrollbars that follow the theme */
+::-webkit-scrollbar {
+  width: 11px;
+  height: 11px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background-color: var(--c-outline-variant);
+  border-radius: 8px;
+  border: 3px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background-color: var(--c-outline);
+}
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--c-outline-variant) transparent;
 }
