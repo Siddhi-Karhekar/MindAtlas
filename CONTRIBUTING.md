@@ -149,6 +149,21 @@ post-Saturday backlog, item 1 below):
    - Tag every edge with `edgeType: "same-subject"` or `"cross-subject"` in
      `models/GraphEdge.js` so the graph UI and any writeup can show the
      distinction.
+
+   **Status: done** (branch `graph/cross-subject-disambiguation`), with one
+   change to the rule above: a cross-subject edge needs **two** shared
+   keywords, not one. Tested on real notes, the one-keyword version still
+   linked Biology "Cell structure" to Chemistry "Electrochemical cells"
+   (similarity 0.252, sharing only "cell") - one word repeated often enough
+   in both notes lifts the similarity past 0.25 on its own. A `rejected` edge
+   is stored only when the pair would have passed the same-subject threshold
+   (0.12), so the list shows genuinely ambiguous pairs rather than every
+   coincidental shared word. The graph API keeps `nodes`/`edges` meaning
+   same-subject only (Home, the subject page and the note editor read them)
+   and adds `crossSubjectEdges`, `rejectedEdges` and `externalNodes`; note
+   creation's `edgesCreated` also stays same-subject, with
+   `crossSubjectEdgesCreated` alongside it. Tests:
+   `server/test/graphEngine.test.mjs` (part of `npm test`).
 2. **Lightweight clustering as a Louvain stand-in.** Full community
    detection is post-Saturday backlog (item 3 below); for the prototype, a
    plain connected-components pass over each subject's notes+edges (BFS or

@@ -28,8 +28,14 @@ Team roles and branch conventions are in [`CONTRIBUTING.md`](CONTRIBUTING.md).
   a Word (.docx) file — all four wired end to end, backend and upload UI.
 - Every new note gets a TF-IDF vector and top keywords; cosine similarity
   against the other notes in the *same* subject creates weighted graph edges
-  (threshold 0.12), rendered with Cytoscape.js. Cross-subject linking with
-  disambiguation is this week's prototype target — see CONTRIBUTING.md §0.
+  (threshold 0.12), rendered with Cytoscape.js.
+- Notes are also compared across a student's subjects, under a stricter rule
+  so a word used in two senses ("cell" in Biology, Chemistry and Computer
+  Networks) doesn't link unrelated notes: a cross-subject edge needs **at
+  least two** shared top keywords **and** similarity of at least 0.25. A pair
+  that shares a keyword but fails that rule is stored as `rejected` and shown
+  on the graph page under "Considered, not linked", so the disambiguation is
+  visible. Other subjects' linked notes appear as faded nodes.
 
 **Tests, attempts and feedback**
 - **Grounded question generation** - MCQ and theory (short-answer) questions,
@@ -164,8 +170,8 @@ a case to `server/test/mongoStore.test.mjs`.
 3. **Better graph, phase 2** - real sentence embeddings in place of TF-IDF
    vectors (a contained change to `services/tfidf.js`) and true Louvain/Leiden
    community detection in place of this week's connected-components stand-in,
-   plus a graph-edge correction loop. Cross-subject disambiguation itself is
-   this week's prototype target, not deferred - see CONTRIBUTING.md §0.
+   plus a graph-edge correction loop. Rule-based cross-subject disambiguation
+   is already in (see "What works today").
 4. **Test timer** - `durationMinutes` is stored and shown but not yet
    enforced with a countdown in the attempt screen.
 5. **Quality upgrades from the report** - distractor gating for the LLM path,

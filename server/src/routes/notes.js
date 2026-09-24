@@ -1,7 +1,7 @@
 import { Router } from "express";
 import multer from "multer";
 import { findOwnedSubject } from "../models/Subject.js";
-import { createNote, findNotesBySubject } from "../models/Note.js";
+import { createNote, findNotesByOwner, findNotesBySubject } from "../models/Note.js";
 import { requireAuth } from "../middleware/auth.js";
 import { extractTextFromImage } from "../services/ocr.js";
 import { classifyUpload, extractTextFromDocument, titleFromFilename } from "../services/documentText.js";
@@ -81,9 +81,19 @@ router.post("/:id/notes", upload.single("file"), async (req, res) => {
     ocrFailed,
   });
 
-  const edges = await updateGraphForNote(note, existingNotes);
+  // Compared against every note the student owns, not just this subject's:
+  // graphEngine links same-subject pairs as before and applies a stricter
+  // rule to notes from other subjects.
+  const ownerNotes = await findNotesByOwner(req.user.id);
+  const edges = await updateGraphForNote(note, ownerNotes);
 
-  res.status(201).json({ note, edgesCreated: edges.length });
+  res.status(201).json({
+    note,
+    // Same-subject links only, as before - the subject page's "N new links
+    // to related notes" message counts links within this subject.
+    edgesCreated: edges.filter((e) => e.edgeType === "same-subject").length,
+    crossSubjectEdgesCreated: edges.filter((e) => e.edgeType === "cross-subject").length,
+  });
 });
 
 router.get("/:id/notes", async (req, res) => {

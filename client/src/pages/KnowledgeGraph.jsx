@@ -86,6 +86,27 @@ function layout(nodes, edges) {
 
 const clip = (s, n) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 
+// The other end of every edge touching `id`, strongest link first.
+function linksOf(edges, id) {
+  if (!id) return [];
+  return edges
+    .filter((e) => String(e.source) === id || String(e.target) === id)
+    .map((e) => ({
+      id: String(e.source) === id ? String(e.target) : String(e.source),
+      weight: e.weight,
+      shared: e.sharedKeywords || [],
+    }))
+    .sort((a, b) => b.weight - a.weight);
+}
+
+// Why an ambiguous cross-subject pair was not linked - mirrors classifyPair()
+// in server/src/services/graphEngine.js (two shared keywords AND similarity
+// of at least 0.25 are both required across subjects).
+function rejectReason(shared) {
+  if (shared.length === 1) return `Only “${shared[0]}” in common, likely with a different meaning`;
+  return `Shares ${shared.join(", ")}, but the notes are otherwise too different`;
+}
+
 export default function KnowledgeGraph() {
   const { subjectId } = useParams();
   const [graph, setGraph] = useState(null);
@@ -110,19 +131,32 @@ export default function KnowledgeGraph() {
       .catch((err) => setError(err.message));
   }, [subjectId]);
 
+  // Links per note in this subject, counting links to other subjects too - a
+  // note linked only across subjects is not "isolated". Keyed by this
+  // subject's notes only; other subjects' notes are not counted here.
   const degree = useMemo(() => {
     const d = new Map();
     graph?.nodes.forEach((n) => d.set(String(n.id), 0));
-    graph?.edges.forEach((e) => {
-      d.set(String(e.source), (d.get(String(e.source)) || 0) + 1);
-      d.set(String(e.target), (d.get(String(e.target)) || 0) + 1);
+    [...(graph?.edges || []), ...(graph?.crossSubjectEdges || [])].forEach((e) => {
+      for (const id of [String(e.source), String(e.target)]) if (d.has(id)) d.set(id, d.get(id) + 1);
     });
     return d;
   }, [graph]);
 
+  // Other subjects' notes, from the graph route's additive fields. Only notes
+  // with an accepted cross-subject link are drawn; rejected (ambiguous) pairs
+  // are listed in the inspector instead.
+  const crossEdges = useMemo(() => graph?.crossSubjectEdges || [], [graph]);
+  const rejectedEdges = useMemo(() => graph?.rejectedEdges || [], [graph]);
+  const externalById = useMemo(() => new Map((graph?.externalNodes || []).map((n) => [String(n.id), n])), [graph]);
+  const drawnExternal = useMemo(() => {
+    const linked = new Set(crossEdges.flatMap((e) => [String(e.source), String(e.target)]));
+    return [...externalById.values()].filter((n) => linked.has(String(n.id)));
+  }, [crossEdges, externalById]);
+
   useEffect(() => {
     if (!graph) return;
-    setPos(layout(graph.nodes, graph.edges));
+    setPos(layout([...graph.nodes, ...drawnExternal], [...graph.edges, ...crossEdges]));
     // start on the best-connected note
     let best = null;
     for (const [id, dg] of degree) if (best === null || dg > degree.get(best)) best = id;
@@ -211,35 +245,42 @@ export default function KnowledgeGraph() {
   const nodeById = useMemo(() => new Map((graph?.nodes || []).map((n) => [String(n.id), n])), [graph]);
   const selected = selectedId ? nodeById.get(selectedId) : null;
   const selectedNote = selectedId ? noteById.get(selectedId) : null;
+  const selectedExternal = selectedId ? externalById.get(selectedId) : null;
 
-  const neighbours = useMemo(() => {
-    if (!graph || !selectedId) return [];
-    return graph.edges
-      .filter((e) => String(e.source) === selectedId || String(e.target) === selectedId)
-      .map((e) => ({
-        id: String(e.source) === selectedId ? String(e.target) : String(e.source),
-        weight: e.weight,
-        shared: e.sharedKeywords || [],
-      }))
-      .sort((a, b) => b.weight - a.weight);
-  }, [graph, selectedId]);
+  const neighbours = useMemo(() => linksOf(graph?.edges || [], selectedId), [graph, selectedId]);
+  const crossNeighbours = useMemo(() => linksOf(crossEdges, selectedId), [crossEdges, selectedId]);
+  const rejectedNeighbours = useMemo(() => linksOf(rejectedEdges, selectedId), [rejectedEdges, selectedId]);
 
   const q = query.trim().toLowerCase();
+  const textMatch = (n) =>
+    !q || n.title.toLowerCase().includes(q) || (n.keywords || []).some((k) => k.toLowerCase().includes(q));
   const matches = (n) => {
     const id = String(n.id);
     const deg = degree.get(id) || 0;
     if (filter === "linked" && deg === 0) return false;
     if (filter === "isolated" && deg > 0) return false;
-    if (!q) return true;
-    return n.title.toLowerCase().includes(q) || (n.keywords || []).some((k) => k.toLowerCase().includes(q));
+    return textMatch(n);
   };
+  // Other subjects' notes have no links inside this subject, so the
+  // Linked/Isolated filters dim them; otherwise only the search applies.
+  const matchesExternal = (n) => filter === "all" && textMatch(n);
+  const matchesAny = (id) =>
+    nodeById.has(id) ? matches(nodeById.get(id)) : externalById.has(id) && matchesExternal(externalById.get(id));
   const visibleCount = graph ? graph.nodes.filter(matches).length : 0;
 
   const tone = (deg) =>
     deg >= 3 ? { dot: "bg-tertiary", label: "Hub" } : deg >= 1 ? { dot: "bg-secondary", label: "Linked" } : { dot: "bg-primary-container", label: "Isolated" };
 
+  // Connectivity is the share of this subject's other notes the selected note
+  // links to, so it counts same-subject links only and never passes 100%.
   const maxLinks = graph ? Math.max(1, graph.nodes.length - 1) : 1;
-  const connectivity = selected ? Math.round(((degree.get(selectedId) || 0) / maxLinks) * 100) : 0;
+  const connectivity = selected ? Math.round((neighbours.length / maxLinks) * 100) : 0;
+  const connectivityText =
+    (degree.get(selectedId) || 0) === 0
+      ? "Not connected to any other note"
+      : neighbours.length === 0
+        ? `Linked only to other subjects (${crossNeighbours.length})`
+        : `${connectivity}% of the other notes${crossNeighbours.length ? ` · ${crossNeighbours.length} in other subjects` : ""}`;
   const chip = (active) =>
     `px-space-sm py-1 rounded-full font-label-md text-label-md transition-colors ${
       active ? "bg-primary-container text-on-primary-container shadow-sm" : "text-on-surface-variant hover:bg-surface-container-high"
@@ -307,6 +348,28 @@ export default function KnowledgeGraph() {
                 />
               );
             })}
+            {crossEdges.map((e) => {
+              const a = pos.get(String(e.source));
+              const b = pos.get(String(e.target));
+              if (!a || !b) return null;
+              const touches = String(e.source) === selectedId || String(e.target) === selectedId;
+              const dim = q || filter !== "all" ? !(matchesAny(String(e.source)) && matchesAny(String(e.target))) : false;
+              return (
+                <line
+                  key={e.id}
+                  data-testid="graph-cross-edge"
+                  x1={a[0]}
+                  y1={a[1]}
+                  x2={b[0]}
+                  y2={b[1]}
+                  style={{ stroke: "var(--c-tertiary)" }}
+                  strokeWidth={1 + (e.weight || 0.3) * 4}
+                  strokeDasharray="1 6"
+                  strokeLinecap="round"
+                  opacity={dim ? 0.08 : touches ? 0.9 : 0.55}
+                />
+              );
+            })}
           </svg>
 
           {graph.nodes.map((n) => {
@@ -348,6 +411,33 @@ export default function KnowledgeGraph() {
                 <div className={`w-3.5 h-3.5 rounded-full ${t.dot}`}></div>
                 <span className="font-ui-body text-ui-body text-on-surface whitespace-nowrap">{clip(n.title, 26)}</span>
                 <span className="font-label-sm text-label-sm text-on-surface-variant bg-surface-container-high px-1.5 py-0.5 rounded">{deg}</span>
+              </div>
+            );
+          })}
+
+          {drawnExternal.map((n) => {
+            const id = String(n.id);
+            const p = pos.get(id);
+            if (!p) return null;
+            const isSel = id === selectedId;
+            const dim = !matchesExternal(n);
+            return (
+              <div
+                key={id}
+                data-testid="graph-external-node"
+                onPointerDown={(e) => onPointerDown(e, id)}
+                title={`${n.subjectName}: ${n.title}`}
+                className={`absolute -translate-x-1/2 -translate-y-1/2 flex flex-col items-start px-space-md py-space-xs rounded-2xl border border-dashed cursor-pointer transition-transform ${
+                  isSel
+                    ? "z-20 bg-surface border-tertiary ring-2 ring-tertiary shadow-xl"
+                    : "z-10 bg-surface-container-lowest/80 border-outline shadow-sm hover:scale-105"
+                }`}
+                style={{ left: p[0], top: p[1], opacity: dim ? 0.3 : isSel ? 1 : 0.85 }}
+              >
+                <span className="font-label-sm text-label-sm text-tertiary uppercase tracking-widest leading-tight whitespace-nowrap">
+                  {clip(n.subjectName, 24)}
+                </span>
+                <span className="font-ui-body text-ui-body text-on-surface-variant leading-tight whitespace-nowrap">{clip(n.title, 26)}</span>
               </div>
             );
           })}
@@ -399,10 +489,18 @@ export default function KnowledgeGraph() {
           <span className="w-2.5 h-2.5 rounded-full bg-primary-container"></span>
           <span className="font-label-sm text-label-sm text-on-surface-variant">Isolated</span>
         </div>
+        {drawnExternal.length > 0 && (
+          <div className="flex items-center gap-space-xs">
+            <span className="w-2.5 h-2.5 rounded-full border border-dashed border-tertiary"></span>
+            <span className="font-label-sm text-label-sm text-on-surface-variant">Other subject</span>
+          </div>
+        )}
         <div className="h-3 w-px bg-outline-variant/60"></div>
         <span className="font-label-sm text-label-sm text-secondary font-semibold">
           {visibleCount === graph.nodes.length
-            ? `${graph.nodes.length} ${graph.nodes.length === 1 ? "note" : "notes"} · ${graph.edges.length} ${graph.edges.length === 1 ? "connection" : "connections"}`
+            ? `${graph.nodes.length} ${graph.nodes.length === 1 ? "note" : "notes"} · ${graph.edges.length} ${graph.edges.length === 1 ? "connection" : "connections"}${
+                crossEdges.length ? ` · ${crossEdges.length} across subjects` : ""
+              }`
             : `${visibleCount} of ${graph.nodes.length} notes shown`}
         </span>
       </div>
@@ -446,9 +544,7 @@ export default function KnowledgeGraph() {
                       {(degree.get(selectedId) || 0) === 1 ? "link" : "links"}
                     </span>
                   </div>
-                  <span className="font-body-sm text-body-sm text-outline mt-space-2xs">
-                    {(degree.get(selectedId) || 0) === 0 ? "Not connected to any other note" : `${connectivity}% of the other notes`}
-                  </span>
+                  <span className="font-body-sm text-body-sm text-outline mt-space-2xs">{connectivityText}</span>
                 </div>
                 <Ring className="w-14 h-14" stroke={3.5} value={connectivity} track="text-surface-container-highest">
                   <Icon name="trending_up" className="text-secondary text-sm" />
@@ -478,6 +574,57 @@ export default function KnowledgeGraph() {
                       );
                     })}
                   </div>
+                </div>
+              )}
+
+              {crossNeighbours.length > 0 && (
+                <div className="flex flex-col gap-space-xs pt-space-xs" data-testid="cross-subject-links">
+                  <span className="font-label-sm text-label-sm uppercase tracking-wider text-on-surface-variant">
+                    Linked in other subjects ({crossNeighbours.length})
+                  </span>
+                  <div className="flex flex-col gap-space-xs mt-space-2xs">
+                    {crossNeighbours.map((nb) => {
+                      const ext = externalById.get(nb.id);
+                      if (!ext) return null;
+                      return (
+                        <button
+                          type="button"
+                          key={nb.id}
+                          onClick={() => setSelectedId(nb.id)}
+                          className="flex flex-col items-start gap-0.5 px-space-sm py-space-xs rounded-lg bg-surface-container hover:bg-surface-container-high transition-colors text-left"
+                        >
+                          <span className="font-label-sm text-label-sm text-tertiary uppercase tracking-wider">{ext.subjectName}</span>
+                          <span className="font-ui-body text-ui-body text-on-surface">{clip(ext.title, 34)}</span>
+                          <span className="font-body-sm text-body-sm text-on-surface-variant">Shares {nb.shared.join(", ")}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {rejectedNeighbours.length > 0 && (
+                <div className="flex flex-col gap-space-xs pt-space-xs" data-testid="rejected-links">
+                  <span className="font-label-sm text-label-sm uppercase tracking-wider text-on-surface-variant">
+                    Considered, not linked ({rejectedNeighbours.length})
+                  </span>
+                  <ul className="flex flex-col gap-space-xs mt-space-2xs">
+                    {rejectedNeighbours.map((nb) => {
+                      const ext = externalById.get(nb.id);
+                      if (!ext) return null;
+                      return (
+                        <li key={nb.id} className="flex items-start gap-space-xs px-space-sm py-space-xs rounded-lg bg-surface-container-low">
+                          <Icon name="link_off" className="text-sm text-outline mt-0.5" />
+                          <div className="flex flex-col gap-0.5 min-w-0">
+                            <span className="font-ui-body text-ui-body text-on-surface-variant">
+                              {ext.subjectName}: {clip(ext.title, 30)}
+                            </span>
+                            <span className="font-body-sm text-body-sm text-outline">{rejectReason(nb.shared)}</span>
+                          </div>
+                        </li>
+                      );
+                    })}
+                  </ul>
                 </div>
               )}
 
@@ -517,6 +664,71 @@ export default function KnowledgeGraph() {
                   Read note
                 </Link>
               </div>
+            </div>
+          </>
+        )}
+
+        {selectedExternal && (
+          <>
+            <div className="flex flex-col p-space-lg gap-space-md" data-testid="external-inspector">
+              <div className="flex items-center gap-space-xs text-tertiary font-label-md text-label-md uppercase tracking-wider">
+                <Icon name="link" className="text-sm" />
+                <span>From another subject</span>
+              </div>
+              <div className="flex flex-col gap-space-2xs">
+                <h2 className="font-headline-md text-headline-md text-on-surface tracking-tight" data-testid="inspector-title">
+                  {selectedExternal.title}
+                </h2>
+                <span className="font-label-md text-label-md text-on-surface-variant">{selectedExternal.subjectName}</span>
+              </div>
+
+              {crossNeighbours.length > 0 && (
+                <div className="flex flex-col gap-space-xs pt-space-xs">
+                  <span className="font-label-sm text-label-sm uppercase tracking-wider text-on-surface-variant">
+                    Linked to this subject ({crossNeighbours.length})
+                  </span>
+                  <div className="flex flex-col gap-space-xs mt-space-2xs">
+                    {crossNeighbours.map((nb) => {
+                      const node = nodeById.get(nb.id);
+                      if (!node) return null;
+                      return (
+                        <button
+                          type="button"
+                          key={nb.id}
+                          onClick={() => setSelectedId(nb.id)}
+                          className="flex flex-col items-start gap-0.5 px-space-sm py-space-xs rounded-lg bg-surface-container hover:bg-surface-container-high transition-colors text-left"
+                        >
+                          <span className="font-ui-body text-ui-body text-on-surface">{clip(node.title, 34)}</span>
+                          <span className="font-body-sm text-body-sm text-on-surface-variant">Shares {nb.shared.join(", ")}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {selectedExternal.keywords?.length > 0 && (
+                <div className="flex flex-col gap-space-xs">
+                  <span className="font-label-sm text-label-sm uppercase tracking-wider text-on-surface-variant">Keywords</span>
+                  <div className="flex flex-wrap gap-space-xs">
+                    {selectedExternal.keywords.slice(0, 8).map((k) => (
+                      <span key={k} className="px-space-sm py-space-2xs rounded bg-tertiary-container text-on-tertiary-container font-label-md text-label-md">
+                        {k}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="p-space-lg bg-surface-container-low flex flex-col gap-space-sm">
+              <Link
+                to={`/subjects/${selectedExternal.subjectId}/graph`}
+                className="w-full h-11 flex items-center justify-center gap-space-sm rounded-lg bg-tertiary text-on-tertiary font-ui-title text-ui-title shadow-md hover:opacity-90 transition-colors"
+              >
+                <Icon name="hub" className="text-base" />
+                <span>Open the {clip(selectedExternal.subjectName, 20)} graph</span>
+              </Link>
             </div>
           </>
         )}
