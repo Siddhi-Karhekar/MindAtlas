@@ -5,6 +5,45 @@ root `README.md` for what exists today), and lays out how to divide work
 so four people can build in parallel without constantly blocking on each
 other or fighting merge conflicts.
 
+## 0. Saturday prototype scope — read this first
+
+This week's target is a submittable **prototype**, not the full system
+described in Section 3 below. Two scope decisions for the prototype only —
+the rest of this file stays the long-term plan, resume it after Saturday:
+
+**No probabilistic/statistical models for now.** No Bayesian Knowledge
+Tracing, no IRT, no logistic-regression difficulty calibration. Concretely:
+
+- `adaptiveEngine.js`'s within-attempt staircase (1-up-1-down across
+  easy/medium/hard) is *already* plain rule-based — keep it as is, just
+  strip the "IRT-inspired" framing from its comments/docs so nobody has to
+  defend a statistical model this build doesn't have calibration data for.
+- `masteryEngine.js`'s Bayesian Knowledge Tracing update is the one part
+  that's genuinely probabilistic (a Bayes-rule posterior, `pKnown`). Replace
+  it with a deterministic rule: track `correctCount` / `totalCount` per
+  topic and use plain accuracy (`correctCount / totalCount`) everywhere
+  `pKnown` is read today. Reuse the existing cut points unchanged
+  (`accuracy < 0.4` → easy, `> 0.75` → hard, else medium) and the existing
+  `MIN_OBSERVATIONS_TO_ADAPT = 3` guard — only the number's meaning changes,
+  not the surrounding logic, which keeps this a contained, low-risk swap.
+  Full details are in the prompt used to build this (ask whoever ran it, or
+  see `docs/Test_Generation_Feedback_Feasibility_Report.docx` §5's Future
+  Scope for why BKT is deferred rather than dropped for good).
+
+**Build order — don't start the next step until the previous one is tested
+end to end:**
+
+1. **Notes ingestion.** Verify text, OCR, PDF and DOCX all work reliably —
+   this is mostly *already built* (both backend and the `NoteEditor.jsx`
+   upload UI accept all four), so this step is testing and hardening, not
+   new construction. See Member 1's section below for the checklist.
+2. **Knowledge graph, with ambiguity handling.** The real gap: today's
+   `graphEngine.js` only links notes within the same subject. See Member 2's
+   section below for the specific rule-based disambiguation to add.
+3. **Rule-based test-taking.** Mostly the mastery-engine swap described
+   above, plus removing IRT/BKT language from anything user-facing. See
+   Member 3's section below.
+
 ## 1. Get a shared repo first
 
 Everything so far has been built in one place. Before anyone writes new
@@ -50,20 +89,28 @@ something's broken.
 **Owns:** `server/src/routes/notes.js`, `server/src/services/ocr.js`,
 new `server/src/services/summarize.js`.
 
-What's already there: typed notes and image-upload OCR (tesseract.js).
-What's missing, in order:
-1. **PDF and DOCX ingestion** — the `Note.sourceType` enum already has
-   `pdf` and `docx` as options, the routes don't handle them yet. Use
-   `pdf-parse` for PDFs and `mammoth` for DOCX (both pure npm, no native
-   binary, no network dependency at runtime).
-2. **Summarization** — a new endpoint that takes a note's raw text (or a
+**Prototype status (updated):** typed notes, image OCR (tesseract.js), and
+PDF/DOCX ingestion (`services/documentText.js`, using `mammoth` for DOCX and
+`pdfjs-dist` for PDF — not `pdf-parse` as originally planned) are all built
+and wired end to end, backend and `NoteEditor.jsx` frontend both. **For
+Saturday, this step is verification, not new construction:** upload one real
+file of each type (a clean PDF, a scanned/photographed page, a `.docx`, a
+plain `.txt`/`.md`) into a subject and confirm each produces a usable note
+with sane extracted text. Check the edge cases the code already tries to
+handle gracefully: a password-protected or corrupt PDF, a photo with no
+readable text (OCR returns empty), a file over the 10MB limit. Fix anything
+that breaks silently rather than returning the error message it's designed
+to show.
+
+What's missing (post-Saturday backlog, not this week):
+1. **Summarization** — a new endpoint that takes a note's raw text (or a
    linked textbook chunk) and returns an LLM-generated summary via the
    Groq API. Ground it the same way Diagram 3's question drafting is
    grounded in the architecture doc: the summary prompt should only be
    allowed to use the note's own extracted text as context, never
    open-domain — that's what keeps it from hallucinating facts that
    aren't in the source material.
-3. **Textbook linking** — the `textbooks` collection from the schema
+2. **Textbook linking** — the `textbooks` collection from the schema
    (Section E of the deep-dive doc) isn't built yet: upload a textbook,
    chunk it, and let a note reference it so summaries and later the test
    generator can pull grounded context from it.
@@ -77,22 +124,56 @@ edge creation within a subject — this is deliberately a stand-in for
 Diagram 2's "dual extraction" step (see the code comments in
 `tfidf.js`).
 
-What's missing, in order:
+**Prototype requirement for Saturday — this is the biggest real gap, and
+the one place this week's plan asks for something genuinely new.** Keep it
+rule-based (no MiniLM download, no external graph library — both are
+post-Saturday backlog, item 1 below):
+
+1. **Cross-subject linking, with disambiguation.** Right now
+   `updateGraphForNote()` only compares a new note against others in the
+   *same* subject. Extend it to also compare against the user's notes in
+   *other* subjects — but guard against false matches (e.g. "cell" in a
+   Biology note and "cell" in a Computer Networks note): only create a
+   cross-subject edge when a pair clears **both** of two conditions, not
+   either alone:
+   - shares at least one top-12 TF-IDF keyword (from `computeTfidf()`'s
+     `keywords` array), **and**
+   - clears a *stricter* cosine-similarity threshold than the same-subject
+     one — e.g. `0.25` vs the existing `0.12` — so two notes that are only
+     coincidentally using the same word, but are otherwise topically
+     unrelated, don't get linked just because they share that one token.
+     A pair that shares a keyword but fails the stricter threshold is the
+     "ambiguous" case: log it (or store it with `edgeType: "rejected"`) so
+     it's visible in a demo that the system is actually distinguishing
+     senses, not just skipping the check.
+   - Tag every edge with `edgeType: "same-subject"` or `"cross-subject"` in
+     `models/GraphEdge.js` so the graph UI and any writeup can show the
+     distinction.
+2. **Lightweight clustering as a Louvain stand-in.** Full community
+   detection is post-Saturday backlog (item 3 below); for the prototype, a
+   plain connected-components pass over each subject's notes+edges (BFS or
+   union-find, no dependency needed) is enough to group related notes and
+   is easy to explain as "notes connected directly or through a chain of
+   shared topics form one cluster." Surface `clusterId` per note from
+   `/api/subjects/:id/graph` so `KnowledgeGraph.jsx` can optionally color by
+   cluster — nice for the demo, but treat the coloring itself as optional
+   if time runs short; the clustering data being correct matters more than
+   the visual.
+
+Post-Saturday backlog (do not start before the two items above are done and
+tested):
 1. **Real sentence embeddings** — swap the TF-IDF vector for a MiniLM
    embedding from `@xenova/transformers` (runs in Node, no Python, no
    GPU). `computeTfidf()`'s signature (`text -> {vector, keywords}`) is
    the only contract the rest of the app depends on, so this is a
    contained change to `tfidf.js` plus whatever's needed to keep
    `cosineSimilarity()` working on the new vector shape.
-2. **Cross-subject disambiguation** — right now notes only ever link
-   within their own subject. Diagram 2's "term seen in another subject?"
-   branch (cross-encoder re-score + word-sense check) isn't built.
-3. **Louvain community detection** as a sanity pass before writing edges,
-   and the **correction loop**: a `POST /api/graph/edges/:id/correct`
-   route (already named in the deep-dive doc's route table) that lets a
-   student fix a mislinked edge and feeds that correction back into the
-   scoring — even a simple logistic-regression refit is enough to match
-   the architecture's intent.
+2. **Real Louvain/Leiden community detection** in place of the
+   connected-components stand-in above, and the **correction loop**: a
+   `POST /api/graph/edges/:id/correct` route (already named in the
+   deep-dive doc's route table) that lets a student fix a mislinked edge
+   and feeds that correction back into the scoring — even a simple
+   logistic-regression refit is enough to match the architecture's intent.
 
 ### Member 3 — Test generation & feedback
 **Owns:** `server/src/routes/tests.js`, `server/src/routes/attempts.js`,
@@ -102,11 +183,18 @@ What's missing, in order:
 
 **Status:** steps 1-4 below are built and verified end to end (grounded MCQ
 and theory generation with the hallucination gate, an adaptive staircase
-attempt flow, deterministic per-topic feedback). Still open: a countdown
-timer that enforces `durationMinutes`, optional webcam proctoring, and the
-Bayesian Knowledge Tracing upgrade recommended in
-`docs/Test_Generation_Feedback_Feasibility_Report.docx`. The original build
-order, following Diagram 3 in the deep-dive doc, is kept below for reference:
+attempt flow, deterministic per-topic feedback). Cross-attempt mastery
+(`masteryEngine.js`) currently uses Bayesian Knowledge Tracing, per the
+feasibility report's top recommendation — **for the Saturday prototype,
+replace it with the plain rule-based version described in Section 0 above**
+(rolling accuracy per topic instead of a Bayesian posterior; same cut points
+and observation guard, so `adaptiveEngine.js` and `feedbackEngine.js` don't
+need to change). Keep BKT as the documented post-prototype upgrade, don't
+delete the reasoning for it — just don't ship it running this week. Still
+open after that: a countdown timer that enforces `durationMinutes` and
+optional webcam proctoring (both unrelated to this swap, lower priority for
+Saturday). The original build order, following Diagram 3 in the deep-dive
+doc, is kept below for reference:
 1. **Test model + builder UI** — subject, topics, MCQ/theory mix, marks,
    duration (the `tests` collection is already in the schema doc).
 2. **LLM-drafted questions**, RAG-only against the subject's own notes

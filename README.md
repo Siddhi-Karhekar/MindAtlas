@@ -13,14 +13,23 @@ feedback workstream is assessed in
 [`docs/Test_Generation_Feedback_Feasibility_Report.docx`](docs/Test_Generation_Feedback_Feasibility_Report.docx).
 Team roles and branch conventions are in [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
+> **Prototype scope for this week's submission:** the adaptive testing
+> pipeline below runs on plain rule-based logic only (no Bayesian Knowledge
+> Tracing, no IRT/logistic-regression calibration) while the team finishes
+> notes ingestion and the knowledge graph's cross-subject disambiguation.
+> See [`CONTRIBUTING.md` §0](CONTRIBUTING.md#0-saturday-prototype-scope--read-this-first)
+> for the exact scope and build order.
+
 ## What works today
 
 **Notes and knowledge graph**
-- Email/password auth (bcrypt + JWT), subjects, and notes that are typed or
-  uploaded as an image and read with Tesseract OCR.
+- Email/password auth (bcrypt + JWT), subjects, and notes from four input
+  paths: typed text, an uploaded image (read with Tesseract OCR), a PDF, or
+  a Word (.docx) file — all four wired end to end, backend and upload UI.
 - Every new note gets a TF-IDF vector and top keywords; cosine similarity
-  against the other notes in the subject creates weighted graph edges
-  (threshold 0.12), rendered with Cytoscape.js.
+  against the other notes in the *same* subject creates weighted graph edges
+  (threshold 0.12), rendered with Cytoscape.js. Cross-subject linking with
+  disambiguation is this week's prototype target — see CONTRIBUTING.md §0.
 
 **Tests, attempts and feedback**
 - **Grounded question generation** - MCQ and theory (short-answer) questions,
@@ -146,12 +155,17 @@ a case to `server/test/mongoStore.test.mjs`.
 
 1. **Bayesian Knowledge Tracing** - per-topic mastery that accumulates across
    attempts instead of a single-attempt snapshot (the feasibility report's
-   top recommendation).
-2. **Notes ingestion** - PDF/DOCX upload and summarization (`Note.sourceType`
-   already has `pdf` and `docx`; no handlers yet), then textbook linking.
-3. **Better graph** - real sentence embeddings in place of TF-IDF vectors
-   (a contained change to `services/tfidf.js`), cross-subject term
-   disambiguation, and a graph-edge correction loop.
+   top recommendation). Implemented in `services/masteryEngine.js`, but
+   swapped out for a plain rolling-accuracy rule for this week's prototype
+   (see CONTRIBUTING.md §0) - reinstate it once the prototype is submitted.
+2. **Notes summarization and textbook linking** - PDF/DOCX/OCR ingestion
+   itself is done (see "What works today" above); summarization and
+   textbook-linked context are the remaining pieces.
+3. **Better graph, phase 2** - real sentence embeddings in place of TF-IDF
+   vectors (a contained change to `services/tfidf.js`) and true Louvain/Leiden
+   community detection in place of this week's connected-components stand-in,
+   plus a graph-edge correction loop. Cross-subject disambiguation itself is
+   this week's prototype target, not deferred - see CONTRIBUTING.md §0.
 4. **Test timer** - `durationMinutes` is stored and shown but not yet
    enforced with a countdown in the attempt screen.
 5. **Quality upgrades from the report** - distractor gating for the LLM path,
