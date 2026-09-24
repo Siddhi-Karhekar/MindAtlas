@@ -12,6 +12,14 @@ const CHIP_STYLES = [
 ];
 
 const SOURCE_LABEL = { typed: "Typed note", image: "Scanned image", file: "Uploaded file" };
+const FILE_LABEL = { pdf: "PDF", docx: "Word document", text: "Text file", image: "Scanned image" };
+
+function sourceLabel(note) {
+  const kind = FILE_LABEL[note.fileType] || SOURCE_LABEL[note.sourceType] || note.sourceType;
+  if (!note.sourceFile) return kind;
+  const section = typeof note.sectionIndex === "number" ? ` §${note.sectionIndex + 1}` : "";
+  return `${kind} · ${note.sourceFile}${section}`;
+}
 
 export default function SubjectWorkspace() {
   const { subjectId } = useParams();
@@ -24,6 +32,9 @@ export default function SubjectWorkspace() {
   const [graph, setGraph] = useState({ nodes: [], edges: [] });
   const [error, setError] = useState("");
   const [menuOpen, setMenuOpen] = useState(false);
+  const [textbooks, setTextbooks] = useState([]);
+  const [bookUpload, setBookUpload] = useState({ busy: false, message: "", error: "" });
+  const [passages, setPassages] = useState({}); // chunkId -> passage | "loading" | { error }
 
   useEffect(() => {
     setNotes(null);
@@ -38,10 +49,57 @@ export default function SubjectWorkspace() {
         setError(err.message);
         setNotes([]);
       });
+    api.listTextbooks(subjectId).then((d) => setTextbooks(d.textbooks)).catch(() => setTextbooks([]));
   }, [subjectId]);
 
+  async function handleTextbookUpload(e) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    setBookUpload({ busy: true, message: "", error: "" });
+    try {
+      const r = await api.uploadTextbook(subjectId, file);
+      const [t, n] = await Promise.all([api.listTextbooks(subjectId), api.listNotes(subjectId)]);
+      setTextbooks(t.textbooks);
+      setNotes(n.notes); // notes were re-linked to the new book's passages
+      setBookUpload({
+        busy: false,
+        error: "",
+        message: `Indexed ${r.chunkCount} passages — ${r.notesLinked} ${r.notesLinked === 1 ? "note" : "notes"} linked.`,
+      });
+    } catch (err) {
+      setBookUpload({ busy: false, message: "", error: err.message });
+    }
+  }
+
+  async function togglePassage(ref) {
+    if (passages[ref.chunkId]) {
+      setPassages((p) => {
+        const next = { ...p };
+        delete next[ref.chunkId];
+        return next;
+      });
+      return;
+    }
+    setPassages((p) => ({ ...p, [ref.chunkId]: "loading" }));
+    try {
+      const { chunk } = await api.getTextbookPassage(ref.textbookId, ref.chunkId);
+      setPassages((p) => ({ ...p, [ref.chunkId]: chunk }));
+    } catch (err) {
+      setPassages((p) => ({ ...p, [ref.chunkId]: { error: err.message } }));
+    }
+  }
+
+  // Newest first, but the sections of one split document stay in their
+  // original reading order.
   const sorted = useMemo(
-    () => [...(notes || [])].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)),
+    () =>
+      [...(notes || [])].sort((a, b) => {
+        if (a.sourceFile && a.sourceFile === b.sourceFile && typeof a.sectionIndex === "number" && typeof b.sectionIndex === "number") {
+          return a.sectionIndex - b.sectionIndex;
+        }
+        return new Date(b.createdAt) - new Date(a.createdAt);
+      }),
     [notes]
   );
   const selectedId = params.get("note");
@@ -215,8 +273,46 @@ export default function SubjectWorkspace() {
             })}
           </div>
 
+          <div className="mt-space-lg p-space-md rounded-xl bg-surface-container-low flex flex-col gap-space-sm">
+            <span className="font-label-sm text-label-sm uppercase tracking-widest text-on-surface-variant">Reference Textbooks</span>
+            {textbooks.length === 0 && (
+              <p className="font-body-sm text-body-sm text-on-surface-variant">
+                Add a textbook and each note links to the pages that cover the same topic.
+              </p>
+            )}
+            {textbooks.map((t) => (
+              <div key={t._id} className="flex items-start gap-space-xs">
+                <Icon name="menu_book" className="text-base text-secondary mt-[2px]" />
+                <div className="min-w-0">
+                  <p className="font-ui-body text-ui-body text-on-surface font-medium truncate" title={t.title}>{t.title}</p>
+                  <p className="font-label-sm text-label-sm text-on-surface-variant">
+                    {t.pageCount ? `${t.pageCount} pages · ` : ""}
+                    {t.chunkCount} passages
+                  </p>
+                </div>
+              </div>
+            ))}
+            <label
+              className={`font-ui-body text-ui-body text-secondary hover:text-primary font-medium flex items-center gap-space-2xs ${
+                bookUpload.busy ? "opacity-60 pointer-events-none" : "cursor-pointer"
+              }`}
+            >
+              <Icon name={bookUpload.busy ? "sync" : "upload_file"} className={`text-sm ${bookUpload.busy ? "animate-spin" : ""}`} />
+              <span>{bookUpload.busy ? "Indexing textbook…" : "Add a textbook"}</span>
+              <input
+                type="file"
+                accept=".pdf,.docx,.txt,.md"
+                className="sr-only"
+                onChange={handleTextbookUpload}
+                disabled={bookUpload.busy}
+              />
+            </label>
+            {bookUpload.message && <p className="font-label-md text-label-md text-on-surface-variant">{bookUpload.message}</p>}
+            {bookUpload.error && <p role="alert" className="font-label-md text-label-md text-error">{bookUpload.error}</p>}
+          </div>
+
           {notes && notes.length > 0 && (
-            <div className="mt-space-lg p-space-md rounded-xl bg-surface-container-low flex flex-col gap-space-sm">
+            <div className="p-space-md rounded-xl bg-surface-container-low flex flex-col gap-space-sm">
               <span className="font-label-sm text-label-sm uppercase tracking-widest text-on-surface-variant">Archival Density</span>
               <div className="flex items-baseline gap-space-xs">
                 <span className="font-headline-md text-headline-md font-semibold text-primary">
@@ -246,7 +342,7 @@ export default function SubjectWorkspace() {
                   </div>
                   <div className="flex items-center gap-space-xs">
                     <Icon name="schedule" className="text-sm" />
-                    <span>{readingMinutes(selected.rawText)} min read · {SOURCE_LABEL[selected.sourceType] || selected.sourceType}</span>
+                    <span>{readingMinutes(selected.rawText)} min read · {sourceLabel(selected)}</span>
                   </div>
                 </div>
                 <h2 className="font-display-lg text-display-lg text-on-surface leading-tight tracking-tight">{selected.title}</h2>
@@ -277,6 +373,44 @@ export default function SubjectWorkspace() {
                   </p>
                 ))}
               </section>
+              {selected.textbookRefs?.length > 0 && (
+                <section className="mt-space-xl pt-space-lg border-t border-outline-variant flex flex-col gap-space-sm">
+                  <span className="font-label-md text-label-md uppercase tracking-wider text-on-surface-variant font-bold flex items-center gap-space-xs">
+                    <Icon name="menu_book" className="text-sm text-secondary" />
+                    From your textbook
+                  </span>
+                  {selected.textbookRefs.map((ref) => {
+                    const passage = passages[ref.chunkId];
+                    return (
+                      <div key={ref.chunkId} className="rounded-lg bg-surface-container-low p-space-md flex flex-col gap-space-xs">
+                        <div className="flex items-start justify-between gap-space-sm">
+                          <div className="min-w-0">
+                            <p className="font-ui-body text-ui-body font-semibold text-on-surface">{ref.label || "Passage"}</p>
+                            <p className="font-label-md text-label-md text-on-surface-variant truncate">
+                              {ref.textbookTitle}
+                              {ref.sections?.length ? ` — ${ref.sections.slice(0, 2).join(", ")}` : ""}
+                            </p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => togglePassage(ref)}
+                            className="shrink-0 font-label-md text-label-md text-secondary hover:text-primary font-medium"
+                          >
+                            {passage ? "Hide" : "Read passage"}
+                          </button>
+                        </div>
+                        {passage === "loading" && <p className="font-body-sm text-body-sm text-on-surface-variant">Loading…</p>}
+                        {passage?.error && <p className="font-body-sm text-body-sm text-error">{passage.error}</p>}
+                        {passage?.text && (
+                          <p className="font-body-sm text-body-sm text-on-surface whitespace-pre-line max-h-80 overflow-y-auto pr-space-xs">
+                            {passage.text}
+                          </p>
+                        )}
+                      </div>
+                    );
+                  })}
+                </section>
+              )}
             </article>
           ) : (
             notes && (

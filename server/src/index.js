@@ -9,6 +9,7 @@ import subjectRoutes from "./routes/subjects.js";
 import noteRoutes from "./routes/notes.js";
 import testRoutes from "./routes/tests.js";
 import attemptRoutes from "./routes/attempts.js";
+import textbookRoutes from "./routes/textbooks.js";
 
 assertAuthConfig();
 
@@ -88,6 +89,7 @@ app.use("/api/subjects", noteRoutes);
 app.use("/api", testRoutes);
 // attempts routes cover both /api/tests/:id/attempts and /api/attempts/:id/...
 app.use("/api", attemptRoutes);
+app.use("/api", textbookRoutes);
 
 app.use((err, req, res, next) => {
   console.error(err);

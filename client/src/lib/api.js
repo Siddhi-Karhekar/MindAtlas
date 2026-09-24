@@ -48,6 +48,15 @@ export const api = {
 
   getGraph: (subjectId) => request(`/subjects/${subjectId}/graph`),
 
+  listTextbooks: (subjectId) => request(`/subjects/${subjectId}/textbooks`),
+  uploadTextbook: (subjectId, file, title) => {
+    const form = new FormData();
+    form.append("file", file);
+    if (title) form.append("title", title);
+    return request(`/subjects/${subjectId}/textbooks`, { method: "POST", body: form, isForm: true });
+  },
+  getTextbookPassage: (textbookId, chunkId) => request(`/textbooks/${textbookId}/chunks/${chunkId}`),
+
   listTests: (subjectId) => request(`/subjects/${subjectId}/tests`),
   createTest: (subjectId, { title, noteIds, mcqCount, theoryCount, marksPerQuestion, durationMinutes }) =>
     request(`/subjects/${subjectId}/tests`, {

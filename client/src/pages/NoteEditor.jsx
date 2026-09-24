@@ -120,7 +120,8 @@ export default function NoteEditor() {
       try {
         const r = await api.uploadNoteImage(subjectId, item.file, single ? title.trim() : "");
         edges += r.edgesCreated || 0;
-        added += 1;
+        // a long document with headings comes back split into one note per section
+        added += r.notes?.length || 1;
         lastId = r.note._id;
         setStatus(item.id, { status: "done", noteId: r.note._id });
       } catch (err) {
@@ -353,7 +354,8 @@ export default function NoteEditor() {
                 </ul>
               )}
               <p className="font-label-md text-label-md text-on-surface-variant">
-                Scanned PDFs have no readable text — upload those as photos instead so they go through OCR.
+                Long documents with numbered headings (like a whole unit's notes) are split into one note per
+                section. Scanned PDFs have no readable text — upload those as photos instead so they go through OCR.
               </p>
             </div>
           )}

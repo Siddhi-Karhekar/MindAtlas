@@ -26,6 +26,17 @@ Team roles and branch conventions are in [`CONTRIBUTING.md`](CONTRIBUTING.md).
 - Email/password auth (bcrypt + JWT), subjects, and notes from four input
   paths: typed text, an uploaded image (read with Tesseract OCR), a PDF, or
   a Word (.docx) file — all four wired end to end, backend and upload UI.
+- **Long documents are split into topic notes.** A PDF / .docx / .md with
+  numbered capital headings ("3. COMPONENTS OF SYSTEM SOFTWARE") or markdown
+  headings becomes one note per top-level section, since each note is one
+  topic to the graph, the test generator and mastery tracking
+  (`services/sectionSplitter.js`; send `split=false` to keep one note).
+- **Reference textbooks** (`POST /api/subjects/:id/textbooks`, up to 50 MB):
+  a book is chunked into page-range passages labelled by chapter and printed
+  page ("Assemblers · pp. 87–88", read from running page headers), indexed
+  with TF-IDF, and every note is linked to its best-matching passages - shown
+  as "From your textbook" on the note. Textbooks never become notes
+  (`services/textbook.js`, `routes/textbooks.js`).
 - Every new note gets a TF-IDF vector and top keywords; cosine similarity
   against the other notes in the *same* subject creates weighted graph edges
   (threshold 0.12), rendered with Cytoscape.js. Cross-subject linking with

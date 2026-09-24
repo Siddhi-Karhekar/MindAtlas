@@ -33,7 +33,7 @@ export function titleFromFilename(name = "") {
   return (i > 0 ? base.slice(0, i) : base).replace(/[_]+/g, " ").trim();
 }
 
-function tidy(text) {
+export function tidy(text) {
   return String(text || "")
     .replace(/\r\n?/g, "\n")
     .replace(/[ \t]+\n/g, "\n")
@@ -54,61 +54,92 @@ export async function extractTextFromDocument(file, kind) {
     }
   }
   if (kind === "pdf") {
-    let pdf;
-    try {
-      pdf = await getDocument({
-        data: new Uint8Array(file.buffer),
-        useSystemFonts: true,
-        isEvalSupported: false,
-        verbosity: 0,
-      }).promise;
-      const pages = [];
-      for (let n = 1; n <= pdf.numPages; n++) {
-        const page = await pdf.getPage(n);
-        const content = await page.getTextContent();
-        // Rebuild lines from the positioned text runs (a change of vertical
-        // position starts a new line), then join lines back into paragraphs:
-        // an unusually large vertical gap is a paragraph break, anything else
-        // is just a wrapped line and is joined with a space.
-        const lines = [];
-        let text = "";
-        let y = null;
-        const flush = () => {
-          if (text.trim()) lines.push({ text: text.trim(), y });
-          text = "";
-        };
-        for (const item of content.items) {
-          if (!("str" in item)) continue;
-          const iy = item.transform?.[5];
-          if (y !== null && iy !== undefined && Math.abs(iy - y) > 2) flush();
-          if (iy !== undefined) y = iy;
-          text += item.str;
-          if (item.hasEOL) flush();
-        }
-        flush();
-        const gaps = [];
-        for (let i = 1; i < lines.length; i++) gaps.push(Math.abs(lines[i - 1].y - lines[i].y));
-        const typical = gaps.length ? [...gaps].sort((a, b) => a - b)[Math.floor(gaps.length / 2)] : 0;
-        let out = "";
-        lines.forEach((l, i) => {
-          if (i === 0) out = l.text;
-          else {
-            const gap = Math.abs(lines[i - 1].y - l.y);
-            if (typical && gap > typical * 1.5) out += "\n\n" + l.text;
-            else if (out.endsWith("-") && /^[a-z]/.test(l.text)) out = out.slice(0, -1) + l.text;
-            else out += " " + l.text;
-          }
-        });
-        pages.push(out);
-        page.cleanup();
-      }
-      return { text: tidy(pages.join("\n\n")) };
-    } catch (err) {
-      console.error("[pdf] extraction failed:", err.message);
-      throw new Error("could not read this PDF - it may be damaged or password-protected");
-    } finally {
-      if (pdf) await pdf.destroy().catch(() => {});
-    }
+    const pages = await extractPdfPages(file.buffer);
+    return { text: tidy(pages.map((p) => joinLines(p.lines)).join("\n\n")) };
   }
   throw new Error("unsupported file type");
+}
+
+/**
+ * Read a PDF page by page. Each page is a list of { text, y } lines rebuilt
+ * from pdf.js's positioned text runs (a change of vertical position starts a
+ * new line). Keeping lines - rather than one blob of text - is what lets the
+ * section splitter find headings and the textbook chunker find running page
+ * headers. Throws a student-safe Error for damaged / locked files.
+ */
+export async function extractPdfPages(buffer) {
+  let pdf;
+  try {
+    pdf = await getDocument({
+      data: new Uint8Array(buffer),
+      useSystemFonts: true,
+      isEvalSupported: false,
+      verbosity: 0,
+    }).promise;
+    const pages = [];
+    for (let n = 1; n <= pdf.numPages; n++) {
+      const page = await pdf.getPage(n);
+      const content = await page.getTextContent();
+      const lines = [];
+      let text = "";
+      let y = null;
+      const flush = () => {
+        if (text.trim()) lines.push({ text: text.trim(), y });
+        text = "";
+      };
+      for (const item of content.items) {
+        if (!("str" in item)) continue;
+        const iy = item.transform?.[5];
+        if (y !== null && iy !== undefined && Math.abs(iy - y) > 2) flush();
+        if (iy !== undefined) y = iy;
+        text += item.str;
+        if (item.hasEOL) flush();
+      }
+      flush();
+      pages.push({ pageNumber: n, lines });
+      page.cleanup();
+    }
+    return pages;
+  } catch (err) {
+    console.error("[pdf] extraction failed:", err.message);
+    throw new Error("could not read this PDF - it may be damaged or password-protected");
+  } finally {
+    if (pdf) await pdf.destroy().catch(() => {});
+  }
+}
+
+/**
+ * Join a page's lines back into paragraphs: an unusually large vertical gap
+ * is a paragraph break, anything else is just a wrapped line and is joined
+ * with a space (re-joining words hyphenated across a line break).
+ */
+export function joinLines(lines) {
+  const gaps = [];
+  for (let i = 1; i < lines.length; i++) gaps.push(Math.abs(lines[i - 1].y - lines[i].y));
+  const typical = gaps.length ? [...gaps].sort((a, b) => a - b)[Math.floor(gaps.length / 2)] : 0;
+  let out = "";
+  lines.forEach((l, i) => {
+    if (i === 0) out = l.text;
+    else {
+      const gap = Math.abs(lines[i - 1].y - l.y);
+      if (typical && gap > typical * 1.5) out += "\n\n" + l.text;
+      else if (out.endsWith("-") && /^[a-z]/.test(l.text)) out = out.slice(0, -1) + l.text;
+      else out += " " + l.text;
+    }
+  });
+  return out;
+}
+
+/**
+ * Every line of an uploaded document, in reading order, as { text, y } (y is
+ * only meaningful for PDFs). The section splitter works on these so it can
+ * spot headings that paragraph-joining would otherwise glue onto body text.
+ */
+export async function extractDocumentLines(file, kind) {
+  if (kind === "pdf") {
+    const pages = await extractPdfPages(file.buffer);
+    return pages.flatMap((p) => p.lines);
+  }
+  const { text } = await extractTextFromDocument(file, kind);
+  return text.split("\n").map((t) => ({ text: t.trim(), y: null }));
 }
