@@ -119,6 +119,78 @@ What's missing (post-Saturday backlog, not this week):
 **Owns:** `server/src/services/tfidf.js`, `server/src/services/graphEngine.js`,
 the `/api/subjects/:id/graph` route, `client/src/pages/KnowledgeGraph.jsx`.
 
+> **Status: Member 2's prototype work is done** (24–25 Sep 2026, merged to
+> `main` in PRs #1, #2 and #3). This box is the quick reference for the rest
+> of the team; the per-item "Status" notes further down have the details.
+>
+> **What was built**
+> 1. **Cross-subject linking with disambiguation** (PR #1). A new note is
+>    compared with all of the student's notes, not only its own subject's.
+>    Same-subject rule unchanged (similarity ≥ 0.12). Across subjects a link
+>    needs **at least 2 shared top keywords and similarity ≥ 0.25**. One
+>    shared keyword (as first planned below) was not enough: it linked
+>    Biology "Cell structure" to Chemistry "Electrochemical cells" through
+>    the word "cell". Pairs that share a keyword but fail the rule are saved
+>    as `rejected` and shown on the graph page as "Considered, not linked".
+> 2. **Clustering** (PR #1). Connected notes form a cluster (connected
+>    components, a stand-in for Louvain), computed fresh on every graph
+>    request. The graph page has a "Colour by: Links | Clusters" switch
+>    (default Links); the 3 largest clusters get a colour, the rest are grey,
+>    and every node shows its cluster number (C1, C2…).
+> 3. **Remove a wrong link** (PR #2). Students can remove a link from the
+>    graph page, with Undo and a "Removed by you" list to restore it. The
+>    link is flagged, never deleted, and adding new notes never brings it
+>    back. Removed links stop counting everywhere (graph, clusters, Home and
+>    subject-page counts).
+> 4. **Per-note keyword map** (PR #3, ported from the Digital Second Brain
+>    prototype). A "Keyword map" button shows a note's keywords (bigger =
+>    more important); opening a keyword shows the words it appears with, the
+>    sentences that use it, and other notes in the subject that share it.
+>
+> All four are rule-based and need no API key.
+>
+> **Changes other members should know about**
+> - **New API routes** (new file `server/src/routes/graph.js`, one
+>   `app.use` line in `server/src/index.js`):
+>   `POST /api/graph/edges/:id/correct` with `{ action: "remove" | "restore" }`,
+>   and `GET /api/graph/notes/:noteId/keyword-map`.
+> - **`GET /api/subjects/:id/graph`**: `nodes` and `edges` mean what they
+>   always did (this subject's notes and the links between them), so Home,
+>   the subject page and the note editor are unchanged. `edges` never
+>   includes removed links. Added fields: `edgeType` on each edge,
+>   `clusterId` on each node, and `clusters`, `crossSubjectEdges`,
+>   `rejectedEdges`, `externalNodes`, `removedEdges`.
+> - **`POST /api/subjects/:id/notes`** (Member 1's route): `edgesCreated`
+>   still counts same-subject links only; `crossSubjectEdgesCreated` was
+>   added. The route now passes all of the student's notes to
+>   `updateGraphForNote(note, ownerNotes)`. Please keep that call if you
+>   edit the route, or cross-subject linking stops working.
+> - **`models/Note.js`** (Member 1): new `findNotesByOwner(ownerId)`;
+>   nothing existing changed.
+> - **`graph_edges` collection**: new fields `edgeType`, `sourceSubjectId`,
+>   `targetSubjectId`, `correction`, `correctedAt`. Cross-subject and
+>   rejected edges have `subjectId: null`. All ids are plain strings.
+> - **Client shared files**: `lib/api.js` gained `correctEdge` and
+>   `getKeywordMap`; `index.css` gained three colour variables,
+>   `--c-cluster-1..3`. Nothing existing changed.
+> - **Tests** (all run by `npm test` in `server/`): new
+>   `graphEngine.test.mjs`, `graphRoutes.test.mjs` and `keywordMap.test.mjs`,
+>   plus new cases in `mongoStore.test.mjs`. `graphRoutes.test.mjs` starts
+>   the real API on **port 4598**, so CI must leave that port free (Member 4).
+> - **If note edit/delete is added later** (Member 1): links are only
+>   worked out when a note is created, so an edited or deleted note's links
+>   will need recomputing or cleaning up.
+>
+> **Known limits and still open (post-Saturday)**
+> - Linking thresholds were tuned on sample notes, not real student notes.
+> - Notes that were already in a real MongoDB database before PR #1 do not
+>   get cross-subject links (the in-memory dev database is unaffected).
+> - The keyword map is only as good as the stored keywords, which sometimes
+>   include weak words like "holds" or "enters"; TextRank keywords would help.
+> - Backlog unchanged: MiniLM sentence embeddings, real Louvain/Leiden
+>   clustering, and feeding students' link corrections back into the
+>   linking rule.
+
 What's already there: TF-IDF keyword extraction + cosine-similarity
 edge creation within a subject — this is deliberately a stand-in for
 Diagram 2's "dual extraction" step (see the code comments in
