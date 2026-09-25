@@ -36,6 +36,9 @@ Team roles and branch conventions are in [`CONTRIBUTING.md`](CONTRIBUTING.md).
   that shares a keyword but fails that rule is stored as `rejected` and shown
   on the graph page under "Considered, not linked", so the disambiguation is
   visible. Other subjects' linked notes appear as faded nodes.
+- A student can remove a link they think is wrong (and undo or restore it
+  later) from the graph page; a removed link stays removed even as new notes
+  are added, and no longer counts anywhere.
 - Notes linked directly or through a chain of links form a cluster
   (connected components - a stand-in for Louvain community detection). The
   graph page can colour notes by cluster, labelled with shared keywords.
@@ -173,8 +176,9 @@ a case to `server/test/mongoStore.test.mjs`.
 3. **Better graph, phase 2** - real sentence embeddings in place of TF-IDF
    vectors (a contained change to `services/tfidf.js`) and true Louvain/Leiden
    community detection in place of this week's connected-components stand-in,
-   plus a graph-edge correction loop. Rule-based cross-subject disambiguation
-   is already in (see "What works today").
+   plus feeding students' link corrections back into the linking rule.
+   Rule-based cross-subject disambiguation, clustering and removing a wrong
+   link are already in (see "What works today").
 4. **Test timer** - `durationMinutes` is stored and shown but not yet
    enforced with a countdown in the attempt screen.
 5. **Quality upgrades from the report** - distractor gating for the LLM path,
