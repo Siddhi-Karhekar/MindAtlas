@@ -1,8 +1,8 @@
 import { Router } from "express";
-import multer from "multer";
 import { findOwnedSubject } from "../models/Subject.js";
 import { createNote, findNotesByOwner, findNotesBySubject } from "../models/Note.js";
 import { requireAuth } from "../middleware/auth.js";
+import { uploadSingle } from "../middleware/upload.js";
 import { extractTextFromImage } from "../services/ocr.js";
 import { classifyUpload, extractTextFromDocument, titleFromFilename } from "../services/documentText.js";
 import { computeTfidf } from "../services/tfidf.js";
@@ -11,13 +11,11 @@ import { updateGraphForNote } from "../services/graphEngine.js";
 const router = Router();
 router.use(requireAuth);
 
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
-
 // POST /api/subjects/:id/notes
 // Accepts either JSON { title, content } for a typed note, or a
 // multipart/form-data upload with a `file` field: an image (read with OCR) or an
 // existing document - PDF, .docx, .txt/.md (text is extracted directly).
-router.post("/:id/notes", upload.single("file"), async (req, res) => {
+router.post("/:id/notes", uploadSingle("file", 10), async (req, res) => {
   const subject = await findOwnedSubject(req.params.id, req.user.id);
   if (!subject) return res.status(404).json({ error: "subject not found" });
 
@@ -38,6 +36,13 @@ router.post("/:id/notes", upload.single("file"), async (req, res) => {
       const { text, ocrFailed: failed } = await extractTextFromImage(req.file.buffer);
       content = text;
       ocrFailed = failed;
+      if (!content) {
+        return res.status(400).json({
+          error: ocrFailed
+            ? "could not read this image - it may be damaged, or text recognition is unavailable right now"
+            : "no readable text found in this image - try a sharper, well-lit photo, or type the note instead",
+        });
+      }
     } else {
       // an existing digital document: pull the text straight out of it
       sourceType = "file";
@@ -48,7 +53,10 @@ router.post("/:id/notes", upload.single("file"), async (req, res) => {
       }
       if (!content) {
         return res.status(400).json({
-          error: "no readable text found in this file (if it is a scanned PDF, upload the pages as images instead)",
+          error:
+            kind === "pdf"
+              ? "no readable text found in this file (if it is a scanned PDF, upload the pages as images instead)"
+              : "no readable text found in this file - it is empty",
         });
       }
     }
