@@ -93,6 +93,25 @@ async function runFlow(makeWrapper, title) {
     { upsert: true }
   );
   check("upserted response gets a string _id", typeof r._id === "string" && /^[0-9a-f]{24}$/.test(r._id), String(r._id));
+
+  // findNotesByOwner -> find({ownerId})  (cross-subject linking's candidate list)
+  const biology = await subjects.insertOne({ ownerId: user._id, name: "Biology", createdAt: new Date() });
+  const n3 = await notes.insertOne({ ownerId: user._id, subjectId: biology._id, title: "Cells", createdAt: new Date() });
+  const byOwner = await notes.find({ ownerId: user._id }, { sort: { createdAt: -1 } });
+  check("findNotesByOwner(ownerId) spans subjects", byOwner.length === 3, `got ${byOwner.length}, expected 3`);
+
+  // upsertEdge for a cross-subject pair: subjectId null, each end's subject
+  // stored as a string, then found from either subject (findCrossSubjectEdges)
+  const edges = col("graph_edges");
+  const e = await edges.findOneAndUpdate(
+    { sourceNoteId: n1._id, targetNoteId: n3._id },
+    { $set: { subjectId: null, sourceSubjectId: subject._id, targetSubjectId: biology._id, edgeType: "cross-subject", weight: 0.4 } },
+    { upsert: true }
+  );
+  check("upserted edge gets a string _id", typeof e._id === "string" && /^[0-9a-f]{24}$/.test(e._id), String(e._id));
+  check("cross-subject edge found by sourceSubjectId", (await edges.find({ sourceSubjectId: subject._id })).length === 1);
+  check("cross-subject edge found by targetSubjectId", (await edges.find({ targetSubjectId: biology._id })).length === 1);
+  check("cross-subject edge stays out of findEdgesBySubject", (await edges.find({ subjectId: subject._id })).length === 0);
   return failures;
 }
 

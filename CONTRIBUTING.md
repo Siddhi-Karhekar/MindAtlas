@@ -149,6 +149,21 @@ post-Saturday backlog, item 1 below):
    - Tag every edge with `edgeType: "same-subject"` or `"cross-subject"` in
      `models/GraphEdge.js` so the graph UI and any writeup can show the
      distinction.
+
+   **Status: done** (branch `graph/cross-subject-disambiguation`), with one
+   change to the rule above: a cross-subject edge needs **two** shared
+   keywords, not one. Tested on real notes, the one-keyword version still
+   linked Biology "Cell structure" to Chemistry "Electrochemical cells"
+   (similarity 0.252, sharing only "cell") - one word repeated often enough
+   in both notes lifts the similarity past 0.25 on its own. A `rejected` edge
+   is stored only when the pair would have passed the same-subject threshold
+   (0.12), so the list shows genuinely ambiguous pairs rather than every
+   coincidental shared word. The graph API keeps `nodes`/`edges` meaning
+   same-subject only (Home, the subject page and the note editor read them)
+   and adds `crossSubjectEdges`, `rejectedEdges` and `externalNodes`; note
+   creation's `edgesCreated` also stays same-subject, with
+   `crossSubjectEdgesCreated` alongside it. Tests:
+   `server/test/graphEngine.test.mjs` (part of `npm test`).
 2. **Lightweight clustering as a Louvain stand-in.** Full community
    detection is post-Saturday backlog (item 3 below); for the prototype, a
    plain connected-components pass over each subject's notes+edges (BFS or
@@ -159,6 +174,20 @@ post-Saturday backlog, item 1 below):
    cluster — nice for the demo, but treat the coloring itself as optional
    if time runs short; the clustering data being correct matters more than
    the visual.
+
+   **Status: done** (same branch). `clusterNotes()` in `graphEngine.js` is a
+   union-find pass over the subject's same-subject edges, computed on every
+   graph request rather than stored, so clusters never go stale. Each node
+   gets a `clusterId`, and the response adds `clusters: [{ id, size,
+   keywords }]` - numbered from 1 largest-first, so the same notes always get
+   the same numbers; `keywords` are up to three shared by 2+ of its notes.
+   Cross-subject links do not merge clusters (a cluster is a group within one
+   subject). The graph page has a "Colour by: Links | Clusters" switch
+   (default Links, so nothing changes until it is used). Only the three
+   largest clusters get their own colour - the most that stay
+   colour-blind-distinguishable when any two can sit side by side - and the
+   rest share an "Other clusters" grey; every node also shows its cluster
+   number (C1, C2...) so colour is never the only cue.
 
 Post-Saturday backlog (do not start before the two items above are done and
 tested):
