@@ -39,6 +39,10 @@ Team roles and branch conventions are in [`CONTRIBUTING.md`](CONTRIBUTING.md).
 - A student can remove a link they think is wrong (and undo or restore it
   later) from the graph page; a removed link stays removed even as new notes
   are added, and no longer counts anywhere.
+- Each note has a keyword map: the note in the middle, its keywords around
+  it (bigger = more important to the note); opening a keyword shows the
+  words it appears with, the sentences that use it, and the other notes in
+  the subject that share it.
 - Notes linked directly or through a chain of links form a cluster
   (connected components - a stand-in for Louvain community detection). The
   graph page can colour notes by cluster, labelled with shared keywords.

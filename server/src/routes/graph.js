@@ -2,6 +2,7 @@ import { Router } from "express";
 import { requireAuth } from "../middleware/auth.js";
 import { findEdgeById, isRemoved, setEdgeCorrection, toApiEdge } from "../models/GraphEdge.js";
 import { findNotesByIds } from "../models/Note.js";
+import { buildKeywordMap } from "../services/keywordMap.js";
 
 const router = Router();
 router.use(requireAuth);
@@ -31,6 +32,20 @@ router.post("/edges/:id/correct", async (req, res) => {
 
   const updated = await setEdgeCorrection(edge._id, action === "remove" ? "removed" : null);
   res.json({ edge: { ...toApiEdge(updated), removed: isRemoved(updated) } });
+});
+
+// GET /api/graph/notes/:noteId/keyword-map
+// One note's keywords, the words each appears with, and the sentences it is
+// used in - see services/keywordMap.js.
+router.get("/notes/:noteId/keyword-map", async (req, res) => {
+  const [note] = await findNotesByIds([req.params.noteId]);
+  if (!note || String(note.ownerId) !== String(req.user.id)) {
+    return res.status(404).json({ error: "note not found" });
+  }
+  res.json({
+    note: { id: note._id, title: note.title, subjectId: note.subjectId },
+    keywords: buildKeywordMap(note),
+  });
 });
 
 export default router;

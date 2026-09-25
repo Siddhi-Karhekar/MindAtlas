@@ -104,6 +104,19 @@ try {
     gb.externalNodes.some((n) => String(n.id) === farEnd));
   await correct(crossLink.id, "restore", alice);
   check("restore brings it back", (await graph(bio)).crossSubjectEdges.some((e) => e.id === crossLink.id));
+
+  console.log("\n=== Keyword map ===");
+  const mapOf = (noteId, token) => call(`/graph/notes/${noteId}/keyword-map`, { token });
+  check("needs a signed-in user", (await mapOf(cellStructure)).status === 401);
+  check("another student's note -> 404", (await mapOf(cellStructure, bob)).status === 404);
+  check("unknown note -> 404", (await mapOf("0".repeat(24), alice)).status === 404);
+  const m = await mapOf(cellStructure, alice);
+  const cellEntry = m.data.keywords?.find((k) => k.keyword === "cell");
+  check("returns the note and its keywords", m.status === 200 && m.data.note?.title === "Cell structure" && m.data.keywords.length > 0,
+    `${m.data.keywords?.length} keywords`);
+  check("each keyword has a weight, related words and sentences",
+    m.data.keywords.every((k) => typeof k.weight === "number" && Array.isArray(k.subKeywords) && Array.isArray(k.sentences))
+    && cellEntry?.sentences.length > 0);
 } catch (err) {
   console.error("FAILED:", err.message);
   failures++;

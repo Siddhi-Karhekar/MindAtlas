@@ -215,6 +215,16 @@ tested):
    (edges have no owner field); someone else's link is a 404. Still open:
    feeding corrections back into the linking rule itself.
 
+**Also built (ported from the Digital Second Brain prototype):** a per-note
+keyword map, `GET /api/graph/notes/:noteId/keyword-map`
+(`services/keywordMap.js`, rule-based). For each of a note's stored top
+keywords it returns a weight (its TF-IDF weight relative to the note's
+strongest keyword), up to five words it appears alongside (never another top
+keyword or its own plural), and up to three sentences that use it, plus the
+total count. The graph page opens it from a note's "Keyword map" button.
+Its quality is only as good as the stored keywords, so TextRank keywords
+(README "What's next") would improve it directly.
+
 ### Member 3 — Test generation & feedback
 **Owns:** `server/src/routes/tests.js`, `server/src/routes/attempts.js`,
 `server/src/services/testEngine.js`, `adaptiveEngine.js`, `gradingEngine.js`,
