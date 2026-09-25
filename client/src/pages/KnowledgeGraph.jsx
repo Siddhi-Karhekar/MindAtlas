@@ -93,10 +93,28 @@ function linksOf(edges, id) {
     .filter((e) => String(e.source) === id || String(e.target) === id)
     .map((e) => ({
       id: String(e.source) === id ? String(e.target) : String(e.source),
+      edgeId: e.id,
       weight: e.weight,
       shared: e.sharedKeywords || [],
     }))
     .sort((a, b) => b.weight - a.weight);
+}
+
+// Small "this link is wrong" button shown beside a linked note.
+function UnlinkButton({ title, busy, onClick }) {
+  return (
+    <button
+      type="button"
+      data-testid="unlink-button"
+      onClick={onClick}
+      disabled={busy}
+      title={`Not related? Remove the link to ${title}`}
+      aria-label={`Remove the link to ${title}`}
+      className="w-7 h-7 shrink-0 flex items-center justify-center rounded-lg text-outline hover:text-error hover:bg-error-container/40 disabled:opacity-40 transition-colors"
+    >
+      <Icon name="link_off" className="text-sm" />
+    </button>
+  );
 }
 
 // How many clusters get their own colour (--c-cluster-1..3 in index.css). The
@@ -132,12 +150,19 @@ export default function KnowledgeGraph() {
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("all");
   const [colorBy, setColorBy] = useState("links");
+  const [pending, setPending] = useState(null); // id of the link being corrected
+  const [notice, setNotice] = useState(null); // { text, undoEdgeId?, label?, error? }
   const [pos, setPos] = useState(new Map());
   const [view, setView] = useState({ x: 0, y: 0, k: 1 });
   const viewportRef = useRef(null);
   const dragRef = useRef(null);
   const viewRef = useRef(view);
   viewRef.current = view;
+  // Which subject is on screen now, for answers that arrive after navigating away.
+  const subjectRef = useRef(subjectId);
+  useEffect(() => {
+    subjectRef.current = subjectId;
+  }, [subjectId]);
 
   useEffect(() => {
     Promise.all([api.getGraph(subjectId), api.listNotes(subjectId)])
@@ -165,6 +190,9 @@ export default function KnowledgeGraph() {
   // are listed in the inspector instead.
   const crossEdges = useMemo(() => graph?.crossSubjectEdges || [], [graph]);
   const rejectedEdges = useMemo(() => graph?.rejectedEdges || [], [graph]);
+  // Links the student marked as wrong; not drawn or counted, only listed so
+  // they can be restored.
+  const removedEdges = useMemo(() => graph?.removedEdges || [], [graph]);
   const externalById = useMemo(() => new Map((graph?.externalNodes || []).map((n) => [String(n.id), n])), [graph]);
   const drawnExternal = useMemo(() => {
     const linked = new Set(crossEdges.flatMap((e) => [String(e.source), String(e.target)]));
@@ -178,14 +206,51 @@ export default function KnowledgeGraph() {
   const realClusters = useMemo(() => (graph?.clusters || []).filter((c) => c.size > 1), [graph]);
   const byCluster = colorBy === "clusters" && hasClusters;
 
+  // Lay the graph out when it first loads (or a different subject opens). When
+  // the same graph is refetched - after a link is removed or restored - every
+  // node it can show already has a position, so positions and the selected
+  // note are kept rather than rearranging the page under the student.
   useEffect(() => {
     if (!graph) return;
-    setPos(layout([...graph.nodes, ...drawnExternal], [...graph.edges, ...crossEdges]));
-    // start on the best-connected note
-    let best = null;
-    for (const [id, dg] of degree) if (best === null || dg > degree.get(best)) best = id;
-    setSelectedId(best);
+    const all = [...graph.nodes, ...drawnExternal];
+    setPos((prev) => (all.every((n) => prev.has(String(n.id))) ? prev : layout(all, [...graph.edges, ...crossEdges])));
+    setSelectedId((prev) => {
+      if (prev && all.some((n) => String(n.id) === prev)) return prev;
+      // start on the best-connected note
+      let best = null;
+      for (const [id, dg] of degree) if (best === null || dg > degree.get(best)) best = id;
+      return best;
+    });
   }, [graph]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Hide the "link removed / restored" notice after a few seconds.
+  useEffect(() => {
+    if (!notice) return undefined;
+    const t = setTimeout(() => setNotice(null), 6000);
+    return () => clearTimeout(t);
+  }, [notice]);
+
+  // Mark a link as wrong ("remove") or undo that ("restore"), then refetch the
+  // graph so counts, clusters and colours all update together.
+  async function correctLink(edgeId, action, label) {
+    const sid = subjectId;
+    setPending(edgeId);
+    try {
+      await api.correctEdge(edgeId, action);
+      const g = await api.getGraph(sid);
+      if (subjectRef.current !== sid) return;
+      setGraph(g);
+      setNotice(
+        action === "remove"
+          ? { text: `Link to “${clip(label, 28)}” removed`, undoEdgeId: edgeId, label }
+          : { text: `Link to “${clip(label, 28)}” restored` }
+      );
+    } catch (err) {
+      setNotice({ text: err.message, error: true });
+    } finally {
+      setPending(null);
+    }
+  }
 
   const fit = useCallback(() => {
     const el = viewportRef.current;
@@ -196,13 +261,16 @@ export default function KnowledgeGraph() {
     setView({ k, x: (width - W * k) / 2, y: (height - H * k) / 2 });
   }, []);
 
+  // Fit on first load and on opening another subject - not on every refetch,
+  // which would undo the student's zoom each time they remove a link.
+  const hasNodes = Boolean(graph?.nodes.length);
   useEffect(() => {
-    if (!graph || graph.nodes.length === 0) return undefined;
+    if (!hasNodes) return undefined;
     fit();
     const ro = new ResizeObserver(() => fit());
     if (viewportRef.current) ro.observe(viewportRef.current);
     return () => ro.disconnect();
-  }, [graph, fit]);
+  }, [hasNodes, subjectId, fit]);
 
   // Wheel zoom around the cursor. Registered natively so preventDefault works.
   useEffect(() => {
@@ -276,6 +344,7 @@ export default function KnowledgeGraph() {
   const neighbours = useMemo(() => linksOf(graph?.edges || [], selectedId), [graph, selectedId]);
   const crossNeighbours = useMemo(() => linksOf(crossEdges, selectedId), [crossEdges, selectedId]);
   const rejectedNeighbours = useMemo(() => linksOf(rejectedEdges, selectedId), [rejectedEdges, selectedId]);
+  const removedNeighbours = useMemo(() => linksOf(removedEdges, selectedId), [removedEdges, selectedId]);
 
   const q = query.trim().toLowerCase();
   const textMatch = (n) =>
@@ -517,6 +586,27 @@ export default function KnowledgeGraph() {
         </div>
       </header>
 
+      {notice && (
+        <div
+          role="status"
+          data-testid="graph-notice"
+          className="absolute top-[4.25rem] left-space-base z-30 flex items-center gap-space-sm px-space-md py-space-xs rounded-full bg-inverse-surface text-inverse-on-surface shadow-lg pointer-events-auto"
+        >
+          <Icon name={notice.error ? "error" : notice.undoEdgeId ? "link_off" : "link"} className="text-sm" />
+          <span className="font-ui-body text-ui-body">{notice.text}</span>
+          {notice.undoEdgeId && (
+            <button
+              type="button"
+              disabled={pending === notice.undoEdgeId}
+              onClick={() => correctLink(notice.undoEdgeId, "restore", notice.label)}
+              className="font-label-md text-label-md font-semibold text-inverse-primary hover:underline disabled:opacity-40"
+            >
+              Undo
+            </button>
+          )}
+        </div>
+      )}
+
       <div
         data-testid="graph-legend"
         className="absolute bottom-space-base left-space-base right-[23.5rem] z-30 w-fit flex items-center gap-x-space-md gap-y-space-xs p-space-xs px-space-md bg-surface/90 backdrop-blur-md rounded-xl shadow-md pointer-events-auto flex-wrap"
@@ -672,16 +762,18 @@ export default function KnowledgeGraph() {
                       const node = nodeById.get(nb.id);
                       if (!node) return null;
                       return (
-                        <button
-                          type="button"
-                          key={nb.id}
-                          onClick={() => setSelectedId(nb.id)}
-                          title={nb.shared.length ? `Shared: ${nb.shared.join(", ")}` : undefined}
-                          className="flex items-center gap-1.5 px-space-sm py-1 rounded-lg bg-surface-container hover:bg-surface-container-high transition-colors text-on-surface font-ui-body text-ui-body"
-                        >
-                          <span className={`w-2 h-2 rounded-full ${tone(degree.get(nb.id) || 0).dot}`}></span>
-                          <span>{clip(node.title, 24)}</span>
-                        </button>
+                        <div key={nb.id} className="flex items-center rounded-lg bg-surface-container">
+                          <button
+                            type="button"
+                            onClick={() => setSelectedId(nb.id)}
+                            title={nb.shared.length ? `Shared: ${nb.shared.join(", ")}` : undefined}
+                            className="flex items-center gap-1.5 pl-space-sm pr-space-2xs py-1 rounded-l-lg hover:bg-surface-container-high transition-colors text-on-surface font-ui-body text-ui-body"
+                          >
+                            <span className={`w-2 h-2 rounded-full ${tone(degree.get(nb.id) || 0).dot}`}></span>
+                            <span>{clip(node.title, 24)}</span>
+                          </button>
+                          <UnlinkButton title={node.title} busy={pending === nb.edgeId} onClick={() => correctLink(nb.edgeId, "remove", node.title)} />
+                        </div>
                       );
                     })}
                   </div>
@@ -698,16 +790,20 @@ export default function KnowledgeGraph() {
                       const ext = externalById.get(nb.id);
                       if (!ext) return null;
                       return (
-                        <button
-                          type="button"
-                          key={nb.id}
-                          onClick={() => setSelectedId(nb.id)}
-                          className="flex flex-col items-start gap-0.5 px-space-sm py-space-xs rounded-lg bg-surface-container hover:bg-surface-container-high transition-colors text-left"
-                        >
-                          <span className="font-label-sm text-label-sm text-tertiary uppercase tracking-wider">{ext.subjectName}</span>
-                          <span className="font-ui-body text-ui-body text-on-surface">{clip(ext.title, 34)}</span>
-                          <span className="font-body-sm text-body-sm text-on-surface-variant">Shares {nb.shared.join(", ")}</span>
-                        </button>
+                        <div key={nb.id} className="flex items-start rounded-lg bg-surface-container">
+                          <button
+                            type="button"
+                            onClick={() => setSelectedId(nb.id)}
+                            className="flex-1 min-w-0 flex flex-col items-start gap-0.5 px-space-sm py-space-xs rounded-l-lg hover:bg-surface-container-high transition-colors text-left"
+                          >
+                            <span className="font-label-sm text-label-sm text-tertiary uppercase tracking-wider">{ext.subjectName}</span>
+                            <span className="font-ui-body text-ui-body text-on-surface">{clip(ext.title, 34)}</span>
+                            <span className="font-body-sm text-body-sm text-on-surface-variant">Shares {nb.shared.join(", ")}</span>
+                          </button>
+                          <div className="p-space-2xs">
+                            <UnlinkButton title={ext.title} busy={pending === nb.edgeId} onClick={() => correctLink(nb.edgeId, "remove", ext.title)} />
+                          </div>
+                        </div>
                       );
                     })}
                   </div>
@@ -732,6 +828,37 @@ export default function KnowledgeGraph() {
                             </span>
                             <span className="font-body-sm text-body-sm text-outline">{rejectReason(nb.shared)}</span>
                           </div>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
+              )}
+
+              {removedNeighbours.length > 0 && (
+                <div className="flex flex-col gap-space-xs pt-space-xs" data-testid="removed-links">
+                  <span className="font-label-sm text-label-sm uppercase tracking-wider text-on-surface-variant">
+                    Removed by you ({removedNeighbours.length})
+                  </span>
+                  <ul className="flex flex-col gap-space-xs mt-space-2xs">
+                    {removedNeighbours.map((nb) => {
+                      const other = nodeById.get(nb.id) || externalById.get(nb.id);
+                      if (!other) return null;
+                      const name = other.subjectName ? `${other.subjectName}: ${other.title}` : other.title;
+                      return (
+                        <li key={nb.edgeId} className="flex items-center gap-space-xs px-space-sm py-space-xs rounded-lg bg-surface-container-low">
+                          <Icon name="link_off" className="text-sm text-outline" />
+                          <span className="flex-1 min-w-0 truncate font-ui-body text-ui-body text-on-surface-variant" title={name}>
+                            {name}
+                          </span>
+                          <button
+                            type="button"
+                            disabled={pending === nb.edgeId}
+                            onClick={() => correctLink(nb.edgeId, "restore", other.title)}
+                            className="font-label-md text-label-md text-secondary font-semibold hover:underline disabled:opacity-40"
+                          >
+                            Restore
+                          </button>
                         </li>
                       );
                     })}
@@ -803,15 +930,19 @@ export default function KnowledgeGraph() {
                       const node = nodeById.get(nb.id);
                       if (!node) return null;
                       return (
-                        <button
-                          type="button"
-                          key={nb.id}
-                          onClick={() => setSelectedId(nb.id)}
-                          className="flex flex-col items-start gap-0.5 px-space-sm py-space-xs rounded-lg bg-surface-container hover:bg-surface-container-high transition-colors text-left"
-                        >
-                          <span className="font-ui-body text-ui-body text-on-surface">{clip(node.title, 34)}</span>
-                          <span className="font-body-sm text-body-sm text-on-surface-variant">Shares {nb.shared.join(", ")}</span>
-                        </button>
+                        <div key={nb.id} className="flex items-start rounded-lg bg-surface-container">
+                          <button
+                            type="button"
+                            onClick={() => setSelectedId(nb.id)}
+                            className="flex-1 min-w-0 flex flex-col items-start gap-0.5 px-space-sm py-space-xs rounded-l-lg hover:bg-surface-container-high transition-colors text-left"
+                          >
+                            <span className="font-ui-body text-ui-body text-on-surface">{clip(node.title, 34)}</span>
+                            <span className="font-body-sm text-body-sm text-on-surface-variant">Shares {nb.shared.join(", ")}</span>
+                          </button>
+                          <div className="p-space-2xs">
+                            <UnlinkButton title={node.title} busy={pending === nb.edgeId} onClick={() => correctLink(nb.edgeId, "remove", node.title)} />
+                          </div>
+                        </div>
                       );
                     })}
                   </div>

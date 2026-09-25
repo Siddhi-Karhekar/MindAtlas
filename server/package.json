@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "node src/index.js",
     "start": "node src/index.js",
-    "test": "node test/mongoStore.test.mjs && node test/masteryEngine.test.mjs && node test/graphEngine.test.mjs"
+    "test": "node test/mongoStore.test.mjs && node test/masteryEngine.test.mjs && node test/graphEngine.test.mjs && node test/graphRoutes.test.mjs"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

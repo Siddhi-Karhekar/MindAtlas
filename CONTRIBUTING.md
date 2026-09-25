@@ -204,6 +204,17 @@ tested):
    and feeds that correction back into the scoring — even a simple
    logistic-regression refit is enough to match the architecture's intent.
 
+   **Status: first half done** (branch `graph/remove-wrong-link`). The route
+   exists: `POST /api/graph/edges/:id/correct` with `{ action: "remove" }`
+   or `{ action: "restore" }`. A removed link is flagged
+   (`correction: "removed"`), never deleted, and the linker never overwrites
+   that flag, so a new note can't bring it back. Removed links drop out of
+   `edges`, the cross-subject lists, clusters and every count, and are
+   listed in the graph response's `removedEdges` so the graph page can offer
+   Undo / Restore. Ownership is checked on the two notes an edge joins
+   (edges have no owner field); someone else's link is a 404. Still open:
+   feeding corrections back into the linking rule itself.
+
 ### Member 3 — Test generation & feedback
 **Owns:** `server/src/routes/tests.js`, `server/src/routes/attempts.js`,
 `server/src/services/testEngine.js`, `adaptiveEngine.js`, `gradingEngine.js`,

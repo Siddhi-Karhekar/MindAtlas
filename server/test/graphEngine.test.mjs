@@ -14,7 +14,7 @@ import {
 } from "../src/services/graphEngine.js";
 import { connectDB, getCollection } from "../src/db/index.js";
 import { createNote, findNotesByOwner } from "../src/models/Note.js";
-import { findCrossSubjectEdges, findEdgesBySubject } from "../src/models/GraphEdge.js";
+import { findCrossSubjectEdges, findEdgesBySubject, setEdgeCorrection } from "../src/models/GraphEdge.js";
 
 let failures = 0;
 const check = (label, cond, detail = "") => {
@@ -170,6 +170,33 @@ const osmosis = (await findNotesByOwner(OWNER)).find((n) => n.title === "Osmosis
 await updateGraphForNote(osmosis, await findNotesByOwner(OWNER));
 const after = (await getCollection("graph_edges").find({})).length;
 check("re-running the linker for a note does not duplicate edges", after === before, `${before} -> ${after}`);
+
+console.log("\n=== Corrections: links the student removes ===");
+const ownerNotes = async () => findNotesByOwner(OWNER);
+const cellPair = (await findEdgesBySubject("bio")).find((e) => hasPair([e], "Cell structure", "Cell division"));
+await setEdgeCorrection(cellPair._id, "removed");
+check("a removed link leaves findEdgesBySubject", !hasPair(await findEdgesBySubject("bio"), "Cell structure", "Cell division"));
+check("  ...but is still stored, for restoring",
+  hasPair(await findEdgesBySubject("bio", { includeRemoved: true }), "Cell structure", "Cell division"));
+// Re-scoring the pair is exactly what brought removed links back in the
+// Second Brain prototype this feature comes from.
+const division = (await ownerNotes()).find((n) => n.title === "Cell division");
+await updateGraphForNote(division, await ownerNotes());
+check("re-running the linker does not bring a removed link back",
+  !hasPair(await findEdgesBySubject("bio"), "Cell structure", "Cell division"));
+const bioNotes = (await ownerNotes()).filter((n) => n.subjectId === "bio");
+const split = clusterNotes(bioNotes, await findEdgesBySubject("bio")).clusterOf;
+check("removing a link splits its cluster", split.get(ids["Cell structure"]) !== split.get(ids["Cell division"]));
+await setEdgeCorrection(cellPair._id, null);
+check("restoring brings the link back", hasPair(await findEdgesBySubject("bio"), "Cell structure", "Cell division"));
+
+const crossLink = (await findCrossSubjectEdges("bio")).find((e) => e.edgeType === "cross-subject");
+await setEdgeCorrection(crossLink._id, "removed");
+const inList = async (subject, opts) => (await findCrossSubjectEdges(subject, opts)).some((e) => e._id === crossLink._id);
+check("a removed cross-subject link leaves both subjects' lists", !(await inList("bio")) && !(await inList("chem")));
+check("  ...but is still stored, for restoring", await inList("bio", { includeRemoved: true }));
+await setEdgeCorrection(crossLink._id, null);
+check("restoring a cross-subject link brings it back to both subjects", (await inList("bio")) && (await inList("chem")));
 
 console.log(failures === 0 ? "\nAll checks passed." : `\n${failures} check(s) FAILED.`);
 process.exit(failures === 0 ? 0 : 1);

@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { createSubject, findSubjectsByOwner, findOwnedSubject } from "../models/Subject.js";
 import { findNotesByIds, findNotesBySubject } from "../models/Note.js";
-import { findCrossSubjectEdges, findEdgesBySubject } from "../models/GraphEdge.js";
+import { findCrossSubjectEdges, findEdgesBySubject, isRemoved, toApiEdge } from "../models/GraphEdge.js";
 import { requireAuth } from "../middleware/auth.js";
 import { clusterNotes } from "../services/graphEngine.js";
 
@@ -28,15 +28,6 @@ export async function loadOwnedSubject(req, res, next) {
   next();
 }
 
-const toEdge = (e) => ({
-  id: e._id,
-  source: e.sourceNoteId,
-  target: e.targetNoteId,
-  weight: e.weight,
-  sharedKeywords: e.sharedKeywords,
-  edgeType: e.edgeType || "same-subject",
-});
-
 // `nodes` and `edges` mean exactly what they always have - this subject's
 // notes and the links between them - because Home, the subject page and the
 // note editor read them too. Everything about other subjects is additive, in
@@ -46,17 +37,23 @@ const toEdge = (e) => ({
 //   externalNodes     - the other subjects' notes those two lists point at
 //   clusters          - groups of linked notes within this subject (each node
 //                       also gets a clusterId); see clusterNotes()
+//   removedEdges      - links the student marked as wrong, same- or cross-
+//                       subject, so the page can offer to restore them
+// Removed links are left out of `edges`, the cross-subject lists, clusters
+// and every count, exactly as if they had never been linked.
 router.get("/:id/graph", loadOwnedSubject, async (req, res) => {
-  const [notes, edges, crossEdges] = await Promise.all([
+  const [notes, allSameEdges, allCrossEdges] = await Promise.all([
     findNotesBySubject(req.subject._id),
-    findEdgesBySubject(req.subject._id),
-    findCrossSubjectEdges(req.subject._id),
+    findEdgesBySubject(req.subject._id, { includeRemoved: true }),
+    findCrossSubjectEdges(req.subject._id, { includeRemoved: true }),
   ]);
+  const edges = allSameEdges.filter((e) => !isRemoved(e));
+  const crossEdges = allCrossEdges.filter((e) => !isRemoved(e));
 
   const ownIds = new Set(notes.map((n) => String(n._id)));
   const externalIds = [
     ...new Set(
-      crossEdges.flatMap((e) => [String(e.sourceNoteId), String(e.targetNoteId)]).filter((id) => !ownIds.has(id))
+      allCrossEdges.flatMap((e) => [String(e.sourceNoteId), String(e.targetNoteId)]).filter((id) => !ownIds.has(id))
     ),
   ];
   const [externalNotes, subjects] = await Promise.all([
@@ -68,7 +65,8 @@ router.get("/:id/graph", loadOwnedSubject, async (req, res) => {
   // before exposing another subject's note.
   const external = externalNotes.filter((n) => String(n.ownerId) === String(req.user.id));
   const known = new Set([...ownIds, ...external.map((n) => String(n._id))]);
-  const usable = crossEdges.filter((e) => known.has(String(e.sourceNoteId)) && known.has(String(e.targetNoteId)));
+  const isKnown = (e) => known.has(String(e.sourceNoteId)) && known.has(String(e.targetNoteId));
+  const usable = crossEdges.filter(isKnown);
   // Same-subject links only: a cluster is a group within this subject.
   const { clusterOf, clusters } = clusterNotes(notes, edges);
 
@@ -82,9 +80,10 @@ router.get("/:id/graph", loadOwnedSubject, async (req, res) => {
       clusterId: clusterOf.get(String(n._id)),
     })),
     clusters,
-    edges: edges.map(toEdge),
-    crossSubjectEdges: usable.filter((e) => e.edgeType === "cross-subject").map(toEdge),
-    rejectedEdges: usable.filter((e) => e.edgeType === "rejected").map(toEdge),
+    edges: edges.map(toApiEdge),
+    crossSubjectEdges: usable.filter((e) => e.edgeType === "cross-subject").map(toApiEdge),
+    rejectedEdges: usable.filter((e) => e.edgeType === "rejected").map(toApiEdge),
+    removedEdges: [...allSameEdges, ...allCrossEdges.filter(isKnown)].filter(isRemoved).map(toApiEdge),
     externalNodes: external.map((n) => ({
       id: n._id,
       title: n.title,
