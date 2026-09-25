@@ -99,6 +99,22 @@ function linksOf(edges, id) {
     .sort((a, b) => b.weight - a.weight);
 }
 
+// How many clusters get their own colour (--c-cluster-1..3 in index.css). The
+// three colours were validated as a set for colour-blind separation in both
+// themes; nodes sit anywhere on the canvas, so every pair of clusters has to
+// stay distinguishable, which a longer palette cannot guarantee. Clusters are
+// numbered largest-first by the server, so the three largest get colours and
+// any others share a neutral "Other clusters" grey.
+const CLUSTER_COLOURS = 3;
+
+// Dot style for a cluster: its colour, grey for "Other clusters", or a hollow
+// ring for a note that is in no cluster (a cluster of one).
+function clusterSwatch(cluster) {
+  if (!cluster || cluster.size < 2) return { className: "border-2 border-outline" };
+  if (cluster.id <= CLUSTER_COLOURS) return { style: { backgroundColor: `var(--c-cluster-${cluster.id})` } };
+  return { className: "bg-outline" };
+}
+
 // Why an ambiguous cross-subject pair was not linked - mirrors classifyPair()
 // in server/src/services/graphEngine.js (two shared keywords AND similarity
 // of at least 0.25 are both required across subjects).
@@ -115,6 +131,7 @@ export default function KnowledgeGraph() {
   const [selectedId, setSelectedId] = useState(null);
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("all");
+  const [colorBy, setColorBy] = useState("links");
   const [pos, setPos] = useState(new Map());
   const [view, setView] = useState({ x: 0, y: 0, k: 1 });
   const viewportRef = useRef(null);
@@ -153,6 +170,13 @@ export default function KnowledgeGraph() {
     const linked = new Set(crossEdges.flatMap((e) => [String(e.source), String(e.target)]));
     return [...externalById.values()].filter((n) => linked.has(String(n.id)));
   }, [crossEdges, externalById]);
+
+  // Groups of linked notes within this subject, from the graph route (absent
+  // on an older server, in which case the Clusters view is not offered).
+  const hasClusters = Array.isArray(graph?.clusters);
+  const clusterById = useMemo(() => new Map((graph?.clusters || []).map((c) => [c.id, c])), [graph]);
+  const realClusters = useMemo(() => (graph?.clusters || []).filter((c) => c.size > 1), [graph]);
+  const byCluster = colorBy === "clusters" && hasClusters;
 
   useEffect(() => {
     if (!graph) return;
@@ -246,6 +270,8 @@ export default function KnowledgeGraph() {
   const selected = selectedId ? nodeById.get(selectedId) : null;
   const selectedNote = selectedId ? noteById.get(selectedId) : null;
   const selectedExternal = selectedId ? externalById.get(selectedId) : null;
+  const selectedCluster = selected ? clusterById.get(selected.clusterId) : null;
+  const selectedSwatch = clusterSwatch(selectedCluster);
 
   const neighbours = useMemo(() => linksOf(graph?.edges || [], selectedId), [graph, selectedId]);
   const crossNeighbours = useMemo(() => linksOf(crossEdges, selectedId), [crossEdges, selectedId]);
@@ -354,6 +380,8 @@ export default function KnowledgeGraph() {
               if (!a || !b) return null;
               const touches = String(e.source) === selectedId || String(e.target) === selectedId;
               const dim = q || filter !== "all" ? !(matchesAny(String(e.source)) && matchesAny(String(e.target))) : false;
+              // Amber marks other subjects, except in the Clusters view, where
+              // colour means cluster only and these go neutral.
               return (
                 <line
                   key={e.id}
@@ -362,7 +390,7 @@ export default function KnowledgeGraph() {
                   y1={a[1]}
                   x2={b[0]}
                   y2={b[1]}
-                  style={{ stroke: "var(--c-tertiary)" }}
+                  style={{ stroke: byCluster ? "var(--c-outline)" : "var(--c-tertiary)" }}
                   strokeWidth={1 + (e.weight || 0.3) * 4}
                   strokeDasharray="1 6"
                   strokeLinecap="round"
@@ -378,6 +406,9 @@ export default function KnowledgeGraph() {
             if (!p) return null;
             const deg = degree.get(id) || 0;
             const t = tone(deg);
+            const cluster = clusterById.get(n.clusterId);
+            const inCluster = cluster?.size > 1;
+            const sw = byCluster ? clusterSwatch(cluster) : { className: t.dot };
             const isSel = id === selectedId;
             const dim = !matches(n);
             return isSel ? (
@@ -395,7 +426,8 @@ export default function KnowledgeGraph() {
                 <div className="flex flex-col text-left">
                   <span className="font-ui-title text-ui-title text-on-surface leading-tight whitespace-nowrap">{clip(n.title, 30)}</span>
                   <span className="font-label-sm text-label-sm text-secondary uppercase tracking-widest">
-                    Selected • {deg} {deg === 1 ? "link" : "links"}
+                    Selected •{" "}
+                    {byCluster ? (inCluster ? `Cluster ${cluster.id}` : "No cluster") : `${deg} ${deg === 1 ? "link" : "links"}`}
                   </span>
                 </div>
               </div>
@@ -408,9 +440,14 @@ export default function KnowledgeGraph() {
                 className="absolute z-10 -translate-x-1/2 -translate-y-1/2 flex items-center gap-space-xs p-space-xs px-space-md rounded-full bg-surface-container shadow-md cursor-pointer hover:scale-105 transition-transform"
                 style={{ left: p[0], top: p[1], opacity: dim ? 0.3 : 1 }}
               >
-                <div className={`w-3.5 h-3.5 rounded-full ${t.dot}`}></div>
+                <div data-testid="graph-node-dot" className={`w-3.5 h-3.5 rounded-full ${sw.className || ""}`} style={sw.style}></div>
                 <span className="font-ui-body text-ui-body text-on-surface whitespace-nowrap">{clip(n.title, 26)}</span>
-                <span className="font-label-sm text-label-sm text-on-surface-variant bg-surface-container-high px-1.5 py-0.5 rounded">{deg}</span>
+                {/* In the Clusters view the badge names the cluster, so identity never rests on colour alone. */}
+                {(!byCluster || inCluster) && (
+                  <span className="font-label-sm text-label-sm text-on-surface-variant bg-surface-container-high px-1.5 py-0.5 rounded">
+                    {byCluster ? `C${cluster.id}` : deg}
+                  </span>
+                )}
               </div>
             );
           })}
@@ -429,12 +466,16 @@ export default function KnowledgeGraph() {
                 title={`${n.subjectName}: ${n.title}`}
                 className={`absolute -translate-x-1/2 -translate-y-1/2 flex flex-col items-start px-space-md py-space-xs rounded-2xl border border-dashed cursor-pointer transition-transform ${
                   isSel
-                    ? "z-20 bg-surface border-tertiary ring-2 ring-tertiary shadow-xl"
+                    ? `z-20 bg-surface ring-2 shadow-xl ${byCluster ? "border-outline ring-outline" : "border-tertiary ring-tertiary"}`
                     : "z-10 bg-surface-container-lowest/80 border-outline shadow-sm hover:scale-105"
                 }`}
                 style={{ left: p[0], top: p[1], opacity: dim ? 0.3 : isSel ? 1 : 0.85 }}
               >
-                <span className="font-label-sm text-label-sm text-tertiary uppercase tracking-widest leading-tight whitespace-nowrap">
+                <span
+                  className={`font-label-sm text-label-sm uppercase tracking-widest leading-tight whitespace-nowrap ${
+                    byCluster ? "text-on-surface-variant" : "text-tertiary"
+                  }`}
+                >
                   {clip(n.subjectName, 24)}
                 </span>
                 <span className="font-ui-body text-ui-body text-on-surface-variant leading-tight whitespace-nowrap">{clip(n.title, 26)}</span>
@@ -476,31 +517,83 @@ export default function KnowledgeGraph() {
         </div>
       </header>
 
-      <div className="absolute bottom-space-base left-space-base z-30 flex items-center gap-space-md p-space-xs px-space-md bg-surface/90 backdrop-blur-md rounded-xl shadow-md pointer-events-auto flex-wrap">
-        <div className="flex items-center gap-space-xs">
-          <span className="w-2.5 h-2.5 rounded-full bg-tertiary"></span>
-          <span className="font-label-sm text-label-sm text-on-surface-variant">Hub (3+ links)</span>
-        </div>
-        <div className="flex items-center gap-space-xs">
-          <span className="w-2.5 h-2.5 rounded-full bg-secondary"></span>
-          <span className="font-label-sm text-label-sm text-on-surface-variant">Linked (1–2)</span>
-        </div>
-        <div className="flex items-center gap-space-xs">
-          <span className="w-2.5 h-2.5 rounded-full bg-primary-container"></span>
-          <span className="font-label-sm text-label-sm text-on-surface-variant">Isolated</span>
-        </div>
+      <div
+        data-testid="graph-legend"
+        className="absolute bottom-space-base left-space-base right-[23.5rem] z-30 w-fit flex items-center gap-x-space-md gap-y-space-xs p-space-xs px-space-md bg-surface/90 backdrop-blur-md rounded-xl shadow-md pointer-events-auto flex-wrap"
+      >
+        {hasClusters && (
+          <>
+            <div className="flex items-center gap-space-2xs" role="group" aria-label="Colour notes by">
+              <span className="font-label-sm text-label-sm text-on-surface-variant mr-space-2xs">Colour by</span>
+              <button type="button" aria-pressed={!byCluster} className={chip(!byCluster)} onClick={() => setColorBy("links")}>
+                Links
+              </button>
+              <button type="button" aria-pressed={byCluster} className={chip(byCluster)} onClick={() => setColorBy("clusters")}>
+                Clusters
+              </button>
+            </div>
+            <div className="h-3 w-px bg-outline-variant/60"></div>
+          </>
+        )}
+        {byCluster ? (
+          <>
+            {realClusters.slice(0, CLUSTER_COLOURS).map((c) => {
+              const sw = clusterSwatch(c);
+              return (
+                <div key={c.id} className="flex items-center gap-space-xs" data-testid="legend-cluster">
+                  <span className={`w-2.5 h-2.5 rounded-full ${sw.className || ""}`} style={sw.style}></span>
+                  <span className="font-label-sm text-label-sm text-on-surface-variant">
+                    C{c.id}
+                    {c.keywords.length ? ` · ${clip(c.keywords.slice(0, 2).join(", "), 24)}` : ""} ({c.size})
+                  </span>
+                </div>
+              );
+            })}
+            {realClusters.length > CLUSTER_COLOURS && (
+              <div className="flex items-center gap-space-xs">
+                <span className="w-2.5 h-2.5 rounded-full bg-outline"></span>
+                <span className="font-label-sm text-label-sm text-on-surface-variant">
+                  Other clusters ({realClusters.length - CLUSTER_COLOURS})
+                </span>
+              </div>
+            )}
+            {graph.clusters.some((c) => c.size === 1) && (
+              <div className="flex items-center gap-space-xs">
+                <span className="w-2.5 h-2.5 rounded-full border-2 border-outline"></span>
+                <span className="font-label-sm text-label-sm text-on-surface-variant">No cluster</span>
+              </div>
+            )}
+          </>
+        ) : (
+          <>
+            <div className="flex items-center gap-space-xs">
+              <span className="w-2.5 h-2.5 rounded-full bg-tertiary"></span>
+              <span className="font-label-sm text-label-sm text-on-surface-variant">Hub (3+ links)</span>
+            </div>
+            <div className="flex items-center gap-space-xs">
+              <span className="w-2.5 h-2.5 rounded-full bg-secondary"></span>
+              <span className="font-label-sm text-label-sm text-on-surface-variant">Linked (1–2)</span>
+            </div>
+            <div className="flex items-center gap-space-xs">
+              <span className="w-2.5 h-2.5 rounded-full bg-primary-container"></span>
+              <span className="font-label-sm text-label-sm text-on-surface-variant">Isolated</span>
+            </div>
+          </>
+        )}
         {drawnExternal.length > 0 && (
           <div className="flex items-center gap-space-xs">
-            <span className="w-2.5 h-2.5 rounded-full border border-dashed border-tertiary"></span>
+            <span className={`w-2.5 h-2.5 rounded-full border border-dashed ${byCluster ? "border-outline" : "border-tertiary"}`}></span>
             <span className="font-label-sm text-label-sm text-on-surface-variant">Other subject</span>
           </div>
         )}
         <div className="h-3 w-px bg-outline-variant/60"></div>
         <span className="font-label-sm text-label-sm text-secondary font-semibold">
           {visibleCount === graph.nodes.length
-            ? `${graph.nodes.length} ${graph.nodes.length === 1 ? "note" : "notes"} · ${graph.edges.length} ${graph.edges.length === 1 ? "connection" : "connections"}${
-                crossEdges.length ? ` · ${crossEdges.length} across subjects` : ""
-              }`
+            ? `${graph.nodes.length} ${graph.nodes.length === 1 ? "note" : "notes"} · ${
+                byCluster
+                  ? `${realClusters.length} ${realClusters.length === 1 ? "cluster" : "clusters"}`
+                  : `${graph.edges.length} ${graph.edges.length === 1 ? "connection" : "connections"}`
+              }${crossEdges.length ? ` · ${crossEdges.length} across subjects` : ""}`
             : `${visibleCount} of ${graph.nodes.length} notes shown`}
         </span>
       </div>
@@ -550,6 +643,24 @@ export default function KnowledgeGraph() {
                   <Icon name="trending_up" className="text-secondary text-sm" />
                 </Ring>
               </div>
+
+              {selectedCluster && (
+                <div className="flex items-center gap-space-sm px-space-md py-space-sm rounded-xl bg-surface-container-low" data-testid="inspector-cluster">
+                  <span className={`w-3 h-3 rounded-full shrink-0 ${selectedSwatch.className || ""}`} style={selectedSwatch.style}></span>
+                  <div className="flex flex-col min-w-0">
+                    <span className="font-ui-body text-ui-body text-on-surface">
+                      {selectedCluster.size > 1 ? `Cluster ${selectedCluster.id} · ${selectedCluster.size} notes` : "Not in a cluster"}
+                    </span>
+                    <span className="font-body-sm text-body-sm text-on-surface-variant">
+                      {selectedCluster.size === 1
+                        ? "No links to other notes in this subject yet"
+                        : selectedCluster.keywords.length
+                          ? `Shared ideas: ${selectedCluster.keywords.join(", ")}`
+                          : "Connected through a chain of related notes"}
+                    </span>
+                  </div>
+                </div>
+              )}
 
               {neighbours.length > 0 && (
                 <div className="flex flex-col gap-space-xs pt-space-xs">

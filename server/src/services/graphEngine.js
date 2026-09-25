@@ -54,6 +54,78 @@ export function classifyPair(a, b) {
 }
 
 /**
+ * Group one subject's notes into clusters: notes linked directly, or through
+ * a chain of links, form one cluster (connected components, via union-find).
+ * A deliberately simple stand-in for Louvain/Leiden community detection,
+ * which stays on the post-prototype backlog - see CONTRIBUTING.md. Pure, and
+ * computed on every graph request rather than stored, so clusters can never
+ * go stale as notes and links are added.
+ *
+ * `edges` are the subject's same-subject edges (sourceNoteId/targetNoteId);
+ * an edge to a note outside `notes` is ignored. Returns:
+ *   clusterOf - Map of noteId -> clusterId
+ *   clusters  - [{ id, size, keywords }], numbered from 1 largest-first (ties:
+ *               the cluster with the oldest note first), so the same notes and
+ *               links always produce the same numbering. A note with no links
+ *               is a cluster of one. `keywords` are up to three keywords shared
+ *               by at least two of the cluster's notes, as a readable label.
+ */
+export function clusterNotes(notes, edges) {
+  const parent = new Map(notes.map((n) => [String(n._id), String(n._id)]));
+  const find = (x) => {
+    while (parent.get(x) !== x) {
+      parent.set(x, parent.get(parent.get(x))); // path halving
+      x = parent.get(x);
+    }
+    return x;
+  };
+  for (const e of edges) {
+    const a = String(e.sourceNoteId);
+    const b = String(e.targetNoteId);
+    if (parent.has(a) && parent.has(b)) parent.set(find(a), find(b));
+  }
+
+  const groups = new Map();
+  for (const n of notes) {
+    const root = find(String(n._id));
+    if (!groups.has(root)) groups.set(root, []);
+    groups.get(root).push(n);
+  }
+
+  const time = (n) => new Date(n.createdAt || 0).getTime();
+  const older = (a, b) => time(a) - time(b) || (String(a._id) < String(b._id) ? -1 : 1);
+  const ordered = [...groups.values()]
+    .map((members) => members.sort(older))
+    .sort((a, b) => b.length - a.length || older(a[0], b[0]));
+
+  const clusterOf = new Map();
+  const clusters = ordered.map((members, i) => {
+    const id = i + 1;
+    for (const n of members) clusterOf.set(String(n._id), id);
+    return { id, size: members.length, keywords: sharedClusterKeywords(members) };
+  });
+  return { clusterOf, clusters };
+}
+
+// Keywords appearing in at least two of a cluster's notes, most widespread
+// first; ties go to the keyword ranked higher within those notes.
+function sharedClusterKeywords(members) {
+  if (members.length < 2) return [];
+  const stats = new Map();
+  for (const n of members) {
+    (n.keywords || []).forEach((k, rank) => {
+      const s = stats.get(k) || { count: 0, rank: 0 };
+      stats.set(k, { count: s.count + 1, rank: s.rank + rank });
+    });
+  }
+  return [...stats.entries()]
+    .filter(([, s]) => s.count >= 2)
+    .sort(([ka, a], [kb, b]) => b.count - a.count || a.rank - b.rank || (ka < kb ? -1 : 1))
+    .slice(0, 3)
+    .map(([k]) => k);
+}
+
+/**
  * Compare a newly-created note against the student's other notes - in its
  * own subject and in every other subject - and persist a graph_edge for each
  * pair classifyPair() keeps. Returns the stored edges, each with its

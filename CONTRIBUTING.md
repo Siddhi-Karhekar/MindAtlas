@@ -175,6 +175,20 @@ post-Saturday backlog, item 1 below):
    if time runs short; the clustering data being correct matters more than
    the visual.
 
+   **Status: done** (same branch). `clusterNotes()` in `graphEngine.js` is a
+   union-find pass over the subject's same-subject edges, computed on every
+   graph request rather than stored, so clusters never go stale. Each node
+   gets a `clusterId`, and the response adds `clusters: [{ id, size,
+   keywords }]` - numbered from 1 largest-first, so the same notes always get
+   the same numbers; `keywords` are up to three shared by 2+ of its notes.
+   Cross-subject links do not merge clusters (a cluster is a group within one
+   subject). The graph page has a "Colour by: Links | Clusters" switch
+   (default Links, so nothing changes until it is used). Only the three
+   largest clusters get their own colour - the most that stay
+   colour-blind-distinguishable when any two can sit side by side - and the
+   rest share an "Other clusters" grey; every node also shows its cluster
+   number (C1, C2...) so colour is never the only cue.
+
 Post-Saturday backlog (do not start before the two items above are done and
 tested):
 1. **Real sentence embeddings** — swap the TF-IDF vector for a MiniLM

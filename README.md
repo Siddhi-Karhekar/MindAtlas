@@ -36,6 +36,9 @@ Team roles and branch conventions are in [`CONTRIBUTING.md`](CONTRIBUTING.md).
   that shares a keyword but fails that rule is stored as `rejected` and shown
   on the graph page under "Considered, not linked", so the disambiguation is
   visible. Other subjects' linked notes appear as faded nodes.
+- Notes linked directly or through a chain of links form a cluster
+  (connected components - a stand-in for Louvain community detection). The
+  graph page can colour notes by cluster, labelled with shared keywords.
 
 **Tests, attempts and feedback**
 - **Grounded question generation** - MCQ and theory (short-answer) questions,

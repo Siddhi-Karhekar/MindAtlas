@@ -9,7 +9,7 @@ process.env.MONGODB_URI = ""; // always the in-memory store, never a real cluste
 
 import { computeTfidf } from "../src/services/tfidf.js";
 import {
-  classifyPair, updateGraphForNote,
+  classifyPair, clusterNotes, updateGraphForNote,
   SIMILARITY_THRESHOLD, CROSS_SUBJECT_THRESHOLD, CROSS_SUBJECT_MIN_SHARED,
 } from "../src/services/graphEngine.js";
 import { connectDB, getCollection } from "../src/db/index.js";
@@ -88,6 +88,35 @@ pairCase("Cell division", "Atomic structure", "none");
 check("classification does not depend on argument order",
   Object.keys(note).every((a) => Object.keys(note).every((b) =>
     a === b || typeOf(classifyPair(note[a], note[b])) === typeOf(classifyPair(note[b], note[a])))));
+
+console.log("\n=== Clustering (connected components) ===");
+// A-B-C is a chain (A and C are not linked directly), D-E a pair, F alone.
+const day = (d) => new Date(`2026-09-0${d}T00:00:00Z`);
+const cn = (id, d, keywords = []) => ({ _id: id, createdAt: day(d), keywords });
+const cNotes = [
+  cn("A", 1, ["cell", "membrane", "dna"]), cn("B", 2, ["membrane", "cell", "osmosis"]), cn("C", 3, ["dna", "cell"]),
+  cn("D", 4, ["atom"]), cn("E", 5, ["proton"]), cn("F", 6),
+];
+const ce = (a, b) => ({ sourceNoteId: a, targetNoteId: b });
+const cEdges = [ce("A", "B"), ce("B", "C"), ce("D", "E"), ce("E", "not-in-this-subject")];
+const { clusterOf, clusters } = clusterNotes(cNotes, cEdges);
+const idOf = (x) => clusterOf.get(x);
+check("notes linked through a chain share a cluster", idOf("A") === idOf("C") && idOf("A") === idOf("B"));
+check("unlinked groups get different clusters", idOf("A") !== idOf("D") && idOf("D") === idOf("E"));
+check("a note with no links is a cluster of one", clusters.find((c) => c.id === idOf("F"))?.size === 1);
+check("every note gets a clusterId", cNotes.every((n) => typeof idOf(n._id) === "number"));
+check("clusters are numbered from 1, largest first",
+  idOf("A") === 1 && idOf("D") === 2 && idOf("F") === 3, clusters.map((c) => `${c.id}:${c.size}`).join(" "));
+check("an edge to a note outside the subject is ignored", clusters.length === 3 && !clusterOf.has("not-in-this-subject"));
+check("cluster keywords are shared by at least two notes, most widespread first",
+  JSON.stringify(clusters[0].keywords) === JSON.stringify(["cell", "membrane", "dna"]), JSON.stringify(clusters[0].keywords));
+check("a cluster of one has no keyword label", clusters.find((c) => c.id === idOf("F")).keywords.length === 0);
+const reshuffled = clusterNotes([...cNotes].reverse(), [...cEdges].reverse());
+check("numbering does not depend on input order", cNotes.every((n) => reshuffled.clusterOf.get(n._id) === idOf(n._id)));
+const tie = clusterNotes([cn("Y", 2), cn("X", 1), cn("Z", 3)], []);
+check("equal-size clusters: the one with the oldest note comes first",
+  tie.clusterOf.get("X") === 1 && tie.clusterOf.get("Y") === 2 && tie.clusterOf.get("Z") === 3);
+check("no notes, no clusters", clusterNotes([], []).clusters.length === 0);
 
 console.log("\n=== Storage contract (in-memory database) ===");
 await connectDB();

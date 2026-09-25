@@ -3,6 +3,7 @@ import { createSubject, findSubjectsByOwner, findOwnedSubject } from "../models/
 import { findNotesByIds, findNotesBySubject } from "../models/Note.js";
 import { findCrossSubjectEdges, findEdgesBySubject } from "../models/GraphEdge.js";
 import { requireAuth } from "../middleware/auth.js";
+import { clusterNotes } from "../services/graphEngine.js";
 
 const router = Router();
 router.use(requireAuth);
@@ -43,6 +44,8 @@ const toEdge = (e) => ({
 //   crossSubjectEdges - links from this subject's notes to other subjects'
 //   rejectedEdges     - ambiguous cross-subject pairs that were not linked
 //   externalNodes     - the other subjects' notes those two lists point at
+//   clusters          - groups of linked notes within this subject (each node
+//                       also gets a clusterId); see clusterNotes()
 router.get("/:id/graph", loadOwnedSubject, async (req, res) => {
   const [notes, edges, crossEdges] = await Promise.all([
     findNotesBySubject(req.subject._id),
@@ -66,6 +69,8 @@ router.get("/:id/graph", loadOwnedSubject, async (req, res) => {
   const external = externalNotes.filter((n) => String(n.ownerId) === String(req.user.id));
   const known = new Set([...ownIds, ...external.map((n) => String(n._id))]);
   const usable = crossEdges.filter((e) => known.has(String(e.sourceNoteId)) && known.has(String(e.targetNoteId)));
+  // Same-subject links only: a cluster is a group within this subject.
+  const { clusterOf, clusters } = clusterNotes(notes, edges);
 
   res.json({
     nodes: notes.map((n) => ({
@@ -74,7 +79,9 @@ router.get("/:id/graph", loadOwnedSubject, async (req, res) => {
       keywords: n.keywords,
       sourceType: n.sourceType,
       createdAt: n.createdAt,
+      clusterId: clusterOf.get(String(n._id)),
     })),
+    clusters,
     edges: edges.map(toEdge),
     crossSubjectEdges: usable.filter((e) => e.edgeType === "cross-subject").map(toEdge),
     rejectedEdges: usable.filter((e) => e.edgeType === "rejected").map(toEdge),
