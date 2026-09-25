@@ -133,6 +133,41 @@ function clusterSwatch(cluster) {
   return { className: "bg-outline" };
 }
 
+// Keyword-map layout, on the same W x H canvas as the graph so zoom and pan
+// work unchanged: the note in the middle, its keywords on an ellipse around
+// it (strongest at the top, then clockwise), and the open keyword's related
+// words fanned out beyond it. Deterministic - no physics.
+function keywordMapLayout(keywords, openKeyword) {
+  const cx = W / 2;
+  const cy = H / 2 + 10;
+  const pos = new Map([["root", [cx, cy]]]);
+  keywords.forEach((k, i) => {
+    const a = -Math.PI / 2 + (i / keywords.length) * Math.PI * 2;
+    pos.set(`kw:${k.keyword}`, [cx + Math.cos(a) * 270, cy + Math.sin(a) * 180]);
+    if (k.keyword !== openKeyword) return;
+    const m = k.subKeywords.length;
+    k.subKeywords.forEach((s, j) => {
+      const b = a + (j - (m - 1) / 2) * 0.3;
+      pos.set(`sub:${s}`, [cx + Math.cos(b) * 400, cy + Math.sin(b) * 268]);
+    });
+  });
+  return pos;
+}
+
+// A sentence with each use of `word` marked.
+function highlight(sentence, word) {
+  const parts = sentence.split(new RegExp(`(\\b${word.replace(/[^a-z0-9]/gi, "\\$&")}\\b)`, "gi"));
+  return parts.map((p, i) =>
+    i % 2 === 1 ? (
+      <mark key={i} className="rounded px-0.5 bg-secondary-container text-on-secondary-container">
+        {p}
+      </mark>
+    ) : (
+      p
+    )
+  );
+}
+
 // Why an ambiguous cross-subject pair was not linked - mirrors classifyPair()
 // in server/src/services/graphEngine.js (two shared keywords AND similarity
 // of at least 0.25 are both required across subjects).
@@ -152,6 +187,13 @@ export default function KnowledgeGraph() {
   const [colorBy, setColorBy] = useState("links");
   const [pending, setPending] = useState(null); // id of the link being corrected
   const [notice, setNotice] = useState(null); // { text, undoEdgeId?, label?, error? }
+  // A note's keyword map, shown in place of the subject graph:
+  // { subjectId, noteId, data (null while loading), keyword (the open one) }.
+  // Tied to the subject it was opened in, so opening another subject's graph
+  // shows that graph rather than this map.
+  const [mapState, setMapState] = useState(null);
+  const map = mapState?.subjectId === subjectId ? mapState : null;
+  const mapNoteId = map?.noteId || null;
   const [pos, setPos] = useState(new Map());
   const [view, setView] = useState({ x: 0, y: 0, k: 1 });
   const viewportRef = useRef(null);
@@ -229,6 +271,31 @@ export default function KnowledgeGraph() {
     const t = setTimeout(() => setNotice(null), 6000);
     return () => clearTimeout(t);
   }, [notice]);
+
+  useEffect(() => {
+    if (!mapNoteId) return undefined;
+    let cancelled = false;
+    api
+      .getKeywordMap(mapNoteId)
+      .then((data) => {
+        if (!cancelled) setMapState((m) => (m?.noteId === mapNoteId ? { ...m, data } : m));
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setMapState(null);
+        setNotice({ text: err.message, error: true });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [mapNoteId]);
+
+  function openMap(noteId, keyword = null) {
+    setSelectedId(String(noteId));
+    setMapState({ subjectId, noteId: String(noteId), data: null, keyword });
+  }
+  const closeMap = () => setMapState(null);
+  const toggleMapKeyword = (k) => setMapState((m) => (m ? { ...m, keyword: m.keyword === k ? null : k } : m));
 
   // Mark a link as wrong ("remove") or undo that ("restore"), then refetch the
   // graph so counts, clusters and colours all update together.
@@ -346,6 +413,15 @@ export default function KnowledgeGraph() {
   const rejectedNeighbours = useMemo(() => linksOf(rejectedEdges, selectedId), [rejectedEdges, selectedId]);
   const removedNeighbours = useMemo(() => linksOf(removedEdges, selectedId), [removedEdges, selectedId]);
 
+  const mapKeywords = useMemo(() => map?.data?.keywords || [], [map?.data]);
+  const mapPos = useMemo(() => keywordMapLayout(mapKeywords, map?.keyword), [mapKeywords, map?.keyword]);
+  const mapOpen = mapKeywords.find((k) => k.keyword === map?.keyword) || null;
+  const mapTitle = map?.data?.note.title || nodeById.get(mapNoteId)?.title || "";
+  // Other notes in this subject that share the open keyword.
+  const alsoIn = mapOpen
+    ? (graph?.nodes || []).filter((n) => String(n.id) !== mapNoteId && (n.keywords || []).includes(mapOpen.keyword))
+    : [];
+
   const q = query.trim().toLowerCase();
   const textMatch = (n) =>
     !q || n.title.toLowerCase().includes(q) || (n.keywords || []).some((k) => k.toLowerCase().includes(q));
@@ -419,7 +495,7 @@ export default function KnowledgeGraph() {
         ></div>
 
         <div
-          className="absolute left-0 top-0 origin-top-left"
+          className={`absolute left-0 top-0 origin-top-left ${map ? "hidden" : ""}`}
           style={{ width: W, height: H, transform: `translate(${view.x}px, ${view.y}px) scale(${view.k})` }}
         >
           <svg className="absolute left-0 top-0 pointer-events-none" width={W} height={H} style={{ overflow: "visible" }}>
@@ -552,26 +628,123 @@ export default function KnowledgeGraph() {
             );
           })}
         </div>
+
+        {map && (
+          <div
+            data-testid="keyword-map"
+            className="absolute left-0 top-0 origin-top-left"
+            style={{ width: W, height: H, transform: `translate(${view.x}px, ${view.y}px) scale(${view.k})` }}
+          >
+            <svg className="absolute left-0 top-0 pointer-events-none" width={W} height={H} style={{ overflow: "visible" }}>
+              {mapKeywords.map((k) => {
+                const [x1, y1] = mapPos.get("root");
+                const [x2, y2] = mapPos.get(`kw:${k.keyword}`);
+                const open = k.keyword === map.keyword;
+                return (
+                  <line
+                    key={k.keyword}
+                    x1={x1}
+                    y1={y1}
+                    x2={x2}
+                    y2={y2}
+                    style={{ stroke: open ? "var(--c-secondary)" : "var(--c-outline)" }}
+                    strokeWidth={open ? 2.5 : 1 + k.weight * 2}
+                    opacity={open ? 0.9 : 0.5}
+                  />
+                );
+              })}
+              {mapOpen?.subKeywords.map((s) => {
+                const [x1, y1] = mapPos.get(`kw:${mapOpen.keyword}`);
+                const [x2, y2] = mapPos.get(`sub:${s}`);
+                return (
+                  <line key={s} x1={x1} y1={y1} x2={x2} y2={y2} style={{ stroke: "var(--c-secondary)" }} strokeWidth={1.5} strokeDasharray="4 3" opacity={0.7} />
+                );
+              })}
+            </svg>
+
+            <div
+              className="absolute z-20 -translate-x-1/2 -translate-y-1/2 flex items-center gap-space-sm p-space-sm pl-space-md pr-space-lg rounded-full bg-surface shadow-xl ring-2 ring-secondary"
+              style={{ left: mapPos.get("root")[0], top: mapPos.get("root")[1] }}
+            >
+              <div className="flex items-center justify-center w-8 h-8 rounded-full bg-secondary text-on-secondary">
+                <Icon name="account_tree" className="text-sm" />
+              </div>
+              <div className="flex flex-col text-left">
+                <span className="font-ui-title text-ui-title text-on-surface leading-tight whitespace-nowrap">{clip(mapTitle, 30)}</span>
+                <span className="font-label-sm text-label-sm text-secondary uppercase tracking-widest">
+                  {map.data ? `${mapKeywords.length} keywords` : "Loading…"}
+                </span>
+              </div>
+            </div>
+
+            {mapKeywords.map((k) => {
+              const [x, y] = mapPos.get(`kw:${k.keyword}`);
+              const open = k.keyword === map.keyword;
+              // Stopping pointerdown makes a click open the keyword instead of starting a pan.
+              return (
+                <button
+                  type="button"
+                  key={k.keyword}
+                  data-testid="map-keyword"
+                  aria-pressed={open}
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onClick={() => toggleMapKeyword(k.keyword)}
+                  title={`${k.keyword}: click to see the words it appears with`}
+                  className={`absolute z-10 -translate-x-1/2 -translate-y-1/2 px-space-md py-space-xs rounded-full shadow-md whitespace-nowrap font-ui-body transition-colors ${
+                    open ? "bg-secondary text-on-secondary" : "bg-surface-container text-on-surface hover:bg-surface-container-high"
+                  }`}
+                  style={{ left: x, top: y, fontSize: 12 + Math.round(k.weight * 6) }}
+                >
+                  {k.keyword}
+                </button>
+              );
+            })}
+
+            {mapOpen?.subKeywords.map((s) => {
+              const [x, y] = mapPos.get(`sub:${s}`);
+              return (
+                <span
+                  key={s}
+                  data-testid="map-related"
+                  className="absolute z-10 -translate-x-1/2 -translate-y-1/2 px-space-sm py-0.5 rounded-full border border-dashed border-secondary bg-surface-container-lowest text-on-surface-variant font-label-md text-label-md whitespace-nowrap"
+                  style={{ left: x, top: y }}
+                >
+                  {s}
+                </span>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       <header className="absolute top-space-base left-space-base right-[23.5rem] z-30 flex items-center justify-between gap-space-md pointer-events-none flex-wrap">
-        <div className="flex items-center gap-space-sm p-space-xs pl-space-md pr-space-xs bg-surface/90 backdrop-blur-md rounded-full shadow-lg pointer-events-auto">
-          <Icon name="search" className="text-primary text-base" />
-          <input
-            aria-label="Search notes"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            className="w-48 bg-transparent font-ui-body text-ui-body text-on-surface placeholder:text-outline focus:outline-none"
-            placeholder="Search a note or keyword..."
-            type="text"
-          />
-          <div className="h-4 w-px bg-outline-variant/60 mx-space-xs"></div>
-          <div className="flex items-center gap-space-2xs">
-            <button type="button" className={chip(filter === "all")} onClick={() => setFilter("all")}>All Notes</button>
-            <button type="button" className={chip(filter === "linked")} onClick={() => setFilter("linked")}>Linked</button>
-            <button type="button" className={chip(filter === "isolated")} onClick={() => setFilter("isolated")}>Isolated</button>
+        {map ? (
+          <div className="flex items-center gap-space-sm p-space-xs pr-space-md bg-surface/90 backdrop-blur-md rounded-full shadow-lg pointer-events-auto">
+            <button type="button" onClick={closeMap} className={`${chip(false)} flex items-center gap-1`}>
+              <Icon name="arrow_back" className="text-sm" />
+              Back to graph
+            </button>
+            <span className="font-ui-body text-ui-body text-on-surface-variant whitespace-nowrap">Keyword map · {clip(mapTitle, 40)}</span>
           </div>
-        </div>
+        ) : (
+          <div className="flex items-center gap-space-sm p-space-xs pl-space-md pr-space-xs bg-surface/90 backdrop-blur-md rounded-full shadow-lg pointer-events-auto">
+            <Icon name="search" className="text-primary text-base" />
+            <input
+              aria-label="Search notes"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              className="w-48 bg-transparent font-ui-body text-ui-body text-on-surface placeholder:text-outline focus:outline-none"
+              placeholder="Search a note or keyword..."
+              type="text"
+            />
+            <div className="h-4 w-px bg-outline-variant/60 mx-space-xs"></div>
+            <div className="flex items-center gap-space-2xs">
+              <button type="button" className={chip(filter === "all")} onClick={() => setFilter("all")}>All Notes</button>
+              <button type="button" className={chip(filter === "linked")} onClick={() => setFilter("linked")}>Linked</button>
+              <button type="button" className={chip(filter === "isolated")} onClick={() => setFilter("isolated")}>Isolated</button>
+            </div>
+          </div>
+        )}
         <div className="flex items-center gap-space-2xs p-space-xs bg-surface/90 backdrop-blur-md rounded-full shadow-lg pointer-events-auto">
           <button type="button" onClick={() => zoomBy(1.2)} title="Zoom in" aria-label="Zoom in" className="w-8 h-8 flex items-center justify-center rounded-full hover:bg-surface-container text-on-surface transition-colors">
             <Icon name="add" className="text-base" />
@@ -607,89 +780,199 @@ export default function KnowledgeGraph() {
         </div>
       )}
 
-      <div
-        data-testid="graph-legend"
-        className="absolute bottom-space-base left-space-base right-[23.5rem] z-30 w-fit flex items-center gap-x-space-md gap-y-space-xs p-space-xs px-space-md bg-surface/90 backdrop-blur-md rounded-xl shadow-md pointer-events-auto flex-wrap"
-      >
-        {hasClusters && (
-          <>
-            <div className="flex items-center gap-space-2xs" role="group" aria-label="Colour notes by">
-              <span className="font-label-sm text-label-sm text-on-surface-variant mr-space-2xs">Colour by</span>
-              <button type="button" aria-pressed={!byCluster} className={chip(!byCluster)} onClick={() => setColorBy("links")}>
-                Links
-              </button>
-              <button type="button" aria-pressed={byCluster} className={chip(byCluster)} onClick={() => setColorBy("clusters")}>
-                Clusters
-              </button>
-            </div>
-            <div className="h-3 w-px bg-outline-variant/60"></div>
-          </>
-        )}
-        {byCluster ? (
-          <>
-            {realClusters.slice(0, CLUSTER_COLOURS).map((c) => {
-              const sw = clusterSwatch(c);
-              return (
-                <div key={c.id} className="flex items-center gap-space-xs" data-testid="legend-cluster">
-                  <span className={`w-2.5 h-2.5 rounded-full ${sw.className || ""}`} style={sw.style}></span>
+      {map && (
+        <div
+          data-testid="map-legend"
+          className="absolute bottom-space-base left-space-base right-[23.5rem] z-30 w-fit flex items-center gap-x-space-md gap-y-space-xs p-space-xs px-space-md bg-surface/90 backdrop-blur-md rounded-xl shadow-md pointer-events-auto flex-wrap"
+        >
+          <div className="flex items-center gap-space-xs">
+            <span className="w-2.5 h-2.5 rounded-full bg-secondary"></span>
+            <span className="font-label-sm text-label-sm text-on-surface-variant">Keyword (bigger = matters more to this note)</span>
+          </div>
+          <div className="flex items-center gap-space-xs">
+            <span className="w-2.5 h-2.5 rounded-full border border-dashed border-secondary"></span>
+            <span className="font-label-sm text-label-sm text-on-surface-variant">Appears with</span>
+          </div>
+          <div className="h-3 w-px bg-outline-variant/60"></div>
+          <span className="font-label-sm text-label-sm text-secondary font-semibold">Click a keyword to open it</span>
+        </div>
+      )}
+
+      {!map && (
+        <div
+          data-testid="graph-legend"
+          className="absolute bottom-space-base left-space-base right-[23.5rem] z-30 w-fit flex items-center gap-x-space-md gap-y-space-xs p-space-xs px-space-md bg-surface/90 backdrop-blur-md rounded-xl shadow-md pointer-events-auto flex-wrap"
+        >
+          {hasClusters && (
+            <>
+              <div className="flex items-center gap-space-2xs" role="group" aria-label="Colour notes by">
+                <span className="font-label-sm text-label-sm text-on-surface-variant mr-space-2xs">Colour by</span>
+                <button type="button" aria-pressed={!byCluster} className={chip(!byCluster)} onClick={() => setColorBy("links")}>
+                  Links
+                </button>
+                <button type="button" aria-pressed={byCluster} className={chip(byCluster)} onClick={() => setColorBy("clusters")}>
+                  Clusters
+                </button>
+              </div>
+              <div className="h-3 w-px bg-outline-variant/60"></div>
+            </>
+          )}
+          {byCluster ? (
+            <>
+              {realClusters.slice(0, CLUSTER_COLOURS).map((c) => {
+                const sw = clusterSwatch(c);
+                return (
+                  <div key={c.id} className="flex items-center gap-space-xs" data-testid="legend-cluster">
+                    <span className={`w-2.5 h-2.5 rounded-full ${sw.className || ""}`} style={sw.style}></span>
+                    <span className="font-label-sm text-label-sm text-on-surface-variant">
+                      C{c.id}
+                      {c.keywords.length ? ` · ${clip(c.keywords.slice(0, 2).join(", "), 24)}` : ""} ({c.size})
+                    </span>
+                  </div>
+                );
+              })}
+              {realClusters.length > CLUSTER_COLOURS && (
+                <div className="flex items-center gap-space-xs">
+                  <span className="w-2.5 h-2.5 rounded-full bg-outline"></span>
                   <span className="font-label-sm text-label-sm text-on-surface-variant">
-                    C{c.id}
-                    {c.keywords.length ? ` · ${clip(c.keywords.slice(0, 2).join(", "), 24)}` : ""} ({c.size})
+                    Other clusters ({realClusters.length - CLUSTER_COLOURS})
                   </span>
                 </div>
-              );
-            })}
-            {realClusters.length > CLUSTER_COLOURS && (
+              )}
+              {graph.clusters.some((c) => c.size === 1) && (
+                <div className="flex items-center gap-space-xs">
+                  <span className="w-2.5 h-2.5 rounded-full border-2 border-outline"></span>
+                  <span className="font-label-sm text-label-sm text-on-surface-variant">No cluster</span>
+                </div>
+              )}
+            </>
+          ) : (
+            <>
               <div className="flex items-center gap-space-xs">
-                <span className="w-2.5 h-2.5 rounded-full bg-outline"></span>
-                <span className="font-label-sm text-label-sm text-on-surface-variant">
-                  Other clusters ({realClusters.length - CLUSTER_COLOURS})
-                </span>
+                <span className="w-2.5 h-2.5 rounded-full bg-tertiary"></span>
+                <span className="font-label-sm text-label-sm text-on-surface-variant">Hub (3+ links)</span>
               </div>
-            )}
-            {graph.clusters.some((c) => c.size === 1) && (
               <div className="flex items-center gap-space-xs">
-                <span className="w-2.5 h-2.5 rounded-full border-2 border-outline"></span>
-                <span className="font-label-sm text-label-sm text-on-surface-variant">No cluster</span>
+                <span className="w-2.5 h-2.5 rounded-full bg-secondary"></span>
+                <span className="font-label-sm text-label-sm text-on-surface-variant">Linked (1–2)</span>
               </div>
-            )}
-          </>
-        ) : (
-          <>
+              <div className="flex items-center gap-space-xs">
+                <span className="w-2.5 h-2.5 rounded-full bg-primary-container"></span>
+                <span className="font-label-sm text-label-sm text-on-surface-variant">Isolated</span>
+              </div>
+            </>
+          )}
+          {drawnExternal.length > 0 && (
             <div className="flex items-center gap-space-xs">
-              <span className="w-2.5 h-2.5 rounded-full bg-tertiary"></span>
-              <span className="font-label-sm text-label-sm text-on-surface-variant">Hub (3+ links)</span>
+              <span className={`w-2.5 h-2.5 rounded-full border border-dashed ${byCluster ? "border-outline" : "border-tertiary"}`}></span>
+              <span className="font-label-sm text-label-sm text-on-surface-variant">Other subject</span>
             </div>
-            <div className="flex items-center gap-space-xs">
-              <span className="w-2.5 h-2.5 rounded-full bg-secondary"></span>
-              <span className="font-label-sm text-label-sm text-on-surface-variant">Linked (1–2)</span>
-            </div>
-            <div className="flex items-center gap-space-xs">
-              <span className="w-2.5 h-2.5 rounded-full bg-primary-container"></span>
-              <span className="font-label-sm text-label-sm text-on-surface-variant">Isolated</span>
-            </div>
-          </>
-        )}
-        {drawnExternal.length > 0 && (
-          <div className="flex items-center gap-space-xs">
-            <span className={`w-2.5 h-2.5 rounded-full border border-dashed ${byCluster ? "border-outline" : "border-tertiary"}`}></span>
-            <span className="font-label-sm text-label-sm text-on-surface-variant">Other subject</span>
-          </div>
-        )}
-        <div className="h-3 w-px bg-outline-variant/60"></div>
-        <span className="font-label-sm text-label-sm text-secondary font-semibold">
-          {visibleCount === graph.nodes.length
-            ? `${graph.nodes.length} ${graph.nodes.length === 1 ? "note" : "notes"} · ${
-                byCluster
-                  ? `${realClusters.length} ${realClusters.length === 1 ? "cluster" : "clusters"}`
-                  : `${graph.edges.length} ${graph.edges.length === 1 ? "connection" : "connections"}`
-              }${crossEdges.length ? ` · ${crossEdges.length} across subjects` : ""}`
-            : `${visibleCount} of ${graph.nodes.length} notes shown`}
-        </span>
-      </div>
+          )}
+          <div className="h-3 w-px bg-outline-variant/60"></div>
+          <span className="font-label-sm text-label-sm text-secondary font-semibold">
+            {visibleCount === graph.nodes.length
+              ? `${graph.nodes.length} ${graph.nodes.length === 1 ? "note" : "notes"} · ${
+                  byCluster
+                    ? `${realClusters.length} ${realClusters.length === 1 ? "cluster" : "clusters"}`
+                    : `${graph.edges.length} ${graph.edges.length === 1 ? "connection" : "connections"}`
+                }${crossEdges.length ? ` · ${crossEdges.length} across subjects` : ""}`
+              : `${visibleCount} of ${graph.nodes.length} notes shown`}
+          </span>
+        </div>
+      )}
 
       <aside className="w-[340px] h-full bg-surface shadow-2xl flex flex-col justify-between overflow-y-auto z-40 shrink-0" id="inspector-panel">
-        {selected && (
+        {map && (
+          <div className="flex flex-col p-space-lg gap-space-md" data-testid="map-inspector">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-space-xs text-secondary font-label-md text-label-md uppercase tracking-wider">
+                <Icon name="account_tree" className="text-sm" />
+                <span>Keyword map</span>
+              </div>
+              <button type="button" onClick={closeMap} className="font-label-md text-label-md text-secondary font-semibold hover:underline">
+                Back to graph
+              </button>
+            </div>
+            <h2 className="font-headline-md text-headline-md text-on-surface tracking-tight" data-testid="inspector-title">
+              {mapTitle}
+            </h2>
+
+            {!map.data ? (
+              <p className="font-body-md text-body-md text-on-surface-variant">Loading…</p>
+            ) : mapKeywords.length === 0 ? (
+              <p className="font-body-md text-body-md text-on-surface-variant">This note has no keywords yet.</p>
+            ) : !mapOpen ? (
+              <p className="font-body-md text-body-md text-on-surface-variant">
+                Click a keyword to see the words it appears with and where it comes up in this note. Bigger keywords matter more to this
+                note.
+              </p>
+            ) : (
+              <div className="flex flex-col gap-space-md" data-testid="map-keyword-detail">
+                <span className="self-start px-space-sm py-space-2xs rounded bg-secondary text-on-secondary font-ui-title text-ui-title">
+                  {mapOpen.keyword}
+                </span>
+
+                {mapOpen.subKeywords.length > 0 && (
+                  <div className="flex flex-col gap-space-xs">
+                    <span className="font-label-sm text-label-sm uppercase tracking-wider text-on-surface-variant">Appears with</span>
+                    <div className="flex flex-wrap gap-space-xs">
+                      {mapOpen.subKeywords.map((s) => (
+                        <span
+                          key={s}
+                          className="px-space-sm py-space-2xs rounded-full border border-dashed border-secondary text-on-surface-variant font-label-md text-label-md"
+                        >
+                          {s}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {mapOpen.sentences.length > 0 && (
+                  <div className="flex flex-col gap-space-xs">
+                    <span className="font-label-sm text-label-sm uppercase tracking-wider text-on-surface-variant">
+                      In this note
+                      {mapOpen.sentenceCount > mapOpen.sentences.length
+                        ? ` (${mapOpen.sentences.length} of ${mapOpen.sentenceCount} sentences)`
+                        : ""}
+                    </span>
+                    <ul className="flex flex-col gap-space-xs">
+                      {mapOpen.sentences.map((s, i) => (
+                        <li key={i} className="p-space-sm rounded-lg bg-surface-container-low font-body-sm text-body-sm text-on-surface-variant leading-relaxed">
+                          {highlight(s, mapOpen.keyword)}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                {alsoIn.length > 0 && (
+                  <div className="flex flex-col gap-space-xs" data-testid="map-also-in">
+                    <span className="font-label-sm text-label-sm uppercase tracking-wider text-on-surface-variant">
+                      Also in ({alsoIn.length})
+                    </span>
+                    <div className="flex flex-wrap gap-space-xs">
+                      {alsoIn.map((n) => (
+                        <button
+                          type="button"
+                          key={n.id}
+                          onClick={() => openMap(n.id, mapOpen.keyword)}
+                          title={`Open the keyword map of ${n.title}`}
+                          className="flex items-center gap-1.5 px-space-sm py-1 rounded-lg bg-surface-container hover:bg-surface-container-high transition-colors text-on-surface font-ui-body text-ui-body"
+                        >
+                          <Icon name="account_tree" className="text-sm text-secondary" />
+                          <span>{clip(n.title, 24)}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
+        {!map && selected && (
           <>
             <div className="flex flex-col p-space-lg gap-space-md">
               <div className="flex items-center justify-between">
@@ -868,7 +1151,17 @@ export default function KnowledgeGraph() {
 
               {selected.keywords?.length > 0 && (
                 <div className="flex flex-col gap-space-xs">
-                  <span className="font-label-sm text-label-sm uppercase tracking-wider text-on-surface-variant">Keywords</span>
+                  <div className="flex items-center justify-between">
+                    <span className="font-label-sm text-label-sm uppercase tracking-wider text-on-surface-variant">Keywords</span>
+                    <button
+                      type="button"
+                      onClick={() => openMap(selected.id)}
+                      className="flex items-center gap-1 font-label-md text-label-md text-secondary font-semibold hover:underline"
+                    >
+                      <Icon name="account_tree" className="text-sm" />
+                      Keyword map
+                    </button>
+                  </div>
                   <div className="flex flex-wrap gap-space-xs">
                     {selected.keywords.slice(0, 8).map((k) => (
                       <span key={k} className="px-space-sm py-space-2xs rounded bg-secondary-container text-on-secondary-container font-label-md text-label-md">
@@ -906,7 +1199,7 @@ export default function KnowledgeGraph() {
           </>
         )}
 
-        {selectedExternal && (
+        {!map && selectedExternal && (
           <>
             <div className="flex flex-col p-space-lg gap-space-md" data-testid="external-inspector">
               <div className="flex items-center gap-space-xs text-tertiary font-label-md text-label-md uppercase tracking-wider">
