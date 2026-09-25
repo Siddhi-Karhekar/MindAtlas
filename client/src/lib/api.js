@@ -61,6 +61,9 @@ export const api = {
   },
 
   getGraph: (subjectId) => request(`/subjects/${subjectId}/graph`),
+  // action: "remove" (the student says this link is wrong) or "restore"
+  correctEdge: (edgeId, action) => request(`/graph/edges/${edgeId}/correct`, { method: "POST", body: { action } }),
+  getKeywordMap: (noteId) => request(`/graph/notes/${noteId}/keyword-map`),
 
   listTests: (subjectId) => request(`/subjects/${subjectId}/tests`),
   createTest: (subjectId, { title, noteIds, mcqCount, theoryCount, marksPerQuestion, durationMinutes }) =>

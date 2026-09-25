@@ -40,8 +40,24 @@ Team roles and branch conventions are in [`CONTRIBUTING.md`](CONTRIBUTING.md).
   (extraction); `verify/e2e_document_split_test.py` covers it end to end.
 - Every new note gets a TF-IDF vector and top keywords; cosine similarity
   against the other notes in the *same* subject creates weighted graph edges
-  (threshold 0.12), rendered with Cytoscape.js. Cross-subject linking with
-  disambiguation is this week's prototype target — see CONTRIBUTING.md §0.
+  (threshold 0.12), rendered with Cytoscape.js.
+- Notes are also compared across a student's subjects, under a stricter rule
+  so a word used in two senses ("cell" in Biology, Chemistry and Computer
+  Networks) doesn't link unrelated notes: a cross-subject edge needs **at
+  least two** shared top keywords **and** similarity of at least 0.25. A pair
+  that shares a keyword but fails that rule is stored as `rejected` and shown
+  on the graph page under "Considered, not linked", so the disambiguation is
+  visible. Other subjects' linked notes appear as faded nodes.
+- A student can remove a link they think is wrong (and undo or restore it
+  later) from the graph page; a removed link stays removed even as new notes
+  are added, and no longer counts anywhere.
+- Each note has a keyword map: the note in the middle, its keywords around
+  it (bigger = more important to the note); opening a keyword shows the
+  words it appears with, the sentences that use it, and the other notes in
+  the subject that share it.
+- Notes linked directly or through a chain of links form a cluster
+  (connected components - a stand-in for Louvain community detection). The
+  graph page can colour notes by cluster, labelled with shared keywords.
 
 **Tests, attempts and feedback**
 - **Grounded question generation** - MCQ and theory (short-answer) questions,
@@ -186,8 +202,9 @@ a case to `server/test/mongoStore.test.mjs`.
 3. **Better graph, phase 2** - real sentence embeddings in place of TF-IDF
    vectors (a contained change to `services/tfidf.js`) and true Louvain/Leiden
    community detection in place of this week's connected-components stand-in,
-   plus a graph-edge correction loop. Cross-subject disambiguation itself is
-   this week's prototype target, not deferred - see CONTRIBUTING.md §0.
+   plus feeding students' link corrections back into the linking rule.
+   Rule-based cross-subject disambiguation, clustering and removing a wrong
+   link are already in (see "What works today").
 4. **Test timer** - `durationMinutes` is stored and shown but not yet
    enforced with a countdown in the attempt screen.
 5. **Quality upgrades from the report** - distractor gating for the LLM path,

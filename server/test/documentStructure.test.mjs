@@ -3,6 +3,7 @@
 // Runs with no server and no files: `node test/documentStructure.test.mjs`.
 import { blocksFromPlainText, segmentDocument, MAX_SECTIONS } from "../src/services/documentStructure.js";
 import { buildPdfBlocks } from "../src/services/documentText.js";
+import { isQuestionWorthy } from "../src/services/testEngine.js";
 
 let failures = 0;
 const check = (label, cond, detail = "") => {
@@ -61,6 +62,16 @@ check("running header and page numbers are dropped", !pdf.text.includes("CS301")
 const s5 = segmentDocument(pdf.blocks);
 check("font-size headings become subtopics", s5.sections.map((s) => s.title).join("|") === "Scheduling|Paging|Segmentation", s5.sections.map((s) => s.title).join("|"));
 check("the big first-page line is the document title", s5.docTitle === "Operating Systems", s5.docTitle);
+
+console.log("\n=== Only subject matter becomes a question ===");
+for (const junk of [
+  "CS302 Computer Networks - Department of Computer Engineering Page 1 Computer Networks - Unit 2 Lecture notes: layers, protocols and addressing Semester V Contents 1.",
+  "Computer Networks - Unit 2\n\nLecture notes: layers, protocols and addressing\n\nContents\n\n1.",
+  "3. Data Link Layer ........................................ 9",
+  "Introduction to Computer Networks 1.1 Network Topologies A network topology describes the arrangement of nodes.",
+  "Tanenbaum, A. S. and Wetherall, D. Computer Networks.",
+]) check(`rejected: ${JSON.stringify(junk).slice(0, 50)}...`, !isQuestionWorthy(junk));
+check("accepted: a real sentence", isQuestionWorthy("From the bottom up, the physical layer transmits raw bits over the medium."));
 
 console.log(failures ? `\n${failures} FAILING CHECK(S)` : "\nAll checks passed.");
 process.exit(failures ? 1 : 0);

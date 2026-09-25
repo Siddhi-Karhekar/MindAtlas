@@ -1,8 +1,8 @@
 import { Router } from "express";
-import multer from "multer";
 import { findOwnedSubject } from "../models/Subject.js";
-import { createNote, findNotesBySubject, isSplitParent, setChildCount } from "../models/Note.js";
+import { createNote, findNotesByOwner, findNotesBySubject, isSplitParent, setChildCount } from "../models/Note.js";
 import { requireAuth } from "../middleware/auth.js";
+import { uploadSingle } from "../middleware/upload.js";
 import { extractTextFromImage } from "../services/ocr.js";
 import { classifyUpload, extractDocument, titleFromFilename } from "../services/documentText.js";
 import { blocksFromPlainText, countWords, segmentDocument } from "../services/documentStructure.js";
@@ -12,20 +12,8 @@ import { updateGraphForNote } from "../services/graphEngine.js";
 const router = Router();
 router.use(requireAuth);
 
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
-
 const UNSUPPORTED =
   "unsupported file type - upload a PDF, Word (.docx), PowerPoint (.pptx), text/markdown file or an image";
-
-// Multer rejects an over-limit file by throwing; turn that into the same kind
-// of readable 400 every other upload problem gets, instead of a bare 500.
-function acceptUpload(req, res, next) {
-  upload.single("file")(req, res, (err) => {
-    if (!err) return next();
-    if (err.code === "LIMIT_FILE_SIZE") return res.status(400).json({ error: "file is larger than 10 MB" });
-    return res.status(400).json({ error: err.message || "could not read the upload" });
-  });
-}
 
 /**
  * Read an uploaded file into { content, sourceType, ocrFailed, blocks }.
@@ -37,6 +25,13 @@ async function readUpload(file) {
   if (kind === "image") {
     // scanned / photographed notes: read with OCR. No structure to split on.
     const { text, ocrFailed } = await extractTextFromImage(file.buffer);
+    if (!text) {
+      throw new Error(
+        ocrFailed
+          ? "could not read this image - it may be damaged, or text recognition is unavailable right now"
+          : "no readable text found in this image - try a sharper, well-lit photo, or type the note instead"
+      );
+    }
     return { kind, content: text, sourceType: "image", ocrFailed, blocks: null };
   }
   const { text, blocks } = await extractDocument(file, kind);
@@ -44,7 +39,7 @@ async function readUpload(file) {
     throw new Error(
       kind === "pdf"
         ? "no readable text found in this file (if it is a scanned PDF, upload the pages as images instead)"
-        : "no readable text found in this file"
+        : "no readable text found in this file - it is empty"
     );
   }
   return { kind, content: text, sourceType: "file", ocrFailed: false, blocks };
@@ -53,7 +48,7 @@ async function readUpload(file) {
 // POST /api/subjects/:id/notes/preview - read an uploaded file and report how
 // it WOULD be split, without saving anything. Lets the upload screen show the
 // detected subtopics before the student commits.
-router.post("/:id/notes/preview", acceptUpload, async (req, res) => {
+router.post("/:id/notes/preview", uploadSingle("file", 10), async (req, res) => {
   const subject = await findOwnedSubject(req.params.id, req.user.id);
   if (!subject) return res.status(404).json({ error: "subject not found" });
   if (!req.file) return res.status(400).json({ error: "attach a file to preview" });
@@ -89,7 +84,7 @@ router.post("/:id/notes/preview", acceptUpload, async (req, res) => {
 // A long document with detectable subtopics (headings, slide titles, or - as a
 // fallback - evenly sized parts) is saved as one parent note plus a child note
 // per subtopic. Send the form field split=false to keep it as a single note.
-router.post("/:id/notes", acceptUpload, async (req, res) => {
+router.post("/:id/notes", uploadSingle("file", 10), async (req, res) => {
   const subject = await findOwnedSubject(req.params.id, req.user.id);
   if (!subject) return res.status(404).json({ error: "subject not found" });
 
@@ -134,6 +129,16 @@ router.post("/:id/notes", acceptUpload, async (req, res) => {
   // term) and the similarity comparison.
   const existingNotes = (await findNotesBySubject(subject._id)).filter((n) => !isSplitParent(n));
   const corpus = existingNotes.map((n) => n.rawText);
+  // Linking compares against every note the student owns, not just this
+  // subject's: graphEngine links same-subject pairs and applies a stricter
+  // rule to notes from other subjects (cross-subject disambiguation).
+  const ownerNotes = await findNotesByOwner(req.user.id);
+  // Same-subject links only, as before - the subject page's "N new links to
+  // related notes" message counts links within this subject.
+  const countLinks = (edges) => ({
+    edgesCreated: edges.filter((e) => e.edgeType === "same-subject").length,
+    crossSubjectEdgesCreated: edges.filter((e) => e.edgeType === "cross-subject").length,
+  });
 
   if (seg.sections.length < 2) {
     const { vector, keywords } = computeTfidf(content, corpus);
@@ -147,8 +152,8 @@ router.post("/:id/notes", acceptUpload, async (req, res) => {
       vector,
       ocrFailed,
     });
-    const edges = await updateGraphForNote(note, existingNotes);
-    return res.status(201).json({ note, children: [], edgesCreated: edges.length });
+    const edges = await updateGraphForNote(note, ownerNotes);
+    return res.status(201).json({ note, children: [], ...countLinks(edges) });
   }
 
   // Parent: keeps the whole text for reading, and document-level keywords for
@@ -173,8 +178,8 @@ router.post("/:id/notes", acceptUpload, async (req, res) => {
   // rather than "memory, process" shared by every section.
   const sectionTexts = seg.sections.map((s) => s.text);
   const children = [];
-  let edgesCreated = 0;
-  const linkable = [...existingNotes];
+  const allEdges = [];
+  const linkable = [...ownerNotes];
   for (let i = 0; i < seg.sections.length; i++) {
     const s = seg.sections[i];
     const siblings = sectionTexts.filter((_, j) => j !== i);
@@ -194,14 +199,13 @@ router.post("/:id/notes", acceptUpload, async (req, res) => {
     });
     // Link against the rest of the subject and the siblings saved before it,
     // so related subtopics inside one document connect to each other too.
-    const edges = await updateGraphForNote(child, linkable);
-    edgesCreated += edges.length;
+    allEdges.push(...(await updateGraphForNote(child, linkable)));
     linkable.push(child);
     children.push(child);
   }
   await setChildCount(parent._id, children.length);
 
-  res.status(201).json({ note: { ...parent, childCount: children.length }, children, edgesCreated });
+  res.status(201).json({ note: { ...parent, childCount: children.length }, children, ...countLinks(allEdges) });
 });
 
 router.get("/:id/notes", async (req, res) => {

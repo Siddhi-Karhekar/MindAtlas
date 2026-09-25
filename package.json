@@ -1,0 +1,13 @@
+{
+  "name": "mindatlas",
+  "private": true,
+  "description": "Mind Atlas - one-service production build (Express API serves the built React client)",
+  "engines": {
+    "node": ">=20.19"
+  },
+  "scripts": {
+    "build": "npm ci --prefix client --include=dev && npm run build --prefix client && npm ci --prefix server --omit=dev",
+    "start": "npm start --prefix server",
+    "test": "npm test --prefix server"
+  }
+}

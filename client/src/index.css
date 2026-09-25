@@ -55,6 +55,13 @@
   --c-on-tertiary-fixed:#402c08;
   --c-on-secondary-fixed:#1c2c22;
   --c-on-secondary-fixed-variant:#3f5c4c;
+  /* Knowledge-graph cluster colours (KnowledgeGraph.jsx). Three categorical
+     slots, validated as a set in both modes for colour-blind separation on the
+     node surface. Only three because nodes sit anywhere on the canvas, so any
+     two clusters can end up side by side; further clusters fold to "Other". */
+  --c-cluster-1:#2a78d6;
+  --c-cluster-2:#eb6834;
+  --c-cluster-3:#1baf7a;
 }
 
 html.dark {
@@ -106,6 +113,9 @@ html.dark {
   --c-inverse-surface:#ece9dd;
   --c-inverse-on-surface:#1c1c18;
   --c-inverse-primary:#364156;
+  --c-cluster-1:#3987e5;
+  --c-cluster-2:#d95926;
+  --c-cluster-3:#199e70;
 }
 
 html,
