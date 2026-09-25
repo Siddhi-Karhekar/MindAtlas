@@ -102,6 +102,47 @@ readable text (OCR returns empty), a file over the 10MB limit. Fix anything
 that breaks silently rather than returning the error message it's designed
 to show.
 
+> **Status: Member 1's prototype verification is done** (25 Sep 2026, branch
+> `notes/ingestion-hardening`). One real file of each type - a text PDF, a
+> phone photo of a notes page, a `.docx` with a list and a table, and
+> `.txt` / `.md` - each becomes a usable note with sensible keywords, both
+> through the API and the upload screen. Every edge case now comes back with
+> a message the student can act on:
+>
+> | Upload | Before | Now |
+> | --- | --- | --- |
+> | Damaged image | **crashed the whole API server** | 400 "could not read this image..." |
+> | OCR with no network on first use | **crashed the server** | 400, same message |
+> | Photo of a blank page | 400 "content is required" | 400 "no readable text found in this image..." |
+> | Photo with no text that OCR reads as junk (a texture, a carpet) | saved a junk note ("Sal en I OE es Ap ae...") | 400, same message |
+> | File over 10 MB | 500 "internal server error" | 413 "file too large - the limit is 10 MB" |
+> | UTF-16 `.txt` (Windows Notepad "Unicode") | note full of NUL characters, no keywords | read correctly |
+> | Binary file renamed `.txt` | junk note | 400 "this does not look like a text file..." |
+> | Empty `.txt` / `.docx` | message about scanned PDFs | 400 "...it is empty" |
+>
+> Already correct and unchanged: password-protected and damaged PDFs, PDFs
+> with no text layer (scans), damaged `.docx`, unsupported types, UTF-8 with
+> a BOM.
+>
+> **Changes other members should know about**
+> - **The server crash** was tesseract.js 5 re-throwing a failed OCR job
+>   outside our `try/catch`. `services/ocr.js` now creates the worker so every
+>   failure reaches the `catch`; keep that pattern if you touch OCR.
+> - **Junk OCR**: a photo only counts as readable if Tesseract is at least 60%
+>   confident in at least 3 words (`MIN_WORD_CONFIDENCE` /
+>   `MIN_CONFIDENT_WORDS` in `services/ocr.js`). Legible sample photos, even
+>   blurry ones, clear this easily; it was measured on generated photos, not
+>   real handwriting, so tune it if real notes get rejected.
+> - **`middleware/upload.js`** (`uploadSingle(field, maxMb)`) replaces the bare
+>   multer call in `routes/notes.js`. Use it for any new upload route (e.g.
+>   textbooks) so an oversized file is a 413, not a 500.
+> - **Tests**: new `server/test/noteUploads.test.mjs` (part of `npm test`),
+>   with small sample files in `server/test/fixtures/`. It starts the real API
+>   on **port 4599**, so CI must leave that port free too (Member 4). Its image
+>   checks download Tesseract's English model (~5 MB) on first run and cache
+>   it as `server/eng.traineddata` (now git-ignored); with no network they are
+>   skipped.
+
 What's missing (post-Saturday backlog, not this week):
 1. **Summarization** — a new endpoint that takes a note's raw text (or a
    linked textbook chunk) and returns an LLM-generated summary via the
