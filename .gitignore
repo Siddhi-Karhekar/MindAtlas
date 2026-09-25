@@ -3,3 +3,5 @@ dist/
 .env
 .env.local
 *.log
+# local database (server/data/mindatlas-db.json) - personal data, never commit
+server/data/

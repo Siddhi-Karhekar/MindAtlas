@@ -9,7 +9,9 @@ export async function findEdgesBySubject(subjectId) {
 export async function upsertEdge({ subjectId, sourceNoteId, targetNoteId, weight, sharedKeywords }) {
   return graphEdges().findOneAndUpdate(
     { subjectId, sourceNoteId, targetNoteId },
-    { $set: { weight, sharedKeywords, subjectId, sourceNoteId, targetNoteId } },
+    // edgeType lets the graph API and UI tell stored similarity links apart
+    // from the parent -> subtopic "contains" links it derives from notes.
+    { $set: { weight, sharedKeywords, subjectId, sourceNoteId, targetNoteId, edgeType: "similarity" } },
     { upsert: true }
   );
 }

@@ -8,6 +8,7 @@ export async function createFeedbackReport({
   subjectId,
   masteryDeltas,
   topicScores,
+  documentScores = [],
   feedbackText,
   generatedBy,
   marksAwarded,
@@ -21,6 +22,8 @@ export async function createFeedbackReport({
     // progress view can plot a trajectory without recomputing it from responses
     masteryDeltas,
     topicScores,
+    // per split document: subtopic scores rolled up (feedbackEngine.computeDocumentRollup)
+    documentScores,
     feedbackText,
     generatedBy,
     marksAwarded,

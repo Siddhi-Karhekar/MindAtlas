@@ -26,6 +26,18 @@ Team roles and branch conventions are in [`CONTRIBUTING.md`](CONTRIBUTING.md).
 - Email/password auth (bcrypt + JWT), subjects, and notes from four input
   paths: typed text, an uploaded image (read with Tesseract OCR), a PDF, or
   a Word (.docx) file — all four wired end to end, backend and upload UI.
+- **Long documents are split into subtopics.** A multi-section PDF, Word
+  file, PowerPoint deck (.pptx) or long markdown file becomes one *parent*
+  note plus one *child* note per subtopic, found from the document's own
+  structure: Word heading styles, slide titles, font-size headings in PDFs
+  (running headers and page numbers are ignored), `#` headings in markdown,
+  and - when there are no headings at all - evenly sized parts named by their
+  keywords. The upload screen previews the detected subtopics first and can
+  keep a file whole instead. Because questions, mastery and feedback are all
+  keyed on note ids, every subtopic is its own topic: the results page says
+  "Paging in Unit 3 needs attention", not just "Unit 3". Logic lives in
+  `services/documentStructure.js` (splitting) and `services/documentText.js`
+  (extraction); `verify/e2e_document_split_test.py` covers it end to end.
 - Every new note gets a TF-IDF vector and top keywords; cosine similarity
   against the other notes in the *same* subject creates weighted graph edges
   (threshold 0.12), rendered with Cytoscape.js. Cross-subject linking with
@@ -61,9 +73,11 @@ path, so the whole app runs with no API key at all.
   the graph.
 - **server/** - Node.js + Express REST API.
 - **Database** - no setup required. With no `MONGODB_URI` the server uses a
-  small built-in in-memory database (data resets on restart). Set
-  `MONGODB_URI` in `server/.env` to use MongoDB Atlas - same API, no code
-  changes. See "Why not mongodb-memory-server?" below.
+  small built-in database that is saved to `server/data/mindatlas-db.json`,
+  so accounts, notes, tests and progress survive restarts (the folder is
+  git-ignored; delete the file to start fresh). Set `MONGODB_URI` in
+  `server/.env` to use MongoDB Atlas - same API, no code changes. See "Why
+  not mongodb-memory-server?" below.
 
 ## Running it locally
 
@@ -104,8 +118,14 @@ the two dev servers above:
 pip install playwright && playwright install chromium
 python verify/e2e_adaptive_test.py     # screenshots land in verify/
 python verify/e2e_mixed_test.py
+python verify/e2e_document_split_test.py   # SPLIT_FILE=path/to/your.pdf to try your own
 # different frontend URL:  MINDATLAS_URL=http://localhost:4173 python ...
 ```
+
+## Deploying
+
+See [`DEPLOY.md`](DEPLOY.md): one Render web service (the API also serves the
+built client) plus a free MongoDB Atlas cluster.
 
 ## Configuration
 
@@ -114,7 +134,8 @@ Copy `server/.env.example` to `server/.env` and `client/.env.example` to
 
 | Variable | Purpose |
 | --- | --- |
-| `MONGODB_URI` | MongoDB Atlas connection string; blank = in-memory dev DB |
+| `MONGODB_URI` | MongoDB Atlas connection string; blank = local file database (`server/data/mindatlas-db.json`) |
+| `DB_FILE` | Where the local database file lives (when `MONGODB_URI` is blank). `DB_FILE=memory` = throwaway in-memory DB, wiped on restart |
 | `JWT_SECRET` | 32+ random characters. **Required in production** (server refuses to start without it); dev falls back to an insecure default with a warning |
 | `GROQ_API_KEY` | Enables LLM question drafting, theory grading and feedback phrasing |
 | `NODE_ENV` | Set to `production` when deployed |
@@ -131,7 +152,8 @@ The usual zero-setup MongoDB for dev (`mongodb-memory-server`) downloads a
 real `mongod` binary on first run, which was blocked in the sandbox this
 project started in. `server/src/db/` instead implements a tiny MongoDB-shaped
 interface (`insertOne` / `findOne` / `find` / `findOneAndUpdate`) with two
-interchangeable backends - `memoryStore.js` (in-memory) and `mongoStore.js`
+interchangeable backends - `memoryStore.js` (in memory, saved to a JSON file
+between restarts) and `mongoStore.js`
 (the official driver, for Atlas) - selected in `db/index.js` by whether
 `MONGODB_URI` is set.
 
@@ -173,8 +195,9 @@ a case to `server/test/mongoStore.test.mjs`.
    grading prompt, calibrated Rasch difficulties once there is response data.
 6. **Optional proctoring** and splitting the API into independently
    deployable services.
-7. **Deployment** - Dockerfiles, docker-compose, CI (lint, build, tests,
-   `npm audit`, secret scan) and hosting configs.
+7. **Deployment** - a single-service Render + MongoDB Atlas setup and a
+   Dockerfile are in place (see [`DEPLOY.md`](DEPLOY.md)); still open: CI
+   (lint, build, tests, `npm audit`, secret scan).
 8. **Production hardening still open** - the API now has a CORS allowlist,
    per-IP rate limiting, a hard failure on a missing production
    `JWT_SECRET`, and basic security headers; consider `helmet`, a shared
@@ -189,7 +212,9 @@ server/src/
                  tests, questions, attempts, responses, feedback_reports)
   middleware/    JWT auth, in-memory rate limiter
   routes/        auth, subjects (+ graph), notes, tests, attempts
-  services/      ocr, tfidf, graphEngine, llm, testEngine (question
+  services/      ocr, documentText (PDF/DOCX/PPTX/text extraction),
+                 documentStructure (split long documents into subtopics),
+                 tfidf, graphEngine, llm, testEngine (question
                  generation + gate), adaptiveEngine (staircase),
                  gradingEngine (theory answers), feedbackEngine (scoring)
 
@@ -199,6 +224,7 @@ client/src/
   pages/         SignIn, Home, SubjectWorkspace, KnowledgeGraph,
                  Tests (builder), TestAttempt (focus mode), Insights
 
-verify/          Playwright end-to-end scripts + their screenshots
+verify/          Playwright end-to-end scripts + their screenshots;
+                 fixtures/ holds sample multi-section PDF/DOCX/PPTX files
 docs/            feasibility report
 ```

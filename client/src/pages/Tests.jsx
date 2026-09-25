@@ -3,6 +3,58 @@ import { Link, useParams } from "react-router-dom";
 import { api } from "../lib/api.js";
 import { timeAgo, wordCount } from "../lib/format.js";
 import Icon from "../components/Icon.jsx";
+import { isTopicNote, noteTree } from "../lib/notes.js";
+
+// One selectable row in "Draw questions from these notes". Used for plain
+// notes, split documents (checkbox selects all their subtopics, `partial` when
+// only some are picked) and, indented, for individual subtopics.
+function NoteRow({ note, on, partial = false, onToggle, mastery, subtitle, words, trailing, compact = false }) {
+  const pct = mastery ? Math.round(mastery.pKnown * 100) : null;
+  return (
+    <label
+      className={`group flex items-center justify-between ${compact ? "px-space-md py-space-sm" : "p-space-md"} rounded-lg bg-surface-container-low hover:bg-surface-container transition-all cursor-pointer ${on || partial ? "" : "opacity-70 hover:opacity-100"}`}
+    >
+      <div className="flex items-center gap-space-md min-w-0">
+        <div
+          className={`w-4 h-4 rounded flex items-center justify-center shrink-0 ${
+            on || partial ? "bg-primary text-on-primary" : "bg-surface-container-highest text-transparent"
+          }`}
+        >
+          <Icon name={partial ? "remove" : "check"} className="text-xs" />
+        </div>
+        <input type="checkbox" className="hidden" checked={on} onChange={onToggle} />
+        <div className="flex flex-col min-w-0">
+          <span className={`${compact ? "font-ui-body text-ui-body" : "font-ui-title text-ui-title"} text-on-surface truncate`}>{note.title}</span>
+          <span className="font-body-sm text-body-sm text-on-surface-variant truncate">
+            {subtitle ?? (note.keywords?.slice(0, 5).join(" · ") || note.rawText.slice(0, 80))}
+          </span>
+        </div>
+      </div>
+      <div className="flex items-center gap-space-md shrink-0">
+        {!compact && (
+          <div className="hidden sm:flex flex-col items-end">
+            <span className="font-label-sm text-label-sm text-on-surface-variant">Added</span>
+            <span className="font-label-md text-label-md text-on-surface">{timeAgo(note.createdAt)}</span>
+          </div>
+        )}
+        {mastery && (
+          <div
+            title={mastery.partial ? `Average mastery, ${mastery.partial}` : `${pct}% mastery from ${mastery.observations} answered`}
+            className={`px-space-sm py-space-2xs rounded font-label-md text-label-md font-semibold ${
+              mastery.pKnown < 0.5 ? "bg-tertiary-container text-on-tertiary-container" : "bg-secondary-container text-on-secondary-container"
+            }`}
+          >
+            {pct}% mastery
+          </div>
+        )}
+        <div className="px-space-sm py-space-2xs rounded bg-surface-container-highest font-label-md text-label-md text-primary">
+          {words ?? wordCount(note.rawText)} words
+        </div>
+        {trailing}
+      </div>
+    </label>
+  );
+}
 
 function Stepper({ label, icon, value, onChange, min = 0, max = 99, unit, hint, id }) {
   const set = (v) => onChange(Math.max(min, Math.min(max, Number.isFinite(v) ? v : min)));
@@ -60,7 +112,10 @@ export default function Tests() {
   const [tests, setTests] = useState(null);
   const [progress, setProgress] = useState(null);
   const [title, setTitle] = useState("");
+  // Always TOPIC note ids: plain notes and individual subtopics. Selecting a
+  // whole document selects all of its subtopics.
   const [selectedNoteIds, setSelectedNoteIds] = useState([]);
+  const [expandedDocs, setExpandedDocs] = useState([]);
   const [mcqCount, setMcqCount] = useState(4);
   const [theoryCount, setTheoryCount] = useState(0);
   const [marksPerQuestion, setMarksPerQuestion] = useState(2);
@@ -104,10 +159,17 @@ export default function Tests() {
     setSelectedNoteIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
   }
 
+  function toggleDoc(childIds, select) {
+    setSelectedNoteIds((prev) => (select ? [...new Set([...prev, ...childIds])] : prev.filter((x) => !childIds.includes(x))));
+  }
+
+  const tree = useMemo(() => noteTree(notes), [notes]);
+  const topicNotes = useMemo(() => (notes || []).filter(isTopicNote), [notes]);
+
   const masteryByTopic = useMemo(() => new Map((progress?.topics || []).map((t) => [String(t.topicId), t])), [progress]);
   const weakest = (progress?.recommendedTopicIds || []).map((id) => masteryByTopic.get(String(id))).filter(Boolean);
 
-  const selectedNotes = useMemo(() => (notes || []).filter((n) => selectedNoteIds.includes(n._id)), [notes, selectedNoteIds]);
+  const selectedNotes = useMemo(() => topicNotes.filter((n) => selectedNoteIds.includes(n._id)), [topicNotes, selectedNoteIds]);
   const selectedWords = selectedNotes.reduce((n, x) => n + wordCount(x.rawText), 0);
 
   async function handleBuild(e) {
@@ -164,7 +226,10 @@ export default function Tests() {
           <div className="flex items-center gap-space-sm self-start md:self-auto">
             <div className="flex items-center gap-space-xs px-space-md py-space-xs rounded-lg bg-surface-container-high text-on-surface font-label-md text-label-md shadow-sm">
               <Icon name="database" className="text-sm text-secondary" />
-              <span>Note Pool: {notes ? notes.length : "…"} {notes?.length === 1 ? "note" : "notes"}</span>
+              <span>
+                Note Pool: {notes ? tree.top.length : "…"} {tree.top.length === 1 ? "note" : "notes"}
+                {notes && topicNotes.length !== tree.top.length ? ` · ${topicNotes.length} topics` : ""}
+              </span>
             </div>
             <Link
               to={`/subjects/${subjectId}/progress`}
@@ -216,9 +281,9 @@ export default function Tests() {
                   <button
                     type="button"
                     className="font-label-md text-label-md text-secondary hover:underline"
-                    onClick={() => setSelectedNoteIds(selectedNoteIds.length === (notes || []).length ? [] : (notes || []).map((n) => n._id))}
+                    onClick={() => setSelectedNoteIds(selectedNoteIds.length === topicNotes.length ? [] : topicNotes.map((n) => n._id))}
                   >
-                    {selectedNoteIds.length === (notes || []).length && selectedNoteIds.length > 0 ? "Clear selection" : "Select all"}
+                    {selectedNoteIds.length === topicNotes.length && selectedNoteIds.length > 0 ? "Clear selection" : "Select all"}
                   </button>
                   <span className="text-outline-variant">|</span>
                   <span className="font-label-md text-label-md text-on-surface-variant">{selectedNoteIds.length} selected</span>
@@ -232,52 +297,67 @@ export default function Tests() {
                     <Link to={`/subjects/${subjectId}/new`} className="text-secondary underline">write one now</Link>.
                   </p>
                 )}
-                {(notes || []).map((n) => {
-                  const on = selectedNoteIds.includes(n._id);
+                {tree.top.map((n) => {
+                  const kids = tree.childrenOf(n);
+                  if (kids.length === 0) {
+                    return (
+                      <NoteRow
+                        key={n._id}
+                        note={n}
+                        on={selectedNoteIds.includes(n._id)}
+                        onToggle={() => toggleNote(n._id)}
+                        mastery={masteryByTopic.get(String(n._id))}
+                      />
+                    );
+                  }
+                  const kidIds = kids.map((c) => c._id);
+                  const picked = kidIds.filter((id) => selectedNoteIds.includes(id)).length;
+                  const state = picked === 0 ? "none" : picked === kidIds.length ? "all" : "some";
+                  const open = expandedDocs.includes(n._id) || state === "some";
+                  const withData = kids.map((c) => masteryByTopic.get(String(c._id))).filter(Boolean);
+                  const docMastery = withData.length
+                    ? { pKnown: withData.reduce((a, m) => a + m.pKnown, 0) / withData.length, observations: withData.reduce((a, m) => a + m.observations, 0), partial: `${withData.length} of ${kids.length} subtopics tested` }
+                    : null;
                   return (
-                    <label
-                      key={n._id}
-                      className={`group flex items-center justify-between p-space-md rounded-lg bg-surface-container-low hover:bg-surface-container transition-all cursor-pointer ${on ? "" : "opacity-70 hover:opacity-100"}`}
-                    >
-                      <div className="flex items-center gap-space-md min-w-0">
-                        <div
-                          className={`w-4 h-4 rounded flex items-center justify-center shrink-0 ${
-                            on ? "bg-primary text-on-primary" : "bg-surface-container-highest text-transparent"
-                          }`}
-                        >
-                          <Icon name="check" className="text-xs" />
+                    <div key={n._id} className="flex flex-col gap-space-2xs" data-testid="test-doc">
+                      <NoteRow
+                        note={n}
+                        on={state === "all"}
+                        partial={state === "some"}
+                        onToggle={() => toggleDoc(kidIds, state !== "all")}
+                        mastery={docMastery}
+                        subtitle={`${kids.length} subtopics${picked ? ` · ${picked} selected` : ""}`}
+                        words={kids.reduce((a, c) => a + wordCount(c.rawText), 0)}
+                        trailing={
+                          <button
+                            type="button"
+                            aria-label={open ? `Hide subtopics of ${n.title}` : `Show subtopics of ${n.title}`}
+                            onClick={(e) => {
+                              e.preventDefault();
+                              setExpandedDocs((prev) => (prev.includes(n._id) ? prev.filter((x) => x !== n._id) : [...prev, n._id]));
+                            }}
+                            className="w-8 h-8 rounded-lg flex items-center justify-center text-on-surface-variant hover:bg-surface-container-high"
+                          >
+                            <Icon name={open ? "expand_less" : "expand_more"} className="text-base" />
+                          </button>
+                        }
+                      />
+                      {open && (
+                        <div className="flex flex-col gap-space-2xs pl-space-lg ml-space-md border-l-2 border-secondary/30">
+                          {kids.map((c) => (
+                            <NoteRow
+                              key={c._id}
+                              compact
+                              note={c}
+                              on={selectedNoteIds.includes(c._id)}
+                              onToggle={() => toggleNote(c._id)}
+                              mastery={masteryByTopic.get(String(c._id))}
+                              subtitle={c.sectionGroup || undefined}
+                            />
+                          ))}
                         </div>
-                        <input type="checkbox" className="hidden" checked={on} onChange={() => toggleNote(n._id)} />
-                        <div className="flex flex-col min-w-0">
-                          <span className="font-ui-title text-ui-title text-on-surface truncate">{n.title}</span>
-                          <span className="font-body-sm text-body-sm text-on-surface-variant truncate">
-                            {n.keywords?.slice(0, 5).join(" · ") || n.rawText.slice(0, 80)}
-                          </span>
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-space-md shrink-0">
-                        <div className="hidden sm:flex flex-col items-end">
-                          <span className="font-label-sm text-label-sm text-on-surface-variant">Added</span>
-                          <span className="font-label-md text-label-md text-on-surface">{timeAgo(n.createdAt)}</span>
-                        </div>
-                        {(() => {
-                          const m = masteryByTopic.get(String(n._id));
-                          return m ? (
-                            <div
-                              title={`${Math.round(m.pKnown * 100)}% mastery from ${m.observations} answered`}
-                              className={`px-space-sm py-space-2xs rounded font-label-md text-label-md font-semibold ${
-                                m.pKnown < 0.5 ? "bg-tertiary-container text-on-tertiary-container" : "bg-secondary-container text-on-secondary-container"
-                              }`}
-                            >
-                              {Math.round(m.pKnown * 100)}% mastery
-                            </div>
-                          ) : null;
-                        })()}
-                        <div className="px-space-sm py-space-2xs rounded bg-surface-container-highest font-label-md text-label-md text-primary">
-                          {wordCount(n.rawText)} words
-                        </div>
-                      </div>
-                    </label>
+                      )}
+                    </div>
                   );
                 })}
               </div>
@@ -344,15 +424,15 @@ export default function Tests() {
               </div>
               <div className="p-space-md rounded-lg bg-surface-container-low flex flex-col gap-space-sm">
                 <div className="flex items-center justify-between text-on-surface-variant font-label-md text-label-md">
-                  <span>Notes covered</span>
+                  <span>Topics covered</span>
                   <span className="text-on-surface font-bold">
-                    {selectedNoteIds.length} of {notes?.length ?? 0}
+                    {selectedNoteIds.length} of {topicNotes.length}
                   </span>
                 </div>
                 <div className="w-full h-2 rounded-full bg-surface-container-highest overflow-hidden">
                   <div
                     className="h-full bg-secondary rounded-full transition-all"
-                    style={{ width: `${notes?.length ? (selectedNoteIds.length / notes.length) * 100 : 0}%` }}
+                    style={{ width: `${topicNotes.length ? (selectedNoteIds.length / topicNotes.length) * 100 : 0}%` }}
                   ></div>
                 </div>
                 <div className="flex justify-between font-body-sm text-body-sm text-on-surface-variant pt-space-2xs">

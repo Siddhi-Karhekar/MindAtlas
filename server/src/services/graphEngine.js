@@ -14,11 +14,18 @@ const SIMILARITY_THRESHOLD = 0.12;
  * term shows up in more than one subject) - this is the "no (same
  * subject)" branch of Diagram 2.
  */
+//
+// Only topic notes are ever compared: a split document's parent note is a
+// container whose text is the union of its subtopics, so linking it by
+// similarity would just duplicate its children's links. Its relationship to
+// its subtopics is the separate "contains" edge the graph API derives.
 export async function updateGraphForNote(newNote, otherNotes) {
   const createdEdges = [];
+  if (!newNote.parentNoteId && (newNote.childCount || 0) > 0) return createdEdges;
 
   for (const other of otherNotes) {
     if (String(other._id) === String(newNote._id)) continue;
+    if (!other.parentNoteId && (other.childCount || 0) > 0) continue;
 
     const weight = cosineSimilarity(newNote.vector, other.vector);
     if (weight < SIMILARITY_THRESHOLD) continue;

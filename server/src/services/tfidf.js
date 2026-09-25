@@ -16,6 +16,8 @@ const STOPWORDS = new Set([
   "you", "he", "she", "we", "they", "them", "his", "her", "their", "our",
   "your", "my", "me", "us", "also", "each", "such", "there", "here", "up",
   "out", "over", "under", "again", "further", "once", "very", "just",
+  // slide-deck continuation markers ("Paging (cont.)")
+  "cont", "contd", "continued",
 ]);
 
 export function tokenize(text) {

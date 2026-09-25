@@ -44,7 +44,15 @@ export function computeTopicScores(questionsById, responses) {
     if (!q) continue;
     const key = String(q.topicId || q.topic || "General");
     if (!byTopic.has(key))
-      byTopic.set(key, { label: q.topic || key, totalScore: 0, total: 0, totalTimeMs: 0 });
+      byTopic.set(key, {
+        label: q.topic || key,
+        subtopic: q.subtopic || null,
+        parentTopicId: q.parentTopicId || null,
+        parentTopic: q.parentTopic || null,
+        totalScore: 0,
+        total: 0,
+        totalTimeMs: 0,
+      });
     const bucket = byTopic.get(key);
     if (q.topic) bucket.label = q.topic; // keep the freshest display label
     bucket.total += 1;
@@ -71,6 +79,11 @@ export function computeTopicScores(questionsById, responses) {
     return {
       topicId,
       topic: b.label,
+      // Set when the topic is a subtopic of a split document ("Paging" in
+      // "Unit 3"): lets the report group and name subtopics precisely.
+      subtopic: b.subtopic,
+      parentTopicId: b.parentTopicId,
+      parentTopic: b.parentTopic,
       accuracy: Number(accuracy.toFixed(4)),
       avgTimeMs: Math.round(avgTimeMs),
       questionsAnswered: b.total,
@@ -117,6 +130,12 @@ const MASTERY_MOVE_THRESHOLD = 0.08;
  * or when this is the student's first attempt on every topic - in which case
  * there is no trajectory to describe yet and claiming one would be false.
  */
+// "Unit 3 › Paging" -> "**Paging** (Unit 3)"; a plain label -> "**label**"
+function boldLabel(label) {
+  const i = String(label).lastIndexOf(" › ");
+  return i > 0 ? `**${label.slice(i + 3)}** (${label.slice(0, i)})` : `**${label}**`;
+}
+
 function progressSentence(masteryDeltas) {
   if (!Array.isArray(masteryDeltas) || masteryDeltas.length === 0) return null;
   const pct = (x) => `${Math.round(x * 100)}%`;
@@ -131,12 +150,12 @@ function progressSentence(masteryDeltas) {
   const parts = [];
   if (gained.length) {
     const g = gained[0];
-    parts.push(`Your grasp of **${g.topicLabel}** moved from ${pct(g.before)} to ${pct(g.after)} with this attempt`);
+    parts.push(`Your grasp of ${boldLabel(g.topicLabel)} moved from ${pct(g.before)} to ${pct(g.after)} with this attempt`);
   }
   if (slipped.length) {
     const sl = slipped[0];
     parts.push(
-      `${parts.length ? "but " : ""}**${sl.topicLabel}** slipped from ${pct(sl.before)} to ${pct(sl.after)}`
+      `${parts.length ? "but " : ""}${boldLabel(sl.topicLabel)} slipped from ${pct(sl.before)} to ${pct(sl.after)}`
     );
   }
   return parts.join(", ") + ".";
@@ -151,18 +170,69 @@ function fallbackFeedbackText(topicScores, masteryDeltas) {
   const top = topicScores[0];
   const least = topicScores[topicScores.length - 1];
   const pct = (t) => `${Math.round(t.accuracy * 100)}% correct`;
+  // "**Paging** (Unit 3)" reads better than "**Unit 3 › Paging**"
+  const name = (t) => (t.subtopic && t.parentTopic ? `**${t.subtopic}** (${t.parentTopic})` : `**${t.topic}**`);
   const lines = [
-    `**${top.topic}** needs the most attention right now (${pct(top)}) - that's the best place to focus your next study session.`,
+    `${name(top)} needs the most attention right now (${pct(top)}) - that's the best place to focus your next study session.`,
   ];
   if (topicScores.length > 1) {
-    lines.push(`**${least.topic}** needs the least (${pct(least)}) - a quick review is enough there.`);
+    lines.push(`${name(least)} needs the least (${pct(least)}) - a quick review is enough there.`);
     if (top.accuracy > least.accuracy) {
       lines.push("The ranking also weighs how long you took on each topic, so it can differ from raw accuracy.");
     }
   }
+  const within = documentSentence(topicScores);
+  if (within) lines.push(within);
   const progress = progressSentence(masteryDeltas);
   if (progress) lines.push(progress);
   return lines.join(" ");
+}
+
+/**
+ * Roll subtopic scores up to their document, question-weighted, for the report
+ * and the results screen: "Unit 3: 58% overall - Paging 100%, Deadlocks 0%".
+ * Only documents with at least one subtopic answered are included, in
+ * weakest-first order. Pure arithmetic over topicScores, no new judgement.
+ */
+export function computeDocumentRollup(topicScores) {
+  const byDoc = new Map();
+  for (const t of topicScores) {
+    if (!t.parentTopicId) continue;
+    const key = String(t.parentTopicId);
+    if (!byDoc.has(key)) byDoc.set(key, { parentTopicId: t.parentTopicId, parentTopic: t.parentTopic, subtopics: [] });
+    byDoc.get(key).subtopics.push(t);
+  }
+  return [...byDoc.values()]
+    .map((d) => {
+      const answered = d.subtopics.reduce((n, t) => n + t.questionsAnswered, 0);
+      const accuracy = answered ? d.subtopics.reduce((n, t) => n + t.accuracy * t.questionsAnswered, 0) / answered : 0;
+      const sorted = [...d.subtopics].sort((a, b) => b.attentionScore - a.attentionScore);
+      const best = sorted[sorted.length - 1];
+      return {
+        parentTopicId: d.parentTopicId,
+        parentTopic: d.parentTopic,
+        accuracy: Number(accuracy.toFixed(4)),
+        questionsAnswered: answered,
+        subtopicsAnswered: d.subtopics.length,
+        weakestSubtopic: sorted[0]?.subtopic || sorted[0]?.topic || null,
+        // only called "strongest" when it actually went well, not merely least bad
+        strongestSubtopic:
+          sorted.length > 1 && best.accuracy >= 0.6 && best.accuracy > sorted[0].accuracy ? best.subtopic || best.topic : null,
+      };
+    })
+    .sort((a, b) => a.accuracy - b.accuracy);
+}
+
+// One sentence naming the weakest and strongest subtopic inside a document,
+// when a test covered at least two subtopics of it - the "which part of Unit 3"
+// answer the per-document view could never give.
+function documentSentence(topicScores) {
+  const doc = computeDocumentRollup(topicScores).find((d) => d.subtopicsAnswered >= 2);
+  if (!doc) return null;
+  const pct = Math.round(doc.accuracy * 100);
+  return `Across **${doc.parentTopic}** you scored ${pct}% overall: **${doc.weakestSubtopic}** is the subtopic to revisit first${
+    doc.strongestSubtopic ? `, while **${doc.strongestSubtopic}** is in good shape` : ""
+  }.`;
 }
 
 export async function phraseFeedback(topicScores, masteryDeltas = []) {
@@ -178,7 +248,7 @@ export async function phraseFeedback(topicScores, masteryDeltas = []) {
     ? `\n\nPer-topic mastery before and after this attempt (0-1 scale, from the student's full history - state changes only if they are meaningful, and never invent a direction the numbers do not show):\n${JSON.stringify(masteryDeltas, null, 2)}`
     : "";
 
-  const prompt = `A student just finished a test. Here is their deterministic per-topic performance ranking (weakest first, do not change the ranking or the numbers - only phrase it clearly and encouragingly, 3-5 sentences, no markdown headers):
+  const prompt = `A student just finished a test. Here is their deterministic per-topic performance ranking (weakest first, do not change the ranking or the numbers - only phrase it clearly and encouragingly, 3-5 sentences, no markdown headers). Where a topic has a "subtopic" and "parentTopic", it is one section of a larger document: name the specific subtopic (e.g. "Paging in Unit 3"), never just the document:
 
 ${JSON.stringify(topicScores, null, 2)}${movement}`;
 

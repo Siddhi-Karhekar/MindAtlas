@@ -4,6 +4,7 @@ import { api } from "../lib/api.js";
 import { formatDate, wordCount } from "../lib/format.js";
 import Icon from "../components/Icon.jsx";
 import Ring from "../components/Ring.jsx";
+import { isSplitParent } from "../lib/notes.js";
 
 const W = 1000;
 const H = 640;
@@ -27,8 +28,10 @@ function layout(nodes, edges) {
     px[i] = W / 2 + Math.cos(a) * 260;
     py[i] = H / 2 + Math.sin(a) * 200;
   });
+  // "contains" edges (document -> subtopic) pull a document's subtopics
+  // around it, so each upload reads as one cluster on the canvas.
   const links = edges
-    .map((e) => [idx.get(String(e.source)), idx.get(String(e.target)), e.weight || 0.3])
+    .map((e) => [idx.get(String(e.source)), idx.get(String(e.target)), e.edgeType === "contains" ? 0.9 : e.weight || 0.3])
     .filter(([a, b]) => a !== undefined && b !== undefined);
   const k = Math.sqrt((W * H) / n) * 0.75;
   let temp = W / 8;
@@ -110,22 +113,27 @@ export default function KnowledgeGraph() {
       .catch((err) => setError(err.message));
   }, [subjectId]);
 
+  // Similarity links only: a document's "contains" edges to its own subtopics
+  // are structure, and counting them would make every upload look like a hub.
+  const linkEdges = useMemo(() => (graph?.edges || []).filter((e) => e.edgeType !== "contains"), [graph]);
   const degree = useMemo(() => {
     const d = new Map();
     graph?.nodes.forEach((n) => d.set(String(n.id), 0));
-    graph?.edges.forEach((e) => {
+    linkEdges.forEach((e) => {
       d.set(String(e.source), (d.get(String(e.source)) || 0) + 1);
       d.set(String(e.target), (d.get(String(e.target)) || 0) + 1);
     });
     return d;
-  }, [graph]);
+  }, [graph, linkEdges]);
 
   useEffect(() => {
     if (!graph) return;
     setPos(layout(graph.nodes, graph.edges));
     // start on the best-connected note
     let best = null;
-    for (const [id, dg] of degree) if (best === null || dg > degree.get(best)) best = id;
+    const docIds = new Set(graph.nodes.filter(isSplitParent).map((n) => String(n.id)));
+    for (const [id, dg] of degree) if (!docIds.has(id) && (best === null || dg > degree.get(best))) best = id;
+    if (best === null && graph.nodes[0]) best = String(graph.nodes[0].id);
     setSelectedId(best);
   }, [graph]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -211,10 +219,22 @@ export default function KnowledgeGraph() {
   const nodeById = useMemo(() => new Map((graph?.nodes || []).map((n) => [String(n.id), n])), [graph]);
   const selected = selectedId ? nodeById.get(selectedId) : null;
   const selectedNote = selectedId ? noteById.get(selectedId) : null;
+  const selectedIsDoc = selected ? isSplitParent(selected) : false;
+  const selectedParent = selected?.parentNoteId ? nodeById.get(String(selected.parentNoteId)) : null;
+  const subtopicsOf = useCallback(
+    (id) =>
+      (graph?.nodes || [])
+        .filter((n) => String(n.parentNoteId) === String(id))
+        .sort((a, b) => (a.order ?? 0) - (b.order ?? 0)),
+    [graph]
+  );
+  const selectedSubtopics = selectedIsDoc ? subtopicsOf(selectedId) : [];
+  const topicCount = graph ? graph.nodes.filter((n) => !isSplitParent(n)).length : 0;
+  const docCount = graph ? graph.nodes.length - topicCount : 0;
 
   const neighbours = useMemo(() => {
     if (!graph || !selectedId) return [];
-    return graph.edges
+    return linkEdges
       .filter((e) => String(e.source) === selectedId || String(e.target) === selectedId)
       .map((e) => ({
         id: String(e.source) === selectedId ? String(e.target) : String(e.source),
@@ -222,23 +242,30 @@ export default function KnowledgeGraph() {
         shared: e.sharedKeywords || [],
       }))
       .sort((a, b) => b.weight - a.weight);
-  }, [graph, selectedId]);
+  }, [graph, linkEdges, selectedId]);
 
   const q = query.trim().toLowerCase();
   const matches = (n) => {
+    if (!n) return false;
     const id = String(n.id);
     const deg = degree.get(id) || 0;
-    if (filter === "linked" && deg === 0) return false;
-    if (filter === "isolated" && deg > 0) return false;
+    const doc = isSplitParent(n);
+    if (filter === "linked" && deg === 0 && !doc) return false;
+    if (filter === "isolated" && (deg > 0 || doc)) return false;
     if (!q) return true;
-    return n.title.toLowerCase().includes(q) || (n.keywords || []).some((k) => k.toLowerCase().includes(q));
+    const parent = n.parentNoteId ? nodeById.get(String(n.parentNoteId)) : null;
+    return (
+      n.title.toLowerCase().includes(q) ||
+      (parent && parent.title.toLowerCase().includes(q)) ||
+      (n.keywords || []).some((k) => k.toLowerCase().includes(q))
+    );
   };
   const visibleCount = graph ? graph.nodes.filter(matches).length : 0;
 
   const tone = (deg) =>
     deg >= 3 ? { dot: "bg-tertiary", label: "Hub" } : deg >= 1 ? { dot: "bg-secondary", label: "Linked" } : { dot: "bg-primary-container", label: "Isolated" };
 
-  const maxLinks = graph ? Math.max(1, graph.nodes.length - 1) : 1;
+  const maxLinks = Math.max(1, topicCount - 1);
   const connectivity = selected ? Math.round(((degree.get(selectedId) || 0) / maxLinks) * 100) : 0;
   const chip = (active) =>
     `px-space-sm py-1 rounded-full font-label-md text-label-md transition-colors ${
@@ -293,6 +320,21 @@ export default function KnowledgeGraph() {
               if (!a || !b) return null;
               const touches = String(e.source) === selectedId || String(e.target) === selectedId;
               const dim = q || filter !== "all" ? !(matches(nodeById.get(String(e.source))) && matches(nodeById.get(String(e.target)))) : false;
+              if (e.edgeType === "contains") {
+                return (
+                  <line
+                    key={e.id}
+                    data-edge-type="contains"
+                    x1={a[0]}
+                    y1={a[1]}
+                    x2={b[0]}
+                    y2={b[1]}
+                    style={{ stroke: "var(--c-primary)" }}
+                    strokeWidth={touches ? 2 : 1.25}
+                    opacity={dim ? 0.05 : touches ? 0.55 : 0.18}
+                  />
+                );
+              }
               return (
                 <line
                   key={e.id}
@@ -317,6 +359,25 @@ export default function KnowledgeGraph() {
             const t = tone(deg);
             const isSel = id === selectedId;
             const dim = !matches(n);
+            if (isSplitParent(n)) {
+              return (
+                <div
+                  key={id}
+                  data-testid="graph-node"
+                  data-node-kind="document"
+                  onPointerDown={(e) => onPointerDown(e, id)}
+                  title={`${n.title} — ${n.childCount} subtopics`}
+                  className={`absolute -translate-x-1/2 -translate-y-1/2 flex items-center gap-space-xs py-space-xs px-space-md rounded-lg cursor-pointer shadow-lg transition-transform hover:scale-105 ${
+                    isSel ? "z-20 bg-primary text-on-primary ring-2 ring-secondary" : "z-10 bg-primary-container text-on-primary-container"
+                  }`}
+                  style={{ left: p[0], top: p[1], opacity: dim ? 0.3 : 1 }}
+                >
+                  <Icon name="description" className="text-base" />
+                  <span className="font-ui-title text-ui-title font-semibold whitespace-nowrap">{clip(n.title, 28)}</span>
+                  <span className="font-label-sm text-label-sm px-1.5 py-0.5 rounded bg-surface/30">{n.childCount}</span>
+                </div>
+              );
+            }
             return isSel ? (
               <div
                 key={id}
@@ -399,10 +460,16 @@ export default function KnowledgeGraph() {
           <span className="w-2.5 h-2.5 rounded-full bg-primary-container"></span>
           <span className="font-label-sm text-label-sm text-on-surface-variant">Isolated</span>
         </div>
+        {docCount > 0 && (
+          <div className="flex items-center gap-space-xs">
+            <span className="w-3 h-2.5 rounded-sm bg-primary-container"></span>
+            <span className="font-label-sm text-label-sm text-on-surface-variant">Document → subtopics</span>
+          </div>
+        )}
         <div className="h-3 w-px bg-outline-variant/60"></div>
         <span className="font-label-sm text-label-sm text-secondary font-semibold">
           {visibleCount === graph.nodes.length
-            ? `${graph.nodes.length} ${graph.nodes.length === 1 ? "note" : "notes"} · ${graph.edges.length} ${graph.edges.length === 1 ? "connection" : "connections"}`
+            ? `${topicCount} ${topicCount === 1 ? "topic" : "topics"}${docCount ? ` in ${docCount} ${docCount === 1 ? "document" : "documents"} + notes` : ""} · ${linkEdges.length} ${linkEdges.length === 1 ? "connection" : "connections"}`
             : `${visibleCount} of ${graph.nodes.length} notes shown`}
         </span>
       </div>
@@ -413,8 +480,8 @@ export default function KnowledgeGraph() {
             <div className="flex flex-col p-space-lg gap-space-md">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-space-xs text-secondary font-label-md text-label-md uppercase tracking-wider">
-                  <Icon name="grain" className="text-sm" />
-                  <span>Note Node</span>
+                  <Icon name={selectedIsDoc ? "description" : "grain"} className="text-sm" />
+                  <span>{selectedIsDoc ? "Document" : selectedParent ? "Subtopic" : "Note Node"}</span>
                 </div>
                 <Link
                   to={`/subjects/${subjectId}?note=${selected.id}`}
@@ -426,6 +493,17 @@ export default function KnowledgeGraph() {
                 </Link>
               </div>
               <div className="flex flex-col gap-space-2xs">
+                {selectedParent && (
+                  <button
+                    type="button"
+                    onClick={() => setSelectedId(String(selectedParent.id))}
+                    className="flex items-center gap-space-2xs text-secondary hover:text-primary font-label-md text-label-md w-fit max-w-full"
+                    data-testid="inspector-parent"
+                  >
+                    <Icon name="description" className="text-sm shrink-0" />
+                    <span className="truncate">Part of {selectedParent.title}</span>
+                  </button>
+                )}
                 <h2 className="font-headline-md text-headline-md text-on-surface tracking-tight" data-testid="inspector-title">
                   {selected.title}
                 </h2>
@@ -437,6 +515,29 @@ export default function KnowledgeGraph() {
                 </div>
               </div>
 
+              {selectedIsDoc && (
+                <div className="flex flex-col gap-space-xs" data-testid="inspector-subtopics">
+                  <span className="font-label-sm text-label-sm uppercase tracking-wider text-on-surface-variant">
+                    Subtopics ({selectedSubtopics.length})
+                  </span>
+                  <div className="flex flex-col gap-space-2xs">
+                    {selectedSubtopics.map((c, i) => (
+                      <button
+                        type="button"
+                        key={c.id}
+                        onClick={() => setSelectedId(String(c.id))}
+                        className="text-left flex items-center gap-space-xs px-space-sm py-1 rounded-lg bg-surface-container hover:bg-surface-container-high transition-colors text-on-surface font-ui-body text-ui-body min-w-0"
+                      >
+                        <span className="font-label-sm text-label-sm text-outline w-5 text-right shrink-0">{i + 1}.</span>
+                        <span className="truncate flex-1">{c.title}</span>
+                        <span className="font-label-sm text-label-sm text-on-surface-variant shrink-0">{degree.get(String(c.id)) || 0}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {!selectedIsDoc && (
               <div className="flex items-center justify-between p-space-md rounded-xl bg-surface-container-low shadow-sm">
                 <div className="flex flex-col">
                   <span className="font-label-sm text-label-sm text-on-surface-variant uppercase tracking-wide">Connectivity</span>
@@ -447,13 +548,14 @@ export default function KnowledgeGraph() {
                     </span>
                   </div>
                   <span className="font-body-sm text-body-sm text-outline mt-space-2xs">
-                    {(degree.get(selectedId) || 0) === 0 ? "Not connected to any other note" : `${connectivity}% of the other notes`}
+                    {(degree.get(selectedId) || 0) === 0 ? "Not connected to any other topic" : `${connectivity}% of the other topics`}
                   </span>
                 </div>
                 <Ring className="w-14 h-14" stroke={3.5} value={connectivity} track="text-surface-container-highest">
                   <Icon name="trending_up" className="text-secondary text-sm" />
                 </Ring>
               </div>
+              )}
 
               {neighbours.length > 0 && (
                 <div className="flex flex-col gap-space-xs pt-space-xs">

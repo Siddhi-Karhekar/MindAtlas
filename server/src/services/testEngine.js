@@ -40,8 +40,12 @@ function isSupportedByContext(excerpt, contextText) {
   return normalize(contextText).includes(needle);
 }
 
+// A topic's display label: "Document › Subtopic" for a subtopic of a split
+// upload (set by routes/tests.js), the note title otherwise.
+const labelOf = (n) => n?.topicLabel || n?.title;
+
 function buildContext(notes) {
-  return notes.map((n) => `### ${n.title}\n${n.rawText}`).join("\n\n");
+  return notes.map((n) => `### ${labelOf(n)}\n${n.rawText}`).join("\n\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -50,14 +54,14 @@ function buildContext(notes) {
 
 async function generateMcqWithLLM(notes, mcqCount) {
   const context = buildContext(notes);
-  const prompt = `You are drafting multiple-choice questions for a student's self-test, using ONLY the notes below as source material. Do not use any outside knowledge - every question's correct answer must be directly supported by a verbatim short excerpt from these notes. Aim for a roughly even mix of easy, medium, and hard questions across the set.
+  const prompt = `You are drafting multiple-choice questions for a student's self-test, using ONLY the notes below as source material. Do not use any outside knowledge - every question's correct answer must be directly supported by a verbatim short excerpt from these notes. Aim for a roughly even mix of easy, medium, and hard questions across the set, and spread the questions across as many different ### sections as possible - each section is a separate topic the student is assessed on.
 
 NOTES:
 ${context}
 
 Return a JSON array of exactly ${mcqCount} objects, each shaped like:
 {
-  "topic": "<the note title this question is drawn from>",
+  "topic": "<the exact ### heading of the section this question is drawn from>",
   "prompt": "<the question text>",
   "options": ["<option A>", "<option B>", "<option C>", "<option D>"],
   "correctAnswer": "<must exactly match one of the options>",
@@ -253,7 +257,7 @@ function pickUnusedKeyword(note, wantedTier, startIndex, used) {
   for (const tier of tiersNearestFirst) {
     for (let offset = 0; offset < 12; offset++) {
       const keyword = keywordForTier(note, tier, startIndex + offset);
-      if (keyword && !used.has(`${note.title}|${keyword}`)) return { keyword, difficulty: tier };
+      if (keyword && !used.has(`${note._id}|${keyword}`)) return { keyword, difficulty: tier };
     }
   }
   return null;
@@ -261,7 +265,7 @@ function pickUnusedKeyword(note, wantedTier, startIndex, used) {
 
 function generateMcqFallback(notes, mcqCount, masteryMap) {
   const drafts = [];
-  const used = new Set(); // "note title|keyword" already turned into a question
+  const used = new Set(); // "note id|keyword" already turned into a question
   const order = weightedNoteOrder(notes, mcqCount, masteryMap);
 
   for (let i = 0; i < mcqCount; i++) {
@@ -270,7 +274,7 @@ function generateMcqFallback(notes, mcqCount, masteryMap) {
     const picked = pickUnusedKeyword(note, wanted, Math.floor(i / notes.length), used);
     if (!picked) continue; // this note is out of distinct questions; don't repeat one
     const { keyword, difficulty } = picked;
-    used.add(`${note.title}|${keyword}`);
+    used.add(`${note._id}|${keyword}`);
 
     const sentences = note.rawText.split(/(?<=[.!?])\s+/);
     const sentence = sentences.find((s) => normalize(s).includes(keyword)) || sentences[0] || note.rawText;
@@ -280,7 +284,7 @@ function generateMcqFallback(notes, mcqCount, masteryMap) {
 
     drafts.push({
       topicId: note._id,
-      topic: note.title,
+      topic: labelOf(note),
       prompt: `Fill in the blank: "${blanked}"`,
       options,
       correctAnswer: keyword,
@@ -298,14 +302,14 @@ function generateMcqFallback(notes, mcqCount, masteryMap) {
 
 async function generateTheoryWithLLM(notes, theoryCount) {
   const context = buildContext(notes);
-  const prompt = `You are drafting short-answer / theory questions for a student's self-test, using ONLY the notes below as source material. Each question should require a 1-4 sentence written explanation, not a single word. Aim for a roughly even mix of easy, medium, and hard questions across the set.
+  const prompt = `You are drafting short-answer / theory questions for a student's self-test, using ONLY the notes below as source material. Each question should require a 1-4 sentence written explanation, not a single word. Aim for a roughly even mix of easy, medium, and hard questions across the set, and spread the questions across as many different ### sections as possible - each section is a separate topic the student is assessed on.
 
 NOTES:
 ${context}
 
 Return a JSON array of exactly ${theoryCount} objects, each shaped like:
 {
-  "topic": "<the note title this question is drawn from>",
+  "topic": "<the exact ### heading of the section this question is drawn from>",
   "prompt": "<the open-ended question text, e.g. 'Explain ...' or 'Why does ...'>",
   "modelAnswer": "<a concise 1-4 sentence model answer, grounded in the notes>",
   "keyPoints": ["<short key phrase a good answer should mention>", "<another key phrase>", "..."],
@@ -340,7 +344,7 @@ function generateTheoryFallback(notes, theoryCount, masteryMap) {
     const picked = pickUnusedKeyword(note, wanted, Math.floor(i / notes.length), used);
     if (!picked) continue;
     const { keyword: primary, difficulty } = picked;
-    used.add(`${note.title}|${primary}`);
+    used.add(`${note._id}|${primary}`);
     const keyPoints = [...new Set([primary, ...note.keywords])].slice(0, 4);
 
     const sentences = note.rawText.split(/(?<=[.!?])\s+/);
@@ -348,8 +352,8 @@ function generateTheoryFallback(notes, theoryCount, masteryMap) {
 
     drafts.push({
       topicId: note._id,
-      topic: note.title,
-      prompt: `In your own words, explain what "${note.title}" says about "${primary}".`,
+      topic: labelOf(note),
+      prompt: `In your own words, explain what your notes on "${note.title}" say about "${primary}".`,
       modelAnswer: sentence,
       keyPoints,
       supportingExcerpt: sentence,
@@ -392,9 +396,10 @@ function resolveSourceNote(draft, notes) {
     const byExcerpt = notes.find((n) => normalize(n.rawText).includes(excerpt));
     if (byExcerpt) return byExcerpt;
   }
-  const claimed = normalize(draft?.topic);
+  const claimed = normalize(draft?.topic).replace(/^#+\s*/, "");
   if (claimed) {
-    const byTitle = notes.find((n) => normalize(n.title) === claimed);
+    const byTitle =
+      notes.find((n) => normalize(labelOf(n)) === claimed) || notes.find((n) => normalize(n.title) === claimed);
     if (byTitle) return byTitle;
   }
   return notes[0];
@@ -408,7 +413,12 @@ function toQuestionItem(d, type, marksPerQuestion, notes, contextText, generated
     // topicId is the durable key (a note id); topic is the human-readable
     // label shown in the UI and refreshed from the note on every generation.
     topicId: d?.topicId || sourceNote?._id || null,
-    topic: sourceNote?.title || d?.topic || "General",
+    topic: labelOf(sourceNote) || d?.topic || "General",
+    // For a subtopic of a split upload: which document it belongs to, so the
+    // feedback can group "Paging" and "Segmentation" under "Unit 3".
+    subtopic: sourceNote?.parentNoteId ? sourceNote.title : null,
+    parentTopicId: sourceNote?.parentTopicId || null,
+    parentTopic: sourceNote?.parentTopic || null,
     prompt: d?.prompt,
     supportingExcerpt: d?.supportingExcerpt,
     difficulty: normalizeDifficulty(d?.difficulty),

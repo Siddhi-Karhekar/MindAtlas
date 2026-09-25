@@ -27,9 +27,16 @@ export async function loadOwnedSubject(req, res, next) {
   next();
 }
 
+// Nodes are every note, including split parents; each carries its
+// hierarchy (parentNoteId / childCount / order) so the client can group
+// subtopics under their document. Edges come in two kinds:
+//   - "similarity": stored TF-IDF links between topic notes (graphEngine.js)
+//   - "contains":   parent -> subtopic, derived from parentNoteId (not stored,
+//                   so it can never drift out of sync with the notes)
 router.get("/:id/graph", loadOwnedSubject, async (req, res) => {
   const notes = await findNotesBySubject(req.subject._id);
   const edges = await findEdgesBySubject(req.subject._id);
+  const ids = new Set(notes.map((n) => String(n._id)));
 
   res.json({
     nodes: notes.map((n) => ({
@@ -38,14 +45,31 @@ router.get("/:id/graph", loadOwnedSubject, async (req, res) => {
       keywords: n.keywords,
       sourceType: n.sourceType,
       createdAt: n.createdAt,
+      parentNoteId: n.parentNoteId || null,
+      childCount: n.childCount || 0,
+      order: n.order ?? null,
+      sectionGroup: n.sectionGroup || null,
     })),
-    edges: edges.map((e) => ({
-      id: e._id,
-      source: e.sourceNoteId,
-      target: e.targetNoteId,
-      weight: e.weight,
-      sharedKeywords: e.sharedKeywords,
-    })),
+    edges: [
+      ...edges.map((e) => ({
+        id: e._id,
+        source: e.sourceNoteId,
+        target: e.targetNoteId,
+        weight: e.weight,
+        sharedKeywords: e.sharedKeywords,
+        edgeType: e.edgeType || "similarity",
+      })),
+      ...notes
+        .filter((n) => n.parentNoteId && ids.has(String(n.parentNoteId)))
+        .map((n) => ({
+          id: `contains-${n._id}`,
+          source: n.parentNoteId,
+          target: n._id,
+          weight: 1,
+          sharedKeywords: [],
+          edgeType: "contains",
+        })),
+    ],
   });
 });
 

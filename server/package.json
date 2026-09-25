@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "node src/index.js",
     "start": "node src/index.js",
-    "test": "node test/mongoStore.test.mjs && node test/masteryEngine.test.mjs"
+    "test": "node test/mongoStore.test.mjs && node test/masteryEngine.test.mjs && node test/documentStructure.test.mjs"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
@@ -15,6 +15,7 @@
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
     "jsonwebtoken": "^9.0.2",
+    "jszip": "^3.10.1",
     "mammoth": "^1.12.3",
     "mongodb": "^6.8.0",
     "multer": "^2.0.0",
