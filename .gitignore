@@ -3,3 +3,5 @@ dist/
 .env
 .env.local
 *.log
+# Tesseract OCR language model, downloaded and cached on first use
+*.traineddata

@@ -15,6 +15,27 @@ function extOf(name = "") {
   return i >= 0 ? name.slice(i).toLowerCase() : "";
 }
 
+// Plain text as editors save it: UTF-8 (a leading BOM is dropped by tidy()'s
+// trim), or UTF-16 with a byte-order mark - what Windows Notepad writes for
+// "Unicode". Read as UTF-8, a UTF-16 file became a note full of NUL
+// characters with no keywords. Anything still containing NULs, or mostly
+// undecodable bytes, is binary data with a text extension, not notes.
+function decodeText(buf) {
+  let text;
+  if (buf[0] === 0xff && buf[1] === 0xfe) {
+    text = buf.subarray(2).toString("utf16le");
+  } else if (buf[0] === 0xfe && buf[1] === 0xff) {
+    text = Buffer.from(buf.subarray(2, buf.length - (buf.length % 2))).swap16().toString("utf16le");
+  } else {
+    text = buf.toString("utf8");
+  }
+  const undecodable = text.match(/\uFFFD/g)?.length || 0;
+  if (text.includes("\0") || undecodable > text.length / 10) {
+    throw new Error("this does not look like a text file - save it as plain text (UTF-8) and upload again");
+  }
+  return text;
+}
+
 /** "image" | "text" | "docx" | "pdf" | null (unsupported) for an uploaded file. */
 export function classifyUpload(file) {
   const ext = extOf(file.originalname);
@@ -43,7 +64,7 @@ function tidy(text) {
 
 export async function extractTextFromDocument(file, kind) {
   if (kind === "text") {
-    return { text: tidy(file.buffer.toString("utf8")) };
+    return { text: tidy(decodeText(file.buffer)) };
   }
   if (kind === "docx") {
     try {
