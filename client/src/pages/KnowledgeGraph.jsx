@@ -28,8 +28,10 @@ function layout(nodes, edges) {
     px[i] = W / 2 + Math.cos(a) * 260;
     py[i] = H / 2 + Math.sin(a) * 200;
   });
+  // "contains" edges (document -> subtopic) pull a document's subtopics
+  // around it, so each upload reads as one cluster on the canvas.
   const links = edges
-    .map((e) => [idx.get(String(e.source)), idx.get(String(e.target)), e.weight || 0.3])
+    .map((e) => [idx.get(String(e.source)), idx.get(String(e.target)), e.edgeType === "contains" ? 0.9 : e.weight || 0.3])
     .filter(([a, b]) => a !== undefined && b !== undefined);
   const k = Math.sqrt((W * H) / n) * 0.75;
   let temp = W / 8;
@@ -87,96 +89,6 @@ function layout(nodes, edges) {
 
 const clip = (s, n) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 
-// The other end of every edge touching `id`, strongest link first.
-function linksOf(edges, id) {
-  if (!id) return [];
-  return edges
-    .filter((e) => String(e.source) === id || String(e.target) === id)
-    .map((e) => ({
-      id: String(e.source) === id ? String(e.target) : String(e.source),
-      edgeId: e.id,
-      weight: e.weight,
-      shared: e.sharedKeywords || [],
-    }))
-    .sort((a, b) => b.weight - a.weight);
-}
-
-// Small "this link is wrong" button shown beside a linked note.
-function UnlinkButton({ title, busy, onClick }) {
-  return (
-    <button
-      type="button"
-      data-testid="unlink-button"
-      onClick={onClick}
-      disabled={busy}
-      title={`Not related? Remove the link to ${title}`}
-      aria-label={`Remove the link to ${title}`}
-      className="w-7 h-7 shrink-0 flex items-center justify-center rounded-lg text-outline hover:text-error hover:bg-error-container/40 disabled:opacity-40 transition-colors"
-    >
-      <Icon name="link_off" className="text-sm" />
-    </button>
-  );
-}
-
-// How many clusters get their own colour (--c-cluster-1..3 in index.css). The
-// three colours were validated as a set for colour-blind separation in both
-// themes; nodes sit anywhere on the canvas, so every pair of clusters has to
-// stay distinguishable, which a longer palette cannot guarantee. Clusters are
-// numbered largest-first by the server, so the three largest get colours and
-// any others share a neutral "Other clusters" grey.
-const CLUSTER_COLOURS = 3;
-
-// Dot style for a cluster: its colour, grey for "Other clusters", or a hollow
-// ring for a note that is in no cluster (a cluster of one).
-function clusterSwatch(cluster) {
-  if (!cluster || cluster.size < 2) return { className: "border-2 border-outline" };
-  if (cluster.id <= CLUSTER_COLOURS) return { style: { backgroundColor: `var(--c-cluster-${cluster.id})` } };
-  return { className: "bg-outline" };
-}
-
-// Keyword-map layout, on the same W x H canvas as the graph so zoom and pan
-// work unchanged: the note in the middle, its keywords on an ellipse around
-// it (strongest at the top, then clockwise), and the open keyword's related
-// words fanned out beyond it. Deterministic - no physics.
-function keywordMapLayout(keywords, openKeyword) {
-  const cx = W / 2;
-  const cy = H / 2 + 10;
-  const pos = new Map([["root", [cx, cy]]]);
-  keywords.forEach((k, i) => {
-    const a = -Math.PI / 2 + (i / keywords.length) * Math.PI * 2;
-    pos.set(`kw:${k.keyword}`, [cx + Math.cos(a) * 270, cy + Math.sin(a) * 180]);
-    if (k.keyword !== openKeyword) return;
-    const m = k.subKeywords.length;
-    k.subKeywords.forEach((s, j) => {
-      const b = a + (j - (m - 1) / 2) * 0.3;
-      pos.set(`sub:${s}`, [cx + Math.cos(b) * 400, cy + Math.sin(b) * 268]);
-    });
-  });
-  return pos;
-}
-
-// A sentence with each use of `word` marked.
-function highlight(sentence, word) {
-  const parts = sentence.split(new RegExp(`(\\b${word.replace(/[^a-z0-9]/gi, "\\$&")}\\b)`, "gi"));
-  return parts.map((p, i) =>
-    i % 2 === 1 ? (
-      <mark key={i} className="rounded px-0.5 bg-secondary-container text-on-secondary-container">
-        {p}
-      </mark>
-    ) : (
-      p
-    )
-  );
-}
-
-// Why an ambiguous cross-subject pair was not linked - mirrors classifyPair()
-// in server/src/services/graphEngine.js (two shared keywords AND similarity
-// of at least 0.25 are both required across subjects).
-function rejectReason(shared) {
-  if (shared.length === 1) return `Only “${shared[0]}” in common, likely with a different meaning`;
-  return `Shares ${shared.join(", ")}, but the notes are otherwise too different`;
-}
-
 export default function KnowledgeGraph() {
   const { subjectId } = useParams();
   const [graph, setGraph] = useState(null);
@@ -185,27 +97,12 @@ export default function KnowledgeGraph() {
   const [selectedId, setSelectedId] = useState(null);
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("all");
-  const [colorBy, setColorBy] = useState("links");
-  const [pending, setPending] = useState(null); // id of the link being corrected
-  const [notice, setNotice] = useState(null); // { text, undoEdgeId?, label?, error? }
-  // A note's keyword map, shown in place of the subject graph:
-  // { subjectId, noteId, data (null while loading), keyword (the open one) }.
-  // Tied to the subject it was opened in, so opening another subject's graph
-  // shows that graph rather than this map.
-  const [mapState, setMapState] = useState(null);
-  const map = mapState?.subjectId === subjectId ? mapState : null;
-  const mapNoteId = map?.noteId || null;
   const [pos, setPos] = useState(new Map());
   const [view, setView] = useState({ x: 0, y: 0, k: 1 });
   const viewportRef = useRef(null);
   const dragRef = useRef(null);
   const viewRef = useRef(view);
   viewRef.current = view;
-  // Which subject is on screen now, for answers that arrive after navigating away.
-  const subjectRef = useRef(subjectId);
-  useEffect(() => {
-    subjectRef.current = subjectId;
-  }, [subjectId]);
 
   useEffect(() => {
     Promise.all([api.getGraph(subjectId), api.listNotes(subjectId)])
@@ -216,118 +113,29 @@ export default function KnowledgeGraph() {
       .catch((err) => setError(err.message));
   }, [subjectId]);
 
-  // Links per note in this subject, counting links to other subjects too - a
-  // note linked only across subjects is not "isolated". Keyed by this
-  // subject's notes only; other subjects' notes are not counted here.
+  // Similarity links only: a document's "contains" edges to its own subtopics
+  // are structure, and counting them would make every upload look like a hub.
+  const linkEdges = useMemo(() => (graph?.edges || []).filter((e) => e.edgeType !== "contains"), [graph]);
   const degree = useMemo(() => {
     const d = new Map();
     graph?.nodes.forEach((n) => d.set(String(n.id), 0));
-    [...(graph?.edges || []), ...(graph?.crossSubjectEdges || [])].forEach((e) => {
-      for (const id of [String(e.source), String(e.target)]) if (d.has(id)) d.set(id, d.get(id) + 1);
+    linkEdges.forEach((e) => {
+      d.set(String(e.source), (d.get(String(e.source)) || 0) + 1);
+      d.set(String(e.target), (d.get(String(e.target)) || 0) + 1);
     });
     return d;
-  }, [graph]);
+  }, [graph, linkEdges]);
 
-  // Other subjects' notes, from the graph route's additive fields. Only notes
-  // with an accepted cross-subject link are drawn; rejected (ambiguous) pairs
-  // are listed in the inspector instead.
-  const crossEdges = useMemo(() => graph?.crossSubjectEdges || [], [graph]);
-  const rejectedEdges = useMemo(() => graph?.rejectedEdges || [], [graph]);
-  // Links the student marked as wrong; not drawn or counted, only listed so
-  // they can be restored.
-  const removedEdges = useMemo(() => graph?.removedEdges || [], [graph]);
-  // Document -> subtopic links for long uploads split into subtopics. Pure
-  // structure: drawn and used for layout, never counted as links.
-  const containsEdges = useMemo(() => graph?.containsEdges || [], [graph]);
-  const externalById = useMemo(() => new Map((graph?.externalNodes || []).map((n) => [String(n.id), n])), [graph]);
-  const drawnExternal = useMemo(() => {
-    const linked = new Set(crossEdges.flatMap((e) => [String(e.source), String(e.target)]));
-    return [...externalById.values()].filter((n) => linked.has(String(n.id)));
-  }, [crossEdges, externalById]);
-
-  // Groups of linked notes within this subject, from the graph route (absent
-  // on an older server, in which case the Clusters view is not offered).
-  const hasClusters = Array.isArray(graph?.clusters);
-  const clusterById = useMemo(() => new Map((graph?.clusters || []).map((c) => [c.id, c])), [graph]);
-  const realClusters = useMemo(() => (graph?.clusters || []).filter((c) => c.size > 1), [graph]);
-  const byCluster = colorBy === "clusters" && hasClusters;
-
-  // Lay the graph out when it first loads (or a different subject opens). When
-  // the same graph is refetched - after a link is removed or restored - every
-  // node it can show already has a position, so positions and the selected
-  // note are kept rather than rearranging the page under the student.
   useEffect(() => {
     if (!graph) return;
-    const all = [...graph.nodes, ...drawnExternal];
-    // "contains" edges pull a document's subtopics around it, so each split
-    // upload reads as one group on the canvas
-    const structure = containsEdges.map((e) => ({ ...e, weight: 0.9 }));
-    setPos((prev) =>
-      all.every((n) => prev.has(String(n.id))) ? prev : layout(all, [...graph.edges, ...crossEdges, ...structure])
-    );
-    setSelectedId((prev) => {
-      if (prev && all.some((n) => String(n.id) === prev)) return prev;
-      // start on the best-connected topic (a split document is a container, not a topic)
-      const docIds = new Set(graph.nodes.filter(isSplitParent).map((n) => String(n.id)));
-      let best = null;
-      for (const [id, dg] of degree) if (!docIds.has(id) && (best === null || dg > degree.get(best))) best = id;
-      return best ?? (graph.nodes[0] ? String(graph.nodes[0].id) : null);
-    });
+    setPos(layout(graph.nodes, graph.edges));
+    // start on the best-connected note
+    let best = null;
+    const docIds = new Set(graph.nodes.filter(isSplitParent).map((n) => String(n.id)));
+    for (const [id, dg] of degree) if (!docIds.has(id) && (best === null || dg > degree.get(best))) best = id;
+    if (best === null && graph.nodes[0]) best = String(graph.nodes[0].id);
+    setSelectedId(best);
   }, [graph]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // Hide the "link removed / restored" notice after a few seconds.
-  useEffect(() => {
-    if (!notice) return undefined;
-    const t = setTimeout(() => setNotice(null), 6000);
-    return () => clearTimeout(t);
-  }, [notice]);
-
-  useEffect(() => {
-    if (!mapNoteId) return undefined;
-    let cancelled = false;
-    api
-      .getKeywordMap(mapNoteId)
-      .then((data) => {
-        if (!cancelled) setMapState((m) => (m?.noteId === mapNoteId ? { ...m, data } : m));
-      })
-      .catch((err) => {
-        if (cancelled) return;
-        setMapState(null);
-        setNotice({ text: err.message, error: true });
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [mapNoteId]);
-
-  function openMap(noteId, keyword = null) {
-    setSelectedId(String(noteId));
-    setMapState({ subjectId, noteId: String(noteId), data: null, keyword });
-  }
-  const closeMap = () => setMapState(null);
-  const toggleMapKeyword = (k) => setMapState((m) => (m ? { ...m, keyword: m.keyword === k ? null : k } : m));
-
-  // Mark a link as wrong ("remove") or undo that ("restore"), then refetch the
-  // graph so counts, clusters and colours all update together.
-  async function correctLink(edgeId, action, label) {
-    const sid = subjectId;
-    setPending(edgeId);
-    try {
-      await api.correctEdge(edgeId, action);
-      const g = await api.getGraph(sid);
-      if (subjectRef.current !== sid) return;
-      setGraph(g);
-      setNotice(
-        action === "remove"
-          ? { text: `Link to “${clip(label, 28)}” removed`, undoEdgeId: edgeId, label }
-          : { text: `Link to “${clip(label, 28)}” restored` }
-      );
-    } catch (err) {
-      setNotice({ text: err.message, error: true });
-    } finally {
-      setPending(null);
-    }
-  }
 
   const fit = useCallback(() => {
     const el = viewportRef.current;
@@ -338,16 +146,13 @@ export default function KnowledgeGraph() {
     setView({ k, x: (width - W * k) / 2, y: (height - H * k) / 2 });
   }, []);
 
-  // Fit on first load and on opening another subject - not on every refetch,
-  // which would undo the student's zoom each time they remove a link.
-  const hasNodes = Boolean(graph?.nodes.length);
   useEffect(() => {
-    if (!hasNodes) return undefined;
+    if (!graph || graph.nodes.length === 0) return undefined;
     fit();
     const ro = new ResizeObserver(() => fit());
     if (viewportRef.current) ro.observe(viewportRef.current);
     return () => ro.disconnect();
-  }, [hasNodes, subjectId, fit]);
+  }, [graph, fit]);
 
   // Wheel zoom around the cursor. Registered natively so preventDefault works.
   useEffect(() => {
@@ -414,73 +219,54 @@ export default function KnowledgeGraph() {
   const nodeById = useMemo(() => new Map((graph?.nodes || []).map((n) => [String(n.id), n])), [graph]);
   const selected = selectedId ? nodeById.get(selectedId) : null;
   const selectedNote = selectedId ? noteById.get(selectedId) : null;
-  const selectedExternal = selectedId ? externalById.get(selectedId) : null;
-  const selectedCluster = selected ? clusterById.get(selected.clusterId) : null;
   const selectedIsDoc = selected ? isSplitParent(selected) : false;
   const selectedParent = selected?.parentNoteId ? nodeById.get(String(selected.parentNoteId)) : null;
-  const selectedSubtopics = selectedIsDoc
-    ? (graph?.nodes || [])
-        .filter((n) => String(n.parentNoteId) === String(selectedId))
-        .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
-    : [];
+  const subtopicsOf = useCallback(
+    (id) =>
+      (graph?.nodes || [])
+        .filter((n) => String(n.parentNoteId) === String(id))
+        .sort((a, b) => (a.order ?? 0) - (b.order ?? 0)),
+    [graph]
+  );
+  const selectedSubtopics = selectedIsDoc ? subtopicsOf(selectedId) : [];
   const topicCount = graph ? graph.nodes.filter((n) => !isSplitParent(n)).length : 0;
   const docCount = graph ? graph.nodes.length - topicCount : 0;
-  const selectedSwatch = clusterSwatch(selectedCluster);
 
-  const neighbours = useMemo(() => linksOf(graph?.edges || [], selectedId), [graph, selectedId]);
-  const crossNeighbours = useMemo(() => linksOf(crossEdges, selectedId), [crossEdges, selectedId]);
-  const rejectedNeighbours = useMemo(() => linksOf(rejectedEdges, selectedId), [rejectedEdges, selectedId]);
-  const removedNeighbours = useMemo(() => linksOf(removedEdges, selectedId), [removedEdges, selectedId]);
-
-  const mapKeywords = useMemo(() => map?.data?.keywords || [], [map?.data]);
-  const mapPos = useMemo(() => keywordMapLayout(mapKeywords, map?.keyword), [mapKeywords, map?.keyword]);
-  const mapOpen = mapKeywords.find((k) => k.keyword === map?.keyword) || null;
-  const mapTitle = map?.data?.note.title || nodeById.get(mapNoteId)?.title || "";
-  // Other notes in this subject that share the open keyword.
-  const alsoIn = mapOpen
-    ? (graph?.nodes || []).filter((n) => String(n.id) !== mapNoteId && (n.keywords || []).includes(mapOpen.keyword))
-    : [];
+  const neighbours = useMemo(() => {
+    if (!graph || !selectedId) return [];
+    return linkEdges
+      .filter((e) => String(e.source) === selectedId || String(e.target) === selectedId)
+      .map((e) => ({
+        id: String(e.source) === selectedId ? String(e.target) : String(e.source),
+        weight: e.weight,
+        shared: e.sharedKeywords || [],
+      }))
+      .sort((a, b) => b.weight - a.weight);
+  }, [graph, linkEdges, selectedId]);
 
   const q = query.trim().toLowerCase();
-  const textMatch = (n) => {
-    if (!q) return true;
-    // a subtopic also matches its document's title
-    const parent = n.parentNoteId ? nodeById.get(String(n.parentNoteId)) : null;
-    return (
-      n.title.toLowerCase().includes(q) ||
-      Boolean(parent?.title.toLowerCase().includes(q)) ||
-      (n.keywords || []).some((k) => k.toLowerCase().includes(q))
-    );
-  };
   const matches = (n) => {
     if (!n) return false;
     const id = String(n.id);
     const deg = degree.get(id) || 0;
-    const doc = isSplitParent(n); // a document is never "isolated": its subtopics carry its links
+    const doc = isSplitParent(n);
     if (filter === "linked" && deg === 0 && !doc) return false;
     if (filter === "isolated" && (deg > 0 || doc)) return false;
-    return textMatch(n);
+    if (!q) return true;
+    const parent = n.parentNoteId ? nodeById.get(String(n.parentNoteId)) : null;
+    return (
+      n.title.toLowerCase().includes(q) ||
+      (parent && parent.title.toLowerCase().includes(q)) ||
+      (n.keywords || []).some((k) => k.toLowerCase().includes(q))
+    );
   };
-  // Other subjects' notes have no links inside this subject, so the
-  // Linked/Isolated filters dim them; otherwise only the search applies.
-  const matchesExternal = (n) => filter === "all" && textMatch(n);
-  const matchesAny = (id) =>
-    nodeById.has(id) ? matches(nodeById.get(id)) : externalById.has(id) && matchesExternal(externalById.get(id));
   const visibleCount = graph ? graph.nodes.filter(matches).length : 0;
 
   const tone = (deg) =>
     deg >= 3 ? { dot: "bg-tertiary", label: "Hub" } : deg >= 1 ? { dot: "bg-secondary", label: "Linked" } : { dot: "bg-primary-container", label: "Isolated" };
 
-  // Connectivity is the share of this subject's other notes the selected note
-  // links to, so it counts same-subject links only and never passes 100%.
   const maxLinks = Math.max(1, topicCount - 1);
-  const connectivity = selected ? Math.round((neighbours.length / maxLinks) * 100) : 0;
-  const connectivityText =
-    (degree.get(selectedId) || 0) === 0
-      ? "Not connected to any other topic"
-      : neighbours.length === 0
-        ? `Linked only to other subjects (${crossNeighbours.length})`
-        : `${connectivity}% of the other topics${crossNeighbours.length ? ` · ${crossNeighbours.length} in other subjects` : ""}`;
+  const connectivity = selected ? Math.round(((degree.get(selectedId) || 0) / maxLinks) * 100) : 0;
   const chip = (active) =>
     `px-space-sm py-1 rounded-full font-label-md text-label-md transition-colors ${
       active ? "bg-primary-container text-on-primary-container shadow-sm" : "text-on-surface-variant hover:bg-surface-container-high"
@@ -524,36 +310,31 @@ export default function KnowledgeGraph() {
         ></div>
 
         <div
-          className={`absolute left-0 top-0 origin-top-left ${map ? "hidden" : ""}`}
+          className="absolute left-0 top-0 origin-top-left"
           style={{ width: W, height: H, transform: `translate(${view.x}px, ${view.y}px) scale(${view.k})` }}
         >
           <svg className="absolute left-0 top-0 pointer-events-none" width={W} height={H} style={{ overflow: "visible" }}>
-            {containsEdges.map((e) => {
-              const a = pos.get(String(e.source));
-              const b = pos.get(String(e.target));
-              if (!a || !b) return null;
-              const touches = String(e.source) === selectedId || String(e.target) === selectedId;
-              const dim = q || filter !== "all" ? !(matches(nodeById.get(String(e.source))) && matches(nodeById.get(String(e.target)))) : false;
-              return (
-                <line
-                  key={e.id}
-                  data-edge-type="contains"
-                  x1={a[0]}
-                  y1={a[1]}
-                  x2={b[0]}
-                  y2={b[1]}
-                  style={{ stroke: "var(--c-primary)" }}
-                  strokeWidth={touches ? 2 : 1.25}
-                  opacity={dim ? 0.05 : touches ? 0.55 : 0.18}
-                />
-              );
-            })}
             {graph.edges.map((e) => {
               const a = pos.get(String(e.source));
               const b = pos.get(String(e.target));
               if (!a || !b) return null;
               const touches = String(e.source) === selectedId || String(e.target) === selectedId;
               const dim = q || filter !== "all" ? !(matches(nodeById.get(String(e.source))) && matches(nodeById.get(String(e.target)))) : false;
+              if (e.edgeType === "contains") {
+                return (
+                  <line
+                    key={e.id}
+                    data-edge-type="contains"
+                    x1={a[0]}
+                    y1={a[1]}
+                    x2={b[0]}
+                    y2={b[1]}
+                    style={{ stroke: "var(--c-primary)" }}
+                    strokeWidth={touches ? 2 : 1.25}
+                    opacity={dim ? 0.05 : touches ? 0.55 : 0.18}
+                  />
+                );
+              }
               return (
                 <line
                   key={e.id}
@@ -568,30 +349,6 @@ export default function KnowledgeGraph() {
                 />
               );
             })}
-            {crossEdges.map((e) => {
-              const a = pos.get(String(e.source));
-              const b = pos.get(String(e.target));
-              if (!a || !b) return null;
-              const touches = String(e.source) === selectedId || String(e.target) === selectedId;
-              const dim = q || filter !== "all" ? !(matchesAny(String(e.source)) && matchesAny(String(e.target))) : false;
-              // Amber marks other subjects, except in the Clusters view, where
-              // colour means cluster only and these go neutral.
-              return (
-                <line
-                  key={e.id}
-                  data-testid="graph-cross-edge"
-                  x1={a[0]}
-                  y1={a[1]}
-                  x2={b[0]}
-                  y2={b[1]}
-                  style={{ stroke: byCluster ? "var(--c-outline)" : "var(--c-tertiary)" }}
-                  strokeWidth={1 + (e.weight || 0.3) * 4}
-                  strokeDasharray="1 6"
-                  strokeLinecap="round"
-                  opacity={dim ? 0.08 : touches ? 0.9 : 0.55}
-                />
-              );
-            })}
           </svg>
 
           {graph.nodes.map((n) => {
@@ -600,9 +357,6 @@ export default function KnowledgeGraph() {
             if (!p) return null;
             const deg = degree.get(id) || 0;
             const t = tone(deg);
-            const cluster = clusterById.get(n.clusterId);
-            const inCluster = cluster?.size > 1;
-            const sw = byCluster ? clusterSwatch(cluster) : { className: t.dot };
             const isSel = id === selectedId;
             const dim = !matches(n);
             if (isSplitParent(n)) {
@@ -639,8 +393,7 @@ export default function KnowledgeGraph() {
                 <div className="flex flex-col text-left">
                   <span className="font-ui-title text-ui-title text-on-surface leading-tight whitespace-nowrap">{clip(n.title, 30)}</span>
                   <span className="font-label-sm text-label-sm text-secondary uppercase tracking-widest">
-                    Selected •{" "}
-                    {byCluster ? (inCluster ? `Cluster ${cluster.id}` : "No cluster") : `${deg} ${deg === 1 ? "link" : "links"}`}
+                    Selected • {deg} {deg === 1 ? "link" : "links"}
                   </span>
                 </div>
               </div>
@@ -653,166 +406,33 @@ export default function KnowledgeGraph() {
                 className="absolute z-10 -translate-x-1/2 -translate-y-1/2 flex items-center gap-space-xs p-space-xs px-space-md rounded-full bg-surface-container shadow-md cursor-pointer hover:scale-105 transition-transform"
                 style={{ left: p[0], top: p[1], opacity: dim ? 0.3 : 1 }}
               >
-                <div data-testid="graph-node-dot" className={`w-3.5 h-3.5 rounded-full ${sw.className || ""}`} style={sw.style}></div>
+                <div className={`w-3.5 h-3.5 rounded-full ${t.dot}`}></div>
                 <span className="font-ui-body text-ui-body text-on-surface whitespace-nowrap">{clip(n.title, 26)}</span>
-                {/* In the Clusters view the badge names the cluster, so identity never rests on colour alone. */}
-                {(!byCluster || inCluster) && (
-                  <span className="font-label-sm text-label-sm text-on-surface-variant bg-surface-container-high px-1.5 py-0.5 rounded">
-                    {byCluster ? `C${cluster.id}` : deg}
-                  </span>
-                )}
-              </div>
-            );
-          })}
-
-          {drawnExternal.map((n) => {
-            const id = String(n.id);
-            const p = pos.get(id);
-            if (!p) return null;
-            const isSel = id === selectedId;
-            const dim = !matchesExternal(n);
-            return (
-              <div
-                key={id}
-                data-testid="graph-external-node"
-                onPointerDown={(e) => onPointerDown(e, id)}
-                title={`${n.subjectName}: ${n.title}`}
-                className={`absolute -translate-x-1/2 -translate-y-1/2 flex flex-col items-start px-space-md py-space-xs rounded-2xl border border-dashed cursor-pointer transition-transform ${
-                  isSel
-                    ? `z-20 bg-surface ring-2 shadow-xl ${byCluster ? "border-outline ring-outline" : "border-tertiary ring-tertiary"}`
-                    : "z-10 bg-surface-container-lowest/80 border-outline shadow-sm hover:scale-105"
-                }`}
-                style={{ left: p[0], top: p[1], opacity: dim ? 0.3 : isSel ? 1 : 0.85 }}
-              >
-                <span
-                  className={`font-label-sm text-label-sm uppercase tracking-widest leading-tight whitespace-nowrap ${
-                    byCluster ? "text-on-surface-variant" : "text-tertiary"
-                  }`}
-                >
-                  {clip(n.subjectName, 24)}
-                </span>
-                <span className="font-ui-body text-ui-body text-on-surface-variant leading-tight whitespace-nowrap">{clip(n.title, 26)}</span>
+                <span className="font-label-sm text-label-sm text-on-surface-variant bg-surface-container-high px-1.5 py-0.5 rounded">{deg}</span>
               </div>
             );
           })}
         </div>
-
-        {map && (
-          <div
-            data-testid="keyword-map"
-            className="absolute left-0 top-0 origin-top-left"
-            style={{ width: W, height: H, transform: `translate(${view.x}px, ${view.y}px) scale(${view.k})` }}
-          >
-            <svg className="absolute left-0 top-0 pointer-events-none" width={W} height={H} style={{ overflow: "visible" }}>
-              {mapKeywords.map((k) => {
-                const [x1, y1] = mapPos.get("root");
-                const [x2, y2] = mapPos.get(`kw:${k.keyword}`);
-                const open = k.keyword === map.keyword;
-                return (
-                  <line
-                    key={k.keyword}
-                    x1={x1}
-                    y1={y1}
-                    x2={x2}
-                    y2={y2}
-                    style={{ stroke: open ? "var(--c-secondary)" : "var(--c-outline)" }}
-                    strokeWidth={open ? 2.5 : 1 + k.weight * 2}
-                    opacity={open ? 0.9 : 0.5}
-                  />
-                );
-              })}
-              {mapOpen?.subKeywords.map((s) => {
-                const [x1, y1] = mapPos.get(`kw:${mapOpen.keyword}`);
-                const [x2, y2] = mapPos.get(`sub:${s}`);
-                return (
-                  <line key={s} x1={x1} y1={y1} x2={x2} y2={y2} style={{ stroke: "var(--c-secondary)" }} strokeWidth={1.5} strokeDasharray="4 3" opacity={0.7} />
-                );
-              })}
-            </svg>
-
-            <div
-              className="absolute z-20 -translate-x-1/2 -translate-y-1/2 flex items-center gap-space-sm p-space-sm pl-space-md pr-space-lg rounded-full bg-surface shadow-xl ring-2 ring-secondary"
-              style={{ left: mapPos.get("root")[0], top: mapPos.get("root")[1] }}
-            >
-              <div className="flex items-center justify-center w-8 h-8 rounded-full bg-secondary text-on-secondary">
-                <Icon name="account_tree" className="text-sm" />
-              </div>
-              <div className="flex flex-col text-left">
-                <span className="font-ui-title text-ui-title text-on-surface leading-tight whitespace-nowrap">{clip(mapTitle, 30)}</span>
-                <span className="font-label-sm text-label-sm text-secondary uppercase tracking-widest">
-                  {map.data ? `${mapKeywords.length} keywords` : "Loading…"}
-                </span>
-              </div>
-            </div>
-
-            {mapKeywords.map((k) => {
-              const [x, y] = mapPos.get(`kw:${k.keyword}`);
-              const open = k.keyword === map.keyword;
-              // Stopping pointerdown makes a click open the keyword instead of starting a pan.
-              return (
-                <button
-                  type="button"
-                  key={k.keyword}
-                  data-testid="map-keyword"
-                  aria-pressed={open}
-                  onPointerDown={(e) => e.stopPropagation()}
-                  onClick={() => toggleMapKeyword(k.keyword)}
-                  title={`${k.keyword}: click to see the words it appears with`}
-                  className={`absolute z-10 -translate-x-1/2 -translate-y-1/2 px-space-md py-space-xs rounded-full shadow-md whitespace-nowrap font-ui-body transition-colors ${
-                    open ? "bg-secondary text-on-secondary" : "bg-surface-container text-on-surface hover:bg-surface-container-high"
-                  }`}
-                  style={{ left: x, top: y, fontSize: 12 + Math.round(k.weight * 6) }}
-                >
-                  {k.keyword}
-                </button>
-              );
-            })}
-
-            {mapOpen?.subKeywords.map((s) => {
-              const [x, y] = mapPos.get(`sub:${s}`);
-              return (
-                <span
-                  key={s}
-                  data-testid="map-related"
-                  className="absolute z-10 -translate-x-1/2 -translate-y-1/2 px-space-sm py-0.5 rounded-full border border-dashed border-secondary bg-surface-container-lowest text-on-surface-variant font-label-md text-label-md whitespace-nowrap"
-                  style={{ left: x, top: y }}
-                >
-                  {s}
-                </span>
-              );
-            })}
-          </div>
-        )}
       </div>
 
       <header className="absolute top-space-base left-space-base right-[23.5rem] z-30 flex items-center justify-between gap-space-md pointer-events-none flex-wrap">
-        {map ? (
-          <div className="flex items-center gap-space-sm p-space-xs pr-space-md bg-surface/90 backdrop-blur-md rounded-full shadow-lg pointer-events-auto">
-            <button type="button" onClick={closeMap} className={`${chip(false)} flex items-center gap-1`}>
-              <Icon name="arrow_back" className="text-sm" />
-              Back to graph
-            </button>
-            <span className="font-ui-body text-ui-body text-on-surface-variant whitespace-nowrap">Keyword map · {clip(mapTitle, 40)}</span>
+        <div className="flex items-center gap-space-sm p-space-xs pl-space-md pr-space-xs bg-surface/90 backdrop-blur-md rounded-full shadow-lg pointer-events-auto">
+          <Icon name="search" className="text-primary text-base" />
+          <input
+            aria-label="Search notes"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            className="w-48 bg-transparent font-ui-body text-ui-body text-on-surface placeholder:text-outline focus:outline-none"
+            placeholder="Search a note or keyword..."
+            type="text"
+          />
+          <div className="h-4 w-px bg-outline-variant/60 mx-space-xs"></div>
+          <div className="flex items-center gap-space-2xs">
+            <button type="button" className={chip(filter === "all")} onClick={() => setFilter("all")}>All Notes</button>
+            <button type="button" className={chip(filter === "linked")} onClick={() => setFilter("linked")}>Linked</button>
+            <button type="button" className={chip(filter === "isolated")} onClick={() => setFilter("isolated")}>Isolated</button>
           </div>
-        ) : (
-          <div className="flex items-center gap-space-sm p-space-xs pl-space-md pr-space-xs bg-surface/90 backdrop-blur-md rounded-full shadow-lg pointer-events-auto">
-            <Icon name="search" className="text-primary text-base" />
-            <input
-              aria-label="Search notes"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              className="w-48 bg-transparent font-ui-body text-ui-body text-on-surface placeholder:text-outline focus:outline-none"
-              placeholder="Search a note or keyword..."
-              type="text"
-            />
-            <div className="h-4 w-px bg-outline-variant/60 mx-space-xs"></div>
-            <div className="flex items-center gap-space-2xs">
-              <button type="button" className={chip(filter === "all")} onClick={() => setFilter("all")}>All Notes</button>
-              <button type="button" className={chip(filter === "linked")} onClick={() => setFilter("linked")}>Linked</button>
-              <button type="button" className={chip(filter === "isolated")} onClick={() => setFilter("isolated")}>Isolated</button>
-            </div>
-          </div>
-        )}
+        </div>
         <div className="flex items-center gap-space-2xs p-space-xs bg-surface/90 backdrop-blur-md rounded-full shadow-lg pointer-events-auto">
           <button type="button" onClick={() => zoomBy(1.2)} title="Zoom in" aria-label="Zoom in" className="w-8 h-8 flex items-center justify-center rounded-full hover:bg-surface-container text-on-surface transition-colors">
             <Icon name="add" className="text-base" />
@@ -827,230 +447,35 @@ export default function KnowledgeGraph() {
         </div>
       </header>
 
-      {notice && (
-        <div
-          role="status"
-          data-testid="graph-notice"
-          className="absolute top-[4.25rem] left-space-base z-30 flex items-center gap-space-sm px-space-md py-space-xs rounded-full bg-inverse-surface text-inverse-on-surface shadow-lg pointer-events-auto"
-        >
-          <Icon name={notice.error ? "error" : notice.undoEdgeId ? "link_off" : "link"} className="text-sm" />
-          <span className="font-ui-body text-ui-body">{notice.text}</span>
-          {notice.undoEdgeId && (
-            <button
-              type="button"
-              disabled={pending === notice.undoEdgeId}
-              onClick={() => correctLink(notice.undoEdgeId, "restore", notice.label)}
-              className="font-label-md text-label-md font-semibold text-inverse-primary hover:underline disabled:opacity-40"
-            >
-              Undo
-            </button>
-          )}
+      <div className="absolute bottom-space-base left-space-base z-30 flex items-center gap-space-md p-space-xs px-space-md bg-surface/90 backdrop-blur-md rounded-xl shadow-md pointer-events-auto flex-wrap">
+        <div className="flex items-center gap-space-xs">
+          <span className="w-2.5 h-2.5 rounded-full bg-tertiary"></span>
+          <span className="font-label-sm text-label-sm text-on-surface-variant">Hub (3+ links)</span>
         </div>
-      )}
-
-      {map && (
-        <div
-          data-testid="map-legend"
-          className="absolute bottom-space-base left-space-base right-[23.5rem] z-30 w-fit flex items-center gap-x-space-md gap-y-space-xs p-space-xs px-space-md bg-surface/90 backdrop-blur-md rounded-xl shadow-md pointer-events-auto flex-wrap"
-        >
+        <div className="flex items-center gap-space-xs">
+          <span className="w-2.5 h-2.5 rounded-full bg-secondary"></span>
+          <span className="font-label-sm text-label-sm text-on-surface-variant">Linked (1–2)</span>
+        </div>
+        <div className="flex items-center gap-space-xs">
+          <span className="w-2.5 h-2.5 rounded-full bg-primary-container"></span>
+          <span className="font-label-sm text-label-sm text-on-surface-variant">Isolated</span>
+        </div>
+        {docCount > 0 && (
           <div className="flex items-center gap-space-xs">
-            <span className="w-2.5 h-2.5 rounded-full bg-secondary"></span>
-            <span className="font-label-sm text-label-sm text-on-surface-variant">Keyword (bigger = matters more to this note)</span>
-          </div>
-          <div className="flex items-center gap-space-xs">
-            <span className="w-2.5 h-2.5 rounded-full border border-dashed border-secondary"></span>
-            <span className="font-label-sm text-label-sm text-on-surface-variant">Appears with</span>
-          </div>
-          <div className="h-3 w-px bg-outline-variant/60"></div>
-          <span className="font-label-sm text-label-sm text-secondary font-semibold">Click a keyword to open it</span>
-        </div>
-      )}
-
-      {!map && (
-        <div
-          data-testid="graph-legend"
-          className="absolute bottom-space-base left-space-base right-[23.5rem] z-30 w-fit flex items-center gap-x-space-md gap-y-space-xs p-space-xs px-space-md bg-surface/90 backdrop-blur-md rounded-xl shadow-md pointer-events-auto flex-wrap"
-        >
-          {hasClusters && (
-            <>
-              <div className="flex items-center gap-space-2xs" role="group" aria-label="Colour notes by">
-                <span className="font-label-sm text-label-sm text-on-surface-variant mr-space-2xs">Colour by</span>
-                <button type="button" aria-pressed={!byCluster} className={chip(!byCluster)} onClick={() => setColorBy("links")}>
-                  Links
-                </button>
-                <button type="button" aria-pressed={byCluster} className={chip(byCluster)} onClick={() => setColorBy("clusters")}>
-                  Clusters
-                </button>
-              </div>
-              <div className="h-3 w-px bg-outline-variant/60"></div>
-            </>
-          )}
-          {byCluster ? (
-            <>
-              {realClusters.slice(0, CLUSTER_COLOURS).map((c) => {
-                const sw = clusterSwatch(c);
-                return (
-                  <div key={c.id} className="flex items-center gap-space-xs" data-testid="legend-cluster">
-                    <span className={`w-2.5 h-2.5 rounded-full ${sw.className || ""}`} style={sw.style}></span>
-                    <span className="font-label-sm text-label-sm text-on-surface-variant">
-                      C{c.id}
-                      {c.keywords.length ? ` · ${clip(c.keywords.slice(0, 2).join(", "), 24)}` : ""} ({c.size})
-                    </span>
-                  </div>
-                );
-              })}
-              {realClusters.length > CLUSTER_COLOURS && (
-                <div className="flex items-center gap-space-xs">
-                  <span className="w-2.5 h-2.5 rounded-full bg-outline"></span>
-                  <span className="font-label-sm text-label-sm text-on-surface-variant">
-                    Other clusters ({realClusters.length - CLUSTER_COLOURS})
-                  </span>
-                </div>
-              )}
-              {graph.clusters.some((c) => c.size === 1) && (
-                <div className="flex items-center gap-space-xs">
-                  <span className="w-2.5 h-2.5 rounded-full border-2 border-outline"></span>
-                  <span className="font-label-sm text-label-sm text-on-surface-variant">No cluster</span>
-                </div>
-              )}
-            </>
-          ) : (
-            <>
-              <div className="flex items-center gap-space-xs">
-                <span className="w-2.5 h-2.5 rounded-full bg-tertiary"></span>
-                <span className="font-label-sm text-label-sm text-on-surface-variant">Hub (3+ links)</span>
-              </div>
-              <div className="flex items-center gap-space-xs">
-                <span className="w-2.5 h-2.5 rounded-full bg-secondary"></span>
-                <span className="font-label-sm text-label-sm text-on-surface-variant">Linked (1–2)</span>
-              </div>
-              <div className="flex items-center gap-space-xs">
-                <span className="w-2.5 h-2.5 rounded-full bg-primary-container"></span>
-                <span className="font-label-sm text-label-sm text-on-surface-variant">Isolated</span>
-              </div>
-            </>
-          )}
-          {docCount > 0 && (
-            <div className="flex items-center gap-space-xs">
-              <span className="w-3 h-2.5 rounded-sm bg-primary-container"></span>
-              <span className="font-label-sm text-label-sm text-on-surface-variant">Document → subtopics</span>
-            </div>
-          )}
-          {drawnExternal.length > 0 && (
-            <div className="flex items-center gap-space-xs">
-              <span className={`w-2.5 h-2.5 rounded-full border border-dashed ${byCluster ? "border-outline" : "border-tertiary"}`}></span>
-              <span className="font-label-sm text-label-sm text-on-surface-variant">Other subject</span>
-            </div>
-          )}
-          <div className="h-3 w-px bg-outline-variant/60"></div>
-          <span className="font-label-sm text-label-sm text-secondary font-semibold">
-            {visibleCount === graph.nodes.length
-              ? `${
-                  docCount
-                    ? `${topicCount} ${topicCount === 1 ? "topic" : "topics"} in ${docCount} ${docCount === 1 ? "document" : "documents"} + notes`
-                    : `${graph.nodes.length} ${graph.nodes.length === 1 ? "note" : "notes"}`
-                } · ${
-                  byCluster
-                    ? `${realClusters.length} ${realClusters.length === 1 ? "cluster" : "clusters"}`
-                    : `${graph.edges.length} ${graph.edges.length === 1 ? "connection" : "connections"}`
-                }${crossEdges.length ? ` · ${crossEdges.length} across subjects` : ""}`
-              : `${visibleCount} of ${graph.nodes.length} notes shown`}
-          </span>
-        </div>
-      )}
-
-      <aside className="w-[340px] h-full bg-surface shadow-2xl flex flex-col justify-between overflow-y-auto z-40 shrink-0" id="inspector-panel">
-        {map && (
-          <div className="flex flex-col p-space-lg gap-space-md" data-testid="map-inspector">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-space-xs text-secondary font-label-md text-label-md uppercase tracking-wider">
-                <Icon name="account_tree" className="text-sm" />
-                <span>Keyword map</span>
-              </div>
-              <button type="button" onClick={closeMap} className="font-label-md text-label-md text-secondary font-semibold hover:underline">
-                Back to graph
-              </button>
-            </div>
-            <h2 className="font-headline-md text-headline-md text-on-surface tracking-tight" data-testid="inspector-title">
-              {mapTitle}
-            </h2>
-
-            {!map.data ? (
-              <p className="font-body-md text-body-md text-on-surface-variant">Loading…</p>
-            ) : mapKeywords.length === 0 ? (
-              <p className="font-body-md text-body-md text-on-surface-variant">This note has no keywords yet.</p>
-            ) : !mapOpen ? (
-              <p className="font-body-md text-body-md text-on-surface-variant">
-                Click a keyword to see the words it appears with and where it comes up in this note. Bigger keywords matter more to this
-                note.
-              </p>
-            ) : (
-              <div className="flex flex-col gap-space-md" data-testid="map-keyword-detail">
-                <span className="self-start px-space-sm py-space-2xs rounded bg-secondary text-on-secondary font-ui-title text-ui-title">
-                  {mapOpen.keyword}
-                </span>
-
-                {mapOpen.subKeywords.length > 0 && (
-                  <div className="flex flex-col gap-space-xs">
-                    <span className="font-label-sm text-label-sm uppercase tracking-wider text-on-surface-variant">Appears with</span>
-                    <div className="flex flex-wrap gap-space-xs">
-                      {mapOpen.subKeywords.map((s) => (
-                        <span
-                          key={s}
-                          className="px-space-sm py-space-2xs rounded-full border border-dashed border-secondary text-on-surface-variant font-label-md text-label-md"
-                        >
-                          {s}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {mapOpen.sentences.length > 0 && (
-                  <div className="flex flex-col gap-space-xs">
-                    <span className="font-label-sm text-label-sm uppercase tracking-wider text-on-surface-variant">
-                      In this note
-                      {mapOpen.sentenceCount > mapOpen.sentences.length
-                        ? ` (${mapOpen.sentences.length} of ${mapOpen.sentenceCount} sentences)`
-                        : ""}
-                    </span>
-                    <ul className="flex flex-col gap-space-xs">
-                      {mapOpen.sentences.map((s, i) => (
-                        <li key={i} className="p-space-sm rounded-lg bg-surface-container-low font-body-sm text-body-sm text-on-surface-variant leading-relaxed">
-                          {highlight(s, mapOpen.keyword)}
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-
-                {alsoIn.length > 0 && (
-                  <div className="flex flex-col gap-space-xs" data-testid="map-also-in">
-                    <span className="font-label-sm text-label-sm uppercase tracking-wider text-on-surface-variant">
-                      Also in ({alsoIn.length})
-                    </span>
-                    <div className="flex flex-wrap gap-space-xs">
-                      {alsoIn.map((n) => (
-                        <button
-                          type="button"
-                          key={n.id}
-                          onClick={() => openMap(n.id, mapOpen.keyword)}
-                          title={`Open the keyword map of ${n.title}`}
-                          className="flex items-center gap-1.5 px-space-sm py-1 rounded-lg bg-surface-container hover:bg-surface-container-high transition-colors text-on-surface font-ui-body text-ui-body"
-                        >
-                          <Icon name="account_tree" className="text-sm text-secondary" />
-                          <span>{clip(n.title, 24)}</span>
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
+            <span className="w-3 h-2.5 rounded-sm bg-primary-container"></span>
+            <span className="font-label-sm text-label-sm text-on-surface-variant">Document → subtopics</span>
           </div>
         )}
+        <div className="h-3 w-px bg-outline-variant/60"></div>
+        <span className="font-label-sm text-label-sm text-secondary font-semibold">
+          {visibleCount === graph.nodes.length
+            ? `${topicCount} ${topicCount === 1 ? "topic" : "topics"}${docCount ? ` in ${docCount} ${docCount === 1 ? "document" : "documents"} + notes` : ""} · ${linkEdges.length} ${linkEdges.length === 1 ? "connection" : "connections"}`
+            : `${visibleCount} of ${graph.nodes.length} notes shown`}
+        </span>
+      </div>
 
-        {!map && selected && (
+      <aside className="w-[340px] h-full bg-surface shadow-2xl flex flex-col justify-between overflow-y-auto z-40 shrink-0" id="inspector-panel">
+        {selected && (
           <>
             <div className="flex flex-col p-space-lg gap-space-md">
               <div className="flex items-center justify-between">
@@ -1122,30 +547,14 @@ export default function KnowledgeGraph() {
                       {(degree.get(selectedId) || 0) === 1 ? "link" : "links"}
                     </span>
                   </div>
-                  <span className="font-body-sm text-body-sm text-outline mt-space-2xs">{connectivityText}</span>
+                  <span className="font-body-sm text-body-sm text-outline mt-space-2xs">
+                    {(degree.get(selectedId) || 0) === 0 ? "Not connected to any other topic" : `${connectivity}% of the other topics`}
+                  </span>
                 </div>
                 <Ring className="w-14 h-14" stroke={3.5} value={connectivity} track="text-surface-container-highest">
                   <Icon name="trending_up" className="text-secondary text-sm" />
                 </Ring>
               </div>
-              )}
-
-              {selectedCluster && !selectedIsDoc && (
-                <div className="flex items-center gap-space-sm px-space-md py-space-sm rounded-xl bg-surface-container-low" data-testid="inspector-cluster">
-                  <span className={`w-3 h-3 rounded-full shrink-0 ${selectedSwatch.className || ""}`} style={selectedSwatch.style}></span>
-                  <div className="flex flex-col min-w-0">
-                    <span className="font-ui-body text-ui-body text-on-surface">
-                      {selectedCluster.size > 1 ? `Cluster ${selectedCluster.id} · ${selectedCluster.size} notes` : "Not in a cluster"}
-                    </span>
-                    <span className="font-body-sm text-body-sm text-on-surface-variant">
-                      {selectedCluster.size === 1
-                        ? "No links to other notes in this subject yet"
-                        : selectedCluster.keywords.length
-                          ? `Shared ideas: ${selectedCluster.keywords.join(", ")}`
-                          : "Connected through a chain of related notes"}
-                    </span>
-                  </div>
-                </div>
               )}
 
               {neighbours.length > 0 && (
@@ -1158,123 +567,25 @@ export default function KnowledgeGraph() {
                       const node = nodeById.get(nb.id);
                       if (!node) return null;
                       return (
-                        <div key={nb.id} className="flex items-center rounded-lg bg-surface-container">
-                          <button
-                            type="button"
-                            onClick={() => setSelectedId(nb.id)}
-                            title={nb.shared.length ? `Shared: ${nb.shared.join(", ")}` : undefined}
-                            className="flex items-center gap-1.5 pl-space-sm pr-space-2xs py-1 rounded-l-lg hover:bg-surface-container-high transition-colors text-on-surface font-ui-body text-ui-body"
-                          >
-                            <span className={`w-2 h-2 rounded-full ${tone(degree.get(nb.id) || 0).dot}`}></span>
-                            <span>{clip(node.title, 24)}</span>
-                          </button>
-                          <UnlinkButton title={node.title} busy={pending === nb.edgeId} onClick={() => correctLink(nb.edgeId, "remove", node.title)} />
-                        </div>
+                        <button
+                          type="button"
+                          key={nb.id}
+                          onClick={() => setSelectedId(nb.id)}
+                          title={nb.shared.length ? `Shared: ${nb.shared.join(", ")}` : undefined}
+                          className="flex items-center gap-1.5 px-space-sm py-1 rounded-lg bg-surface-container hover:bg-surface-container-high transition-colors text-on-surface font-ui-body text-ui-body"
+                        >
+                          <span className={`w-2 h-2 rounded-full ${tone(degree.get(nb.id) || 0).dot}`}></span>
+                          <span>{clip(node.title, 24)}</span>
+                        </button>
                       );
                     })}
                   </div>
-                </div>
-              )}
-
-              {crossNeighbours.length > 0 && (
-                <div className="flex flex-col gap-space-xs pt-space-xs" data-testid="cross-subject-links">
-                  <span className="font-label-sm text-label-sm uppercase tracking-wider text-on-surface-variant">
-                    Linked in other subjects ({crossNeighbours.length})
-                  </span>
-                  <div className="flex flex-col gap-space-xs mt-space-2xs">
-                    {crossNeighbours.map((nb) => {
-                      const ext = externalById.get(nb.id);
-                      if (!ext) return null;
-                      return (
-                        <div key={nb.id} className="flex items-start rounded-lg bg-surface-container">
-                          <button
-                            type="button"
-                            onClick={() => setSelectedId(nb.id)}
-                            className="flex-1 min-w-0 flex flex-col items-start gap-0.5 px-space-sm py-space-xs rounded-l-lg hover:bg-surface-container-high transition-colors text-left"
-                          >
-                            <span className="font-label-sm text-label-sm text-tertiary uppercase tracking-wider">{ext.subjectName}</span>
-                            <span className="font-ui-body text-ui-body text-on-surface">{clip(ext.title, 34)}</span>
-                            <span className="font-body-sm text-body-sm text-on-surface-variant">Shares {nb.shared.join(", ")}</span>
-                          </button>
-                          <div className="p-space-2xs">
-                            <UnlinkButton title={ext.title} busy={pending === nb.edgeId} onClick={() => correctLink(nb.edgeId, "remove", ext.title)} />
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
-
-              {rejectedNeighbours.length > 0 && (
-                <div className="flex flex-col gap-space-xs pt-space-xs" data-testid="rejected-links">
-                  <span className="font-label-sm text-label-sm uppercase tracking-wider text-on-surface-variant">
-                    Considered, not linked ({rejectedNeighbours.length})
-                  </span>
-                  <ul className="flex flex-col gap-space-xs mt-space-2xs">
-                    {rejectedNeighbours.map((nb) => {
-                      const ext = externalById.get(nb.id);
-                      if (!ext) return null;
-                      return (
-                        <li key={nb.id} className="flex items-start gap-space-xs px-space-sm py-space-xs rounded-lg bg-surface-container-low">
-                          <Icon name="link_off" className="text-sm text-outline mt-0.5" />
-                          <div className="flex flex-col gap-0.5 min-w-0">
-                            <span className="font-ui-body text-ui-body text-on-surface-variant">
-                              {ext.subjectName}: {clip(ext.title, 30)}
-                            </span>
-                            <span className="font-body-sm text-body-sm text-outline">{rejectReason(nb.shared)}</span>
-                          </div>
-                        </li>
-                      );
-                    })}
-                  </ul>
-                </div>
-              )}
-
-              {removedNeighbours.length > 0 && (
-                <div className="flex flex-col gap-space-xs pt-space-xs" data-testid="removed-links">
-                  <span className="font-label-sm text-label-sm uppercase tracking-wider text-on-surface-variant">
-                    Removed by you ({removedNeighbours.length})
-                  </span>
-                  <ul className="flex flex-col gap-space-xs mt-space-2xs">
-                    {removedNeighbours.map((nb) => {
-                      const other = nodeById.get(nb.id) || externalById.get(nb.id);
-                      if (!other) return null;
-                      const name = other.subjectName ? `${other.subjectName}: ${other.title}` : other.title;
-                      return (
-                        <li key={nb.edgeId} className="flex items-center gap-space-xs px-space-sm py-space-xs rounded-lg bg-surface-container-low">
-                          <Icon name="link_off" className="text-sm text-outline" />
-                          <span className="flex-1 min-w-0 truncate font-ui-body text-ui-body text-on-surface-variant" title={name}>
-                            {name}
-                          </span>
-                          <button
-                            type="button"
-                            disabled={pending === nb.edgeId}
-                            onClick={() => correctLink(nb.edgeId, "restore", other.title)}
-                            className="font-label-md text-label-md text-secondary font-semibold hover:underline disabled:opacity-40"
-                          >
-                            Restore
-                          </button>
-                        </li>
-                      );
-                    })}
-                  </ul>
                 </div>
               )}
 
               {selected.keywords?.length > 0 && (
                 <div className="flex flex-col gap-space-xs">
-                  <div className="flex items-center justify-between">
-                    <span className="font-label-sm text-label-sm uppercase tracking-wider text-on-surface-variant">Keywords</span>
-                    <button
-                      type="button"
-                      onClick={() => openMap(selected.id)}
-                      className="flex items-center gap-1 font-label-md text-label-md text-secondary font-semibold hover:underline"
-                    >
-                      <Icon name="account_tree" className="text-sm" />
-                      Keyword map
-                    </button>
-                  </div>
+                  <span className="font-label-sm text-label-sm uppercase tracking-wider text-on-surface-variant">Keywords</span>
                   <div className="flex flex-wrap gap-space-xs">
                     {selected.keywords.slice(0, 8).map((k) => (
                       <span key={k} className="px-space-sm py-space-2xs rounded bg-secondary-container text-on-secondary-container font-label-md text-label-md">
@@ -1308,75 +619,6 @@ export default function KnowledgeGraph() {
                   Read note
                 </Link>
               </div>
-            </div>
-          </>
-        )}
-
-        {!map && selectedExternal && (
-          <>
-            <div className="flex flex-col p-space-lg gap-space-md" data-testid="external-inspector">
-              <div className="flex items-center gap-space-xs text-tertiary font-label-md text-label-md uppercase tracking-wider">
-                <Icon name="link" className="text-sm" />
-                <span>From another subject</span>
-              </div>
-              <div className="flex flex-col gap-space-2xs">
-                <h2 className="font-headline-md text-headline-md text-on-surface tracking-tight" data-testid="inspector-title">
-                  {selectedExternal.title}
-                </h2>
-                <span className="font-label-md text-label-md text-on-surface-variant">{selectedExternal.subjectName}</span>
-              </div>
-
-              {crossNeighbours.length > 0 && (
-                <div className="flex flex-col gap-space-xs pt-space-xs">
-                  <span className="font-label-sm text-label-sm uppercase tracking-wider text-on-surface-variant">
-                    Linked to this subject ({crossNeighbours.length})
-                  </span>
-                  <div className="flex flex-col gap-space-xs mt-space-2xs">
-                    {crossNeighbours.map((nb) => {
-                      const node = nodeById.get(nb.id);
-                      if (!node) return null;
-                      return (
-                        <div key={nb.id} className="flex items-start rounded-lg bg-surface-container">
-                          <button
-                            type="button"
-                            onClick={() => setSelectedId(nb.id)}
-                            className="flex-1 min-w-0 flex flex-col items-start gap-0.5 px-space-sm py-space-xs rounded-l-lg hover:bg-surface-container-high transition-colors text-left"
-                          >
-                            <span className="font-ui-body text-ui-body text-on-surface">{clip(node.title, 34)}</span>
-                            <span className="font-body-sm text-body-sm text-on-surface-variant">Shares {nb.shared.join(", ")}</span>
-                          </button>
-                          <div className="p-space-2xs">
-                            <UnlinkButton title={node.title} busy={pending === nb.edgeId} onClick={() => correctLink(nb.edgeId, "remove", node.title)} />
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
-
-              {selectedExternal.keywords?.length > 0 && (
-                <div className="flex flex-col gap-space-xs">
-                  <span className="font-label-sm text-label-sm uppercase tracking-wider text-on-surface-variant">Keywords</span>
-                  <div className="flex flex-wrap gap-space-xs">
-                    {selectedExternal.keywords.slice(0, 8).map((k) => (
-                      <span key={k} className="px-space-sm py-space-2xs rounded bg-tertiary-container text-on-tertiary-container font-label-md text-label-md">
-                        {k}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-
-            <div className="p-space-lg bg-surface-container-low flex flex-col gap-space-sm">
-              <Link
-                to={`/subjects/${selectedExternal.subjectId}/graph`}
-                className="w-full h-11 flex items-center justify-center gap-space-sm rounded-lg bg-tertiary text-on-tertiary font-ui-title text-ui-title shadow-md hover:opacity-90 transition-colors"
-              >
-                <Icon name="hub" className="text-base" />
-                <span>Open the {clip(selectedExternal.subjectName, 20)} graph</span>
-              </Link>
             </div>
           </>
         )}

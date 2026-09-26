@@ -71,7 +71,15 @@ for (const junk of [
   "Introduction to Computer Networks 1.1 Network Topologies A network topology describes the arrangement of nodes.",
   "Tanenbaum, A. S. and Wetherall, D. Computer Networks.",
 ]) check(`rejected: ${JSON.stringify(junk).slice(0, 50)}...`, !isQuestionWorthy(junk));
+for (const junk of [
+  "Foundations of Information Security: Information security fundamentals and it’s need, security attacks, security services, security mechanisms, Model for network security.",
+  "Write a program using JAVA or Python or C++ to implement classical cryptographic algorithm 2.",
+  "Convert the plaintext MEET ME to ciphertext using the Caesar cipher.",
+  "What is the key space of the Caesar cipher?",
+  "and application layers into one, so protocols such as HTTP and DNS handle their own formatting.",
+]) check(`rejected (not a statement): ${JSON.stringify(junk).slice(0, 44)}...`, !isQuestionWorthy(junk));
 check("accepted: a real sentence", isQuestionWorthy("From the bottom up, the physical layer transmits raw bits over the medium."));
+check("accepted: a definition", isQuestionWorthy("A block cipher encrypts a fixed-size block of plaintext into a block of ciphertext of the same size."));
 
 console.log(failures ? `\n${failures} FAILING CHECK(S)` : "\nAll checks passed.");
 process.exit(failures ? 1 : 0);
