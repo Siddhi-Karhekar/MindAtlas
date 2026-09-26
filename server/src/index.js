@@ -4,7 +4,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import express from "express";
 import cors from "cors";
-import { connectDB, flushDB } from "./db/index.js";
+import { connectDB, dbInfo, flushDB } from "./db/index.js";
 import { assertAuthConfig } from "./middleware/auth.js";
 import { rateLimit } from "./middleware/rateLimit.js";
 import authRoutes from "./routes/auth.js";
@@ -75,7 +75,12 @@ app.use((req, res, next) => {
   next();
 });
 
-app.get("/api/health", (req, res) => res.json({ ok: true }));
+// `db` says where accounts and notes are stored and whether they survive a
+// restart - open /api/health on the live site to check the deployment.
+app.get("/api/health", (req, res) => {
+  const { kind, persistent } = dbInfo();
+  res.json({ ok: true, db: { kind, persistent } });
+});
 
 // Rate limits: a generous ceiling for the whole API, a tight one on
 // register/login (credential stuffing / brute force), and a tight one on

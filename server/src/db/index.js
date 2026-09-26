@@ -20,6 +20,15 @@ export async function connectDB() {
     return;
   }
 
+  if (process.env.NODE_ENV === "production") {
+    console.warn(
+      "\n[db] WARNING: NODE_ENV=production but MONGODB_URI is not set. Accounts and notes are being\n" +
+        "[db] stored on this server's own disk, which hosts like Render wipe on every deploy, restart\n" +
+        "[db] and idle spin-down - users will find their account gone and have to sign up again.\n" +
+        "[db] Set MONGODB_URI (MongoDB Atlas) in the host's environment settings.\n"
+    );
+  }
+
   const setting = process.env.DB_FILE?.trim();
   if (setting && setting.toLowerCase() === "memory") {
     console.log("[db] DB_FILE=memory - using an in-memory database (data resets on every restart)");
@@ -44,6 +53,15 @@ export async function connectDB() {
  */
 export function flushDB() {
   if (dbInstance?.flush) dbInstance.flush();
+}
+
+/** Which database is in use, for /api/health: kind and whether data survives restarts. */
+export function dbInfo() {
+  if (!dbInstance) return { kind: "none", persistent: false };
+  if (dbInstance.kind === "mongo") return { kind: "mongodb", persistent: true };
+  if (dbInstance.kind === "file")
+    return { kind: "local-file", persistent: process.env.NODE_ENV !== "production", file: dbInstance.file };
+  return { kind: "memory", persistent: false };
 }
 
 export function getCollection(name) {
