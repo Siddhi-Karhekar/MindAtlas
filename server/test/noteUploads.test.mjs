@@ -20,7 +20,7 @@ const PORT = 4599;
 const API = `http://localhost:${PORT}/api`;
 const server = spawn(process.execPath, ["src/index.js"], {
   cwd: new URL("..", import.meta.url).pathname,
-  env: { ...process.env, PORT: String(PORT), MONGODB_URI: "", GROQ_API_KEY: "", NODE_ENV: "development" },
+  env: { ...process.env, PORT: String(PORT), MONGODB_URI: "", DB_FILE: "memory", GROQ_API_KEY: "", NODE_ENV: "development" },
   stdio: ["ignore", "pipe", "pipe"],
 });
 let serverLog = "";
@@ -118,7 +118,8 @@ try {
       body: form,
     });
     const data = await res.json().catch(() => ({}));
-    if (res.status === 201) expectedNotes++;
+    // a long document is saved as a parent note plus one note per subtopic
+    if (res.status === 201) expectedNotes += 1 + (data.children?.length || 0);
     return { status: res.status, data, note: data.note, error: data.error || "" };
   }
 

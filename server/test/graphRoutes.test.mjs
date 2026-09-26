@@ -9,7 +9,7 @@ const PORT = 4598;
 const API = `http://localhost:${PORT}/api`;
 const server = spawn(process.execPath, ["src/index.js"], {
   cwd: new URL("..", import.meta.url).pathname,
-  env: { ...process.env, PORT: String(PORT), MONGODB_URI: "", GROQ_API_KEY: "", NODE_ENV: "development" },
+  env: { ...process.env, PORT: String(PORT), MONGODB_URI: "", DB_FILE: "memory", GROQ_API_KEY: "", NODE_ENV: "development" },
   stdio: ["ignore", "pipe", "pipe"],
 });
 let serverLog = "";

@@ -40,8 +40,12 @@ function isSupportedByContext(excerpt, contextText) {
   return normalize(contextText).includes(needle);
 }
 
+// A topic's display label: "Document › Subtopic" for a subtopic of a split
+// upload (set by routes/tests.js), the note title otherwise.
+const labelOf = (n) => n?.topicLabel || n?.title;
+
 function buildContext(notes) {
-  return notes.map((n) => `### ${n.title}\n${n.rawText}`).join("\n\n");
+  return notes.map((n) => `### ${labelOf(n)}\n${n.rawText}`).join("\n\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -50,14 +54,14 @@ function buildContext(notes) {
 
 async function generateMcqWithLLM(notes, mcqCount) {
   const context = buildContext(notes);
-  const prompt = `You are drafting multiple-choice questions for a student's self-test, using ONLY the notes below as source material. Do not use any outside knowledge - every question's correct answer must be directly supported by a verbatim short excerpt from these notes. Aim for a roughly even mix of easy, medium, and hard questions across the set.
+  const prompt = `You are drafting multiple-choice questions for a student's self-test, using ONLY the notes below as source material. Do not use any outside knowledge - every question's correct answer must be directly supported by a verbatim short excerpt from these notes. Aim for a roughly even mix of easy, medium, and hard questions across the set, and spread the questions across as many different ### sections as possible - each section is a separate topic the student is assessed on. Ask only about the subject matter itself - never about titles, headers, footers, page numbers, course codes, the table of contents, authors, references or other document metadata, and never quote such text as the supportingExcerpt.
 
 NOTES:
 ${context}
 
 Return a JSON array of exactly ${mcqCount} objects, each shaped like:
 {
-  "topic": "<the note title this question is drawn from>",
+  "topic": "<the exact ### heading of the section this question is drawn from>",
   "prompt": "<the question text>",
   "options": ["<option A>", "<option B>", "<option C>", "<option D>"],
   "correctAnswer": "<must exactly match one of the options>",
@@ -105,11 +109,89 @@ function hasNounEvidence(word, text) {
   return new RegExp(`\\b${NOUN_LEAD}\\s+${word}\\b`, "i").test(text);
 }
 
+// ---------------------------------------------------------------------------
+// Which text is worth asking about
+// ---------------------------------------------------------------------------
+// A note's raw text is not all subject matter. An uploaded PDF also carries
+// its title page, table of contents, running headers ("CS302 Computer
+// Networks - Department of ... Page 1"), course codes and references. Those
+// lines contain the note's keywords too ("Networks", "protocols"), so a naive
+// "first sentence containing the keyword" pick turned them into nonsense
+// questions. Questions are only ever built from sentences that pass this
+// filter: real prose sentences, not headings, lists of titles or page furniture.
+
+const BOILERPLATE =
+  /\bpage\s+\d+\b|\bpage\s+\d+\s+of\s+\d+|\.{3,}|…|\btable of contents\b|^contents\b|\ball rights reserved\b|©|\bsemester\s+[ivx\d]+\b|\blecture notes\b|\bdepartment of\b|https?:\/\/|\bwww\./i;
+
+/** True for a sentence that is subject matter a question can be built from. */
+export function isQuestionWorthy(sentence) {
+  const s = String(sentence || "").trim();
+  if (/\n\s*\n/.test(s)) return false; // spans several paragraphs: a split went wrong
+  const words = s.split(/\s+/).filter(Boolean);
+  if (words.length < 6 || words.length > 60) return false;
+  if (!/[.!?]["')\]]?$/.test(s)) return false; // a complete sentence, not a heading or list line
+  if (BOILERPLATE.test(s)) return false;
+  // a numbered heading glued onto the sentence ("... 1.1 Network Topologies A
+  // network topology describes ..."), as older or messier extraction produces
+  if (/(^|\s)\d+(\.\d+)+\.?\s+[A-Z]/.test(s)) return false;
+  // Headings, titles and tables of contents are Mostly Capitalised Words;
+  // prose is mostly lower-case words.
+  const alpha = words.filter((w) => /[a-z]/i.test(w));
+  const lower = alpha.filter((w) => /^[("']?[a-z]/.test(w)).length;
+  if (alpha.length === 0 || lower / alpha.length < 0.5) return false;
+  return true;
+}
+
+const sentenceCache = new WeakMap();
+/** The note's question-worthy sentences, in order. */
+function contentSentences(note) {
+  if (sentenceCache.has(note)) return sentenceCache.get(note);
+  const out = String(note.rawText || "")
+    .split(/\n\s*\n/) // paragraphs first, so a heading line never glues onto a sentence
+    .flatMap((p) => p.replace(/\s*\n\s*/g, " ").split(/(?<=[.!?])\s+(?=["'(]?[A-Z0-9])/))
+    .map((x) => x.trim())
+    .filter(isQuestionWorthy);
+  sentenceCache.set(note, out);
+  return out;
+}
+
+const escapeRe = (w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+// whole words only: "one" must not match inside "backbone", nor "network"
+// inside "networks"
+const wholeWord = (w) => new RegExp(`(?<![A-Za-z0-9])${escapeRe(w)}(?![A-Za-z0-9])`, "i");
+
+/** First content sentence that uses `keyword` as a whole word, or null. */
+function sentenceFor(note, keyword) {
+  const re = wholeWord(keyword);
+  const all = new RegExp(re.source, "gi");
+  const hits = contentSentences(note).filter((s) => re.test(s));
+  // prefer a sentence that uses the word once: one blank reads as a question,
+  // four blanks of the same word read as a puzzle
+  return hits.find((s) => (s.match(all) || []).length === 1) || hits[0] || null;
+}
+
+// Frequent-but-empty words TF-IDF can still rank highly. As an answer they make
+// a question trivial or meaningless ("_____ device is attached" -> "every").
+const GENERIC = new Set([
+  "every", "one", "two", "three", "four", "five", "many", "much", "more", "most", "less", "least", "other",
+  "another", "some", "any", "all", "both", "either", "neither", "first", "second", "last", "next", "new",
+  "same", "different", "such", "used", "use", "uses", "using", "called", "based", "example", "examples",
+  "following", "given", "general", "type", "types", "way", "ways", "thing", "things", "part", "parts",
+  "number", "numbers", "set", "case", "cases", "time", "times", "unit", "page", "chapter", "section",
+  "notes", "lecture", "semester", "department", "introduction", "summary", "figure", "table",
+]);
+
 function nounLikeKeywords(note) {
-  const nouny = note.keywords.filter((k) => hasNounEvidence(k, note.rawText));
+  // only keywords that are real content words AND appear, as whole words, in
+  // at least one question-worthy sentence - otherwise there is nothing sound
+  // to blank them out of
+  const askable = note.keywords.filter(
+    (k) => !GENERIC.has(k) && !/^\d+$/.test(k) && sentenceFor(note, k) !== null
+  );
+  const nouny = askable.filter((k) => hasNounEvidence(k, note.rawText));
   // only narrow the list when at least two remain (one easy, one hard band);
-  // a note with almost no noun evidence keeps its full keyword list.
-  return nouny.length >= 2 ? nouny : note.keywords;
+  // a note with almost no noun evidence keeps its askable keyword list.
+  return nouny.length >= 2 ? nouny : askable;
 }
 
 function keywordForTier(note, tier, i) {
@@ -163,7 +245,12 @@ function pickDistractors(note, notes, keyword, sentence) {
   // a 4+ letter prefix with the answer are skipped.
   const sharesStem = (w) => w.slice(0, 4) === keyword.slice(0, 4);
   const usable = (w) =>
-    w !== keyword && !sharesStem(w) && !sentenceNorm.includes(w) && isVerbish(w) === answerShape;
+    w !== keyword &&
+    !GENERIC.has(w) &&
+    !/^\d+$/.test(w) &&
+    !sharesStem(w) &&
+    !sentenceNorm.includes(w) &&
+    isVerbish(w) === answerShape;
   const noun = (w) => hasNounEvidence(w, corpusText);
 
   const otherNoteKeywords = [...new Set(notes.filter((n) => n !== note).flatMap((n) => n.keywords))];
@@ -182,7 +269,8 @@ function pickDistractors(note, notes, keyword, sentence) {
   for (const tier of tiers) {
     for (const w of shuffle(tier)) {
       if (picked.length === 3) break;
-      if (!picked.includes(w)) picked.push(w);
+      // no two distractors that are forms of one word ("network"/"networks")
+      if (!picked.some((x) => x.slice(0, 5) === w.slice(0, 5))) picked.push(w);
     }
   }
   for (let i = 1; picked.length < 3; i++) picked.push(`${keyword}-related term ${i}`);
@@ -253,7 +341,7 @@ function pickUnusedKeyword(note, wantedTier, startIndex, used) {
   for (const tier of tiersNearestFirst) {
     for (let offset = 0; offset < 12; offset++) {
       const keyword = keywordForTier(note, tier, startIndex + offset);
-      if (keyword && !used.has(`${note.title}|${keyword}`)) return { keyword, difficulty: tier };
+      if (keyword && !used.has(`${note._id}|${keyword}`)) return { keyword, difficulty: tier };
     }
   }
   return null;
@@ -261,7 +349,7 @@ function pickUnusedKeyword(note, wantedTier, startIndex, used) {
 
 function generateMcqFallback(notes, mcqCount, masteryMap) {
   const drafts = [];
-  const used = new Set(); // "note title|keyword" already turned into a question
+  const used = new Set(); // "note id|keyword" already turned into a question
   const order = weightedNoteOrder(notes, mcqCount, masteryMap);
 
   for (let i = 0; i < mcqCount; i++) {
@@ -270,17 +358,19 @@ function generateMcqFallback(notes, mcqCount, masteryMap) {
     const picked = pickUnusedKeyword(note, wanted, Math.floor(i / notes.length), used);
     if (!picked) continue; // this note is out of distinct questions; don't repeat one
     const { keyword, difficulty } = picked;
-    used.add(`${note.title}|${keyword}`);
+    used.add(`${note._id}|${keyword}`);
 
-    const sentences = note.rawText.split(/(?<=[.!?])\s+/);
-    const sentence = sentences.find((s) => normalize(s).includes(keyword)) || sentences[0] || note.rawText;
-    const blanked = sentence.replace(new RegExp(keyword, "i"), "_____");
+    // nounLikeKeywords only offers keywords that have such a sentence
+    const sentence = sentenceFor(note, keyword);
+    if (!sentence) continue;
+    // blank every occurrence, so a second mention can't give the answer away
+    const blanked = sentence.replace(new RegExp(wholeWord(keyword).source, "gi"), "_____");
 
     const options = shuffle([...pickDistractors(note, notes, keyword, sentence), keyword]);
 
     drafts.push({
       topicId: note._id,
-      topic: note.title,
+      topic: labelOf(note),
       prompt: `Fill in the blank: "${blanked}"`,
       options,
       correctAnswer: keyword,
@@ -298,14 +388,14 @@ function generateMcqFallback(notes, mcqCount, masteryMap) {
 
 async function generateTheoryWithLLM(notes, theoryCount) {
   const context = buildContext(notes);
-  const prompt = `You are drafting short-answer / theory questions for a student's self-test, using ONLY the notes below as source material. Each question should require a 1-4 sentence written explanation, not a single word. Aim for a roughly even mix of easy, medium, and hard questions across the set.
+  const prompt = `You are drafting short-answer / theory questions for a student's self-test, using ONLY the notes below as source material. Each question should require a 1-4 sentence written explanation, not a single word. Aim for a roughly even mix of easy, medium, and hard questions across the set, and spread the questions across as many different ### sections as possible - each section is a separate topic the student is assessed on. Ask only about the subject matter itself - never about titles, headers, footers, page numbers, course codes, the table of contents, authors, references or other document metadata, and never quote such text as the supportingExcerpt.
 
 NOTES:
 ${context}
 
 Return a JSON array of exactly ${theoryCount} objects, each shaped like:
 {
-  "topic": "<the note title this question is drawn from>",
+  "topic": "<the exact ### heading of the section this question is drawn from>",
   "prompt": "<the open-ended question text, e.g. 'Explain ...' or 'Why does ...'>",
   "modelAnswer": "<a concise 1-4 sentence model answer, grounded in the notes>",
   "keyPoints": ["<short key phrase a good answer should mention>", "<another key phrase>", "..."],
@@ -335,21 +425,22 @@ function generateTheoryFallback(notes, theoryCount, masteryMap) {
   for (let i = 0; i < theoryCount; i++) {
     const note = order[i] || notes[i % notes.length];
     if (!note.keywords?.length) continue;
+    if (!contentSentences(note).length) continue; // nothing but headings / page furniture
 
     const wanted = DIFFICULTY_TIERS[i % DIFFICULTY_TIERS.length];
     const picked = pickUnusedKeyword(note, wanted, Math.floor(i / notes.length), used);
     if (!picked) continue;
     const { keyword: primary, difficulty } = picked;
-    used.add(`${note.title}|${primary}`);
-    const keyPoints = [...new Set([primary, ...note.keywords])].slice(0, 4);
+    used.add(`${note._id}|${primary}`);
+    const keyPoints = [...new Set([primary, ...note.keywords.filter((k) => !GENERIC.has(k))])].slice(0, 4);
 
-    const sentences = note.rawText.split(/(?<=[.!?])\s+/);
-    const sentence = sentences.find((s) => normalize(s).includes(primary)) || sentences[0] || note.rawText;
+    const sentence = sentenceFor(note, primary);
+    if (!sentence) continue;
 
     drafts.push({
       topicId: note._id,
-      topic: note.title,
-      prompt: `In your own words, explain what "${note.title}" says about "${primary}".`,
+      topic: labelOf(note),
+      prompt: `In your own words, explain what your notes on "${note.title}" say about "${primary}".`,
       modelAnswer: sentence,
       keyPoints,
       supportingExcerpt: sentence,
@@ -364,8 +455,19 @@ function generateTheoryFallback(notes, theoryCount, masteryMap) {
 // Shared grounding gate + orchestration
 // ---------------------------------------------------------------------------
 
+// An LLM excerpt is often a phrase rather than a full sentence, so it gets a
+// lighter check than isQuestionWorthy: just not page furniture or a heading.
+function isContentExcerpt(excerpt) {
+  const e = String(excerpt || "").trim();
+  if (BOILERPLATE.test(e)) return false;
+  const words = e.split(/\s+/).filter((w) => /[a-z]/i.test(w));
+  if (words.length >= 4 && words.filter((w) => /^[("']?[a-z]/.test(w)).length / words.length < 0.4) return false;
+  return true;
+}
+
 function isValidDraft(d, type, contextText) {
   if (!d?.prompt || !isSupportedByContext(d.supportingExcerpt, contextText)) return false;
+  if (!isContentExcerpt(d.supportingExcerpt)) return false; // grounded, but in a header / title / contents line
   if (type === "mcq") {
     if (!Array.isArray(d.options) || d.options.length < 2 || !d.options.includes(d.correctAnswer)) return false;
     // duplicate options (case/whitespace-insensitive) make a question
@@ -392,9 +494,10 @@ function resolveSourceNote(draft, notes) {
     const byExcerpt = notes.find((n) => normalize(n.rawText).includes(excerpt));
     if (byExcerpt) return byExcerpt;
   }
-  const claimed = normalize(draft?.topic);
+  const claimed = normalize(draft?.topic).replace(/^#+\s*/, "");
   if (claimed) {
-    const byTitle = notes.find((n) => normalize(n.title) === claimed);
+    const byTitle =
+      notes.find((n) => normalize(labelOf(n)) === claimed) || notes.find((n) => normalize(n.title) === claimed);
     if (byTitle) return byTitle;
   }
   return notes[0];
@@ -408,7 +511,12 @@ function toQuestionItem(d, type, marksPerQuestion, notes, contextText, generated
     // topicId is the durable key (a note id); topic is the human-readable
     // label shown in the UI and refreshed from the note on every generation.
     topicId: d?.topicId || sourceNote?._id || null,
-    topic: sourceNote?.title || d?.topic || "General",
+    topic: labelOf(sourceNote) || d?.topic || "General",
+    // For a subtopic of a split upload: which document it belongs to, so the
+    // feedback can group "Paging" and "Segmentation" under "Unit 3".
+    subtopic: sourceNote?.parentNoteId ? sourceNote.title : null,
+    parentTopicId: sourceNote?.parentTopicId || null,
+    parentTopic: sourceNote?.parentTopic || null,
     prompt: d?.prompt,
     supportingExcerpt: d?.supportingExcerpt,
     difficulty: normalizeDifficulty(d?.difficulty),

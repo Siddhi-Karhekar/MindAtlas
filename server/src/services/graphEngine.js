@@ -125,6 +125,14 @@ function sharedClusterKeywords(members) {
     .map(([k]) => k);
 }
 
+// A long upload split into subtopics (see services/documentStructure.js) is a
+// PARENT note whose text is the union of its subtopic CHILD notes. Only the
+// children are topics: linking the parent by similarity would just duplicate
+// every child's links, so split parents are never compared, on either side.
+// The parent -> subtopic relationship is shown separately, as the graph
+// API's derived "contains" edges.
+const isSplitParent = (n) => !n?.parentNoteId && (n?.childCount || 0) > 0;
+
 /**
  * Compare a newly-created note against the student's other notes - in its
  * own subject and in every other subject - and persist a graph_edge for each
@@ -134,9 +142,11 @@ function sharedClusterKeywords(members) {
  */
 export async function updateGraphForNote(newNote, otherNotes) {
   const storedEdges = [];
+  if (isSplitParent(newNote)) return storedEdges;
 
   for (const other of otherNotes) {
     if (String(other._id) === String(newNote._id)) continue;
+    if (isSplitParent(other)) continue;
 
     const pair = classifyPair(newNote, other);
     if (!pair) continue;

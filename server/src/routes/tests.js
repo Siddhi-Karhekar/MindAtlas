@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { findOwnedSubject } from "../models/Subject.js";
-import { findNotesByIds } from "../models/Note.js";
+import { findChildNotes, findNotesByIds, isSplitParent, topicLabelFor } from "../models/Note.js";
 import { createTest, findTestsBySubject, findOwnedTest } from "../models/Test.js";
 import { createQuestions, findQuestionsByTest } from "../models/Question.js";
 import { requireAuth } from "../middleware/auth.js";
@@ -19,6 +19,34 @@ router.use(requireAuth);
 function poolSizeFor(target) {
   if (target <= 0) return 0;
   return Math.min(24, Math.max(target, Math.ceil(target * 1.5)));
+}
+
+// Questions are always drawn from TOPIC notes. Selecting a split document
+// means "all of its subtopics", so it is expanded to its children here; a
+// subtopic selected on its own is used as is. Each topic note is labelled
+// "Document › Subtopic" and carries its parent's id, so every question, the
+// feedback report and the mastery record name the specific subtopic.
+async function resolveTopicNotes(selected) {
+  const parents = selected.filter(isSplitParent);
+  const expanded = await findChildNotes(parents.map((p) => p._id));
+  const byId = new Map();
+  for (const n of [...selected.filter((n) => !isSplitParent(n)), ...expanded]) byId.set(String(n._id), n);
+  const topics = [...byId.values()];
+
+  const parentIds = [...new Set(topics.filter((n) => n.parentNoteId).map((n) => String(n.parentNoteId)))];
+  const known = new Map(parents.map((p) => [String(p._id), p]));
+  const missing = parentIds.filter((id) => !known.has(id));
+  for (const p of await findNotesByIds(missing)) known.set(String(p._id), p);
+
+  return topics.map((n) => {
+    const parent = n.parentNoteId ? known.get(String(n.parentNoteId)) : null;
+    return {
+      ...n,
+      topicLabel: topicLabelFor(n, known),
+      parentTopicId: parent ? parent._id : null,
+      parentTopic: parent ? parent.title : null,
+    };
+  });
 }
 
 // POST /api/subjects/:id/tests - build a test from a set of that subject's
@@ -47,9 +75,13 @@ router.post("/subjects/:id/tests", async (req, res) => {
   }
 
   const notes = await findNotesByIds(noteIds);
-  const notesInSubject = notes.filter((n) => String(n.subjectId) === String(subject._id));
-  if (notesInSubject.length === 0) {
+  const selectedInSubject = notes.filter((n) => String(n.subjectId) === String(subject._id));
+  if (selectedInSubject.length === 0) {
     return res.status(400).json({ error: "none of the given noteIds belong to this subject" });
+  }
+  const notesInSubject = await resolveTopicNotes(selectedInSubject);
+  if (notesInSubject.length === 0) {
+    return res.status(400).json({ error: "the selected notes have no text to build questions from" });
   }
 
   const targetQuestionCount = safeMcqCount + safeTheoryCount;

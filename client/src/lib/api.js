@@ -1,4 +1,8 @@
-const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:4000/api";
+// Dev: the API runs separately on :4000. Production build: the API serves
+// this client itself, so a same-origin relative path is all that's needed.
+// Set VITE_API_BASE at build time only if the API lives on another domain.
+const API_BASE =
+  import.meta.env.VITE_API_BASE || (import.meta.env.DEV ? "http://localhost:4000/api" : "/api");
 
 function getToken() {
   return localStorage.getItem("mindatlas_token");
@@ -39,11 +43,21 @@ export const api = {
   listNotes: (subjectId) => request(`/subjects/${subjectId}/notes`),
   createNote: (subjectId, { title, content }) =>
     request(`/subjects/${subjectId}/notes`, { method: "POST", body: { title, content } }),
-  uploadNoteImage: (subjectId, file, title) => {
+  // Uploads any supported file (PDF, Word, PowerPoint, text, image). A long
+  // document with subtopics is split into a parent note plus one child note
+  // per subtopic unless `split` is false.
+  uploadNoteImage: (subjectId, file, title, { split = true } = {}) => {
     const form = new FormData();
     form.append("file", file);
     if (title) form.append("title", title);
+    form.append("split", split ? "true" : "false");
     return request(`/subjects/${subjectId}/notes`, { method: "POST", body: form, isForm: true });
+  },
+  // Reads a file and reports the subtopics it would be split into, saving nothing.
+  previewUpload: (subjectId, file) => {
+    const form = new FormData();
+    form.append("file", file);
+    return request(`/subjects/${subjectId}/notes/preview`, { method: "POST", body: form, isForm: true });
   },
 
   getGraph: (subjectId) => request(`/subjects/${subjectId}/graph`),

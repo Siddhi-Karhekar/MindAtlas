@@ -6,6 +6,7 @@ import { getLastSubject, getSubjectVisits, setLastSubject } from "../lib/recent.
 import { timeAgo } from "../lib/format.js";
 import Icon from "../components/Icon.jsx";
 import Ring from "../components/Ring.jsx";
+import { isSplitParent } from "../lib/notes.js";
 
 const ICONS = ["psychology", "lan", "balance", "biotech", "science", "calculate", "history_edu", "menu_book", "public", "architecture"];
 function iconFor(name) {
@@ -16,20 +17,24 @@ function iconFor(name) {
 
 // Summarise one subject from its graph payload: how many notes, how many of
 // them have at least one link to another note, and when the newest one landed.
+// A split document counts as one note here; its subtopics are what can be
+// linked, and document -> subtopic "contains" edges are structure, not links.
 function summarise(subject, graph) {
   const nodes = graph?.nodes || [];
-  const edges = graph?.edges || [];
+  const edges = (graph?.edges || []).filter((e) => e.edgeType !== "contains");
+  const topLevel = nodes.filter((n) => !n.parentNoteId);
+  const topics = nodes.filter((n) => !isSplitParent(n));
   const linked = new Set();
   for (const e of edges) {
     linked.add(String(e.source));
     linked.add(String(e.target));
   }
-  const latest = [...nodes].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))[0] || null;
+  const latest = [...topLevel].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))[0] || null;
   return {
     subject,
-    noteCount: nodes.length,
+    noteCount: topLevel.length,
     edgeCount: edges.length,
-    linkedPct: nodes.length ? Math.round((linked.size / nodes.length) * 100) : 0,
+    linkedPct: topics.length ? Math.round((linked.size / topics.length) * 100) : 0,
     latest,
   };
 }

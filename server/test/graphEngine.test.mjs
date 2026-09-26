@@ -6,6 +6,7 @@
 //      edges stay where findEdgesBySubject has always found them, and
 //      cross-subject/rejected edges are visible from both subjects.
 process.env.MONGODB_URI = ""; // always the in-memory store, never a real cluster
+process.env.DB_FILE = "memory"; // a throwaway database: never write server/data/ from a test
 
 import { computeTfidf } from "../src/services/tfidf.js";
 import {

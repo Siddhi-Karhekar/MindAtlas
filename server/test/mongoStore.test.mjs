@@ -82,9 +82,20 @@ async function runFlow(makeWrapper, title) {
   const bySubject = await notes.find({ subjectId: subject._id }, { sort: { createdAt: -1 } });
   check("findNotesBySubject(subjectId)", bySubject.length === 2, `got ${bySubject.length}, expected 2`);
 
+
   // findNotesByIds -> find({_id: [a, b]})  (array shorthand for $in)
   const byIds = await notes.find({ _id: [n1._id, n2._id] });
   check("findNotesByIds([a,b]) $in shorthand", byIds.length === 2, `got ${byIds.length}, expected 2`);
+
+  // Split documents: children point at their parent by a string id, and
+  // findChildNotes / setChildCount query on it - the same type-sensitivity trap.
+  const parent = await notes.insertOne({ ownerId: "split-doc-owner", subjectId: "split-doc-subject", title: "Unit 3", childCount: 0, createdAt: new Date() });
+  await notes.insertOne({ ownerId: "split-doc-owner", subjectId: "split-doc-subject", title: "Paging", parentNoteId: parent._id, order: 0 });
+  await notes.insertOne({ ownerId: "split-doc-owner", subjectId: "split-doc-subject", title: "Segmentation", parentNoteId: parent._id, order: 1 });
+  const kids = await notes.find({ parentNoteId: [parent._id] });
+  check("findChildNotes([parentId]) finds subtopics", kids.length === 2, `got ${kids.length}, expected 2`);
+  const counted = await notes.findOneAndUpdate({ _id: parent._id }, { $set: { childCount: 2 } });
+  check("setChildCount(parentId) updates the parent", counted?.childCount === 2, JSON.stringify(counted?.childCount));
 
   // upsertResponse -> findOneAndUpdate(..., {upsert:true})
   const r = await responses.findOneAndUpdate(

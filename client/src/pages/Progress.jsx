@@ -4,6 +4,7 @@ import { api } from "../lib/api.js";
 import { timeAgo } from "../lib/format.js";
 import Icon from "../components/Icon.jsx";
 import Ring from "../components/Ring.jsx";
+import TopicName from "../components/TopicName.jsx";
 
 // The progress view is what makes cross-attempt adaptivity visible. Without it
 // the mastery model is invisible machinery: the student sees questions get
@@ -125,7 +126,7 @@ export default function Progress() {
                 <div key={t.topicId} className="bg-surface-container-lowest rounded-xl p-space-lg shadow-sm flex flex-col gap-space-md">
                   <div className="flex items-start justify-between gap-space-md">
                     <div className="min-w-0">
-                      <h3 className="font-ui-title text-ui-title text-on-surface font-semibold truncate">{t.topic}</h3>
+                      <TopicName topic={t} as="h3" className="font-ui-title text-ui-title text-on-surface font-semibold" />
                       <p className="font-label-md text-label-md text-on-surface-variant">
                         {t.observations} {t.observations === 1 ? "question" : "questions"} answered
                         {t.observations < 3 ? " · still gathering evidence" : ""}

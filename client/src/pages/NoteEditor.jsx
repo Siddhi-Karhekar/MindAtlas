@@ -29,13 +29,60 @@ function MiniGraph({ graph }) {
   );
 }
 
+// What the server found inside one uploaded document: the subtopics it will
+// become, with a switch to keep the file as a single note instead.
+function SplitPreview({ item, onToggle }) {
+  const [open, setOpen] = useState(false);
+  const { sections = [], splitMethod } = item.preview;
+  if (sections.length < 2) {
+    return <p className="font-label-md text-label-md text-on-surface-variant mt-space-2xs">No subtopics detected — saved as one note.</p>;
+  }
+  const shown = open ? sections : sections.slice(0, 5);
+  return (
+    <div className="mt-space-xs flex flex-col gap-space-xs" data-testid="split-preview">
+      <label className="inline-flex items-center gap-space-xs font-label-md text-label-md text-on-surface cursor-pointer select-none w-fit">
+        <input
+          type="checkbox"
+          checked={item.split !== false}
+          disabled={item.status === "working" || item.status === "done"}
+          onChange={(e) => onToggle(e.target.checked)}
+          className="accent-[var(--c-secondary)]"
+        />
+        <span>
+          Split into <strong>{sections.length} subtopics</strong>
+          {splitMethod === "chunks" ? " (no headings found — split into even parts)" : ""}
+        </span>
+      </label>
+      {item.split !== false && (
+        <ol className="flex flex-col gap-space-2xs pl-space-md border-l-2 border-secondary/30">
+          {shown.map((s, i) => (
+            <li key={i} className="font-body-sm text-body-sm text-on-surface flex items-baseline gap-space-xs min-w-0">
+              <span className="text-on-surface-variant font-label-sm text-label-sm shrink-0 w-5 text-right">{i + 1}.</span>
+              <span className="truncate">{s.title}</span>
+              {s.group && <span className="text-on-surface-variant font-label-sm text-label-sm truncate shrink">· {s.group}</span>}
+              <span className="text-outline font-label-sm text-label-sm shrink-0 ml-auto">{s.words} words</span>
+            </li>
+          ))}
+          {sections.length > 5 && (
+            <li>
+              <button type="button" onClick={() => setOpen((v) => !v)} className="font-label-md text-label-md text-secondary hover:underline">
+                {open ? "Show fewer" : `Show all ${sections.length}`}
+              </button>
+            </li>
+          )}
+        </ol>
+      )}
+    </div>
+  );
+}
+
 const MAX_BYTES = 10 * 1024 * 1024;
-const ACCEPT = ".pdf,.docx,.txt,.md,.markdown,.csv,image/*";
-const EXT_OK = /\.(pdf|docx|txt|md|markdown|text|csv|png|jpe?g|gif|webp|bmp|tiff?)$/i;
+const ACCEPT = ".pdf,.docx,.pptx,.txt,.md,.markdown,.csv,image/*";
+const EXT_OK = /\.(pdf|docx|pptx|txt|md|markdown|text|csv|png|jpe?g|gif|webp|bmp|tiff?)$/i;
 
 function fileProblem(f) {
   if (!(EXT_OK.test(f.name) || f.type.startsWith("image/") || f.type.startsWith("text/")))
-    return "Unsupported type — use PDF, Word (.docx), text/markdown or an image";
+    return "Unsupported type — use PDF, Word (.docx), PowerPoint (.pptx), text/markdown or an image";
   if (f.size > MAX_BYTES) return "Larger than 10 MB";
   return "";
 }
@@ -44,6 +91,7 @@ function fileIcon(name, type) {
   if (type?.startsWith("image/")) return "image";
   if (/\.pdf$/i.test(name)) return "picture_as_pdf";
   if (/\.docx$/i.test(name)) return "description";
+  if (/\.pptx$/i.test(name)) return "slideshow";
   return "article";
 }
 
@@ -62,7 +110,10 @@ export default function NoteEditor() {
   const [graph, setGraph] = useState({ nodes: [], edges: [] });
   const [title, setTitle] = useState("");
   const [content, setContent] = useState("");
-  // Uploaded files: [{ id, file, status: "ready" | "working" | "done" | "error", error }]
+  // Uploaded files: [{ id, file, status: "ready" | "working" | "done" | "error", error,
+  //   preview: { sections, splitMethod, title } | null, previewing, split }]
+  // `preview` is what the server says the file would be split into; `split`
+  // is the student's choice to keep that split (default) or save one note.
   const [files, setFiles] = useState([]);
   const [dragOver, setDragOver] = useState(false);
   const [error, setError] = useState("");
@@ -90,17 +141,36 @@ export default function NoteEditor() {
         if (seen.has(key)) continue;
         seen.add(key);
         const problem = fileProblem(f);
-        next.push({ id: `${key}:${Math.random().toString(36).slice(2, 7)}`, file: f, status: problem ? "error" : "ready", error: problem });
+        const id = `${key}:${Math.random().toString(36).slice(2, 7)}`;
+        const isImage = f.type.startsWith("image/") || /\.(png|jpe?g|gif|webp|bmp|tiff?)$/i.test(f.name);
+        next.push({ id, file: f, status: problem ? "error" : "ready", error: problem, preview: null, previewing: !problem && !isImage, split: true });
       }
       return next;
     });
   }
+
 
   function removeFile(id) {
     setFiles((prev) => prev.filter((f) => f.id !== id));
   }
 
   const setStatus = (id, patch) => setFiles((prev) => prev.map((f) => (f.id === id ? { ...f, ...patch } : f)));
+
+  // Ask the server how each new document would be split, so the student sees
+  // the detected subtopics before anything is saved. A file the server can't
+  // read is flagged now rather than after pressing "Add". The ref makes sure
+  // each file is previewed once, however often this effect re-runs.
+  const previewed = useRef(new Set());
+  useEffect(() => {
+    for (const f of files) {
+      if (!f.previewing || previewed.current.has(f.id)) continue;
+      previewed.current.add(f.id);
+      api
+        .previewUpload(subjectId, f.file)
+        .then((preview) => setStatus(f.id, { preview, previewing: false }))
+        .catch((err) => setStatus(f.id, { previewing: false, status: "error", error: err.message }));
+    }
+  }, [files, subjectId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function handleUpload() {
     // One note per file, uploaded one after another so the server links each
@@ -112,14 +182,16 @@ export default function NoteEditor() {
     }
     const single = files.length === 1;
     let edges = 0;
+    let subtopics = 0;
     let added = doneCount;
     let lastId = null;
     let failed = 0;
     for (const item of queue) {
       setStatus(item.id, { status: "working", error: "" });
       try {
-        const r = await api.uploadNoteImage(subjectId, item.file, single ? title.trim() : "");
+        const r = await api.uploadNoteImage(subjectId, item.file, single ? title.trim() : "", { split: item.split !== false });
         edges += r.edgesCreated || 0;
+        subtopics += r.children?.length || 0;
         added += 1;
         lastId = r.note._id;
         setStatus(item.id, { status: "done", noteId: r.note._id });
@@ -131,7 +203,7 @@ export default function NoteEditor() {
     setBusy(false);
     if (failed === 0) {
       navigate(added === 1 ? `/subjects/${subjectId}?note=${lastId}` : `/subjects/${subjectId}`, {
-        state: { edgesCreated: edges, addedCount: added },
+        state: { edgesCreated: edges, addedCount: added, subtopicCount: subtopics },
       });
     } else {
       setError(`${added} of ${files.length} uploaded. Fix or remove the files marked below, then try again.`);
@@ -145,7 +217,9 @@ export default function NoteEditor() {
     if (mode === "upload") return handleUpload();
     try {
       const result = await api.createNote(subjectId, { title: title.trim(), content: content.trim() });
-      navigate(`/subjects/${subjectId}?note=${result.note._id}`, { state: { edgesCreated: result.edgesCreated } });
+      navigate(`/subjects/${subjectId}?note=${result.note._id}`, {
+        state: { edgesCreated: result.edgesCreated, subtopicCount: result.children?.length || 0 },
+      });
     } catch (err) {
       setError(err.message);
       setBusy(false);
@@ -234,7 +308,13 @@ export default function NoteEditor() {
             value={title}
             onChange={(e) => setTitle(e.target.value)}
             className="w-full bg-transparent font-headline-lg text-headline-lg lg:font-display-lg lg:text-display-lg text-on-surface font-semibold focus:outline-none placeholder-outline mb-space-lg tracking-tight"
-            placeholder={mode === "upload" ? "Title (optional — defaults to the file name)" : "Untitled Note..."}
+            placeholder={
+              mode === "upload"
+                ? files[0]?.preview?.sections?.length >= 2 && files[0]?.preview?.title
+                  ? `Title (optional — defaults to “${files[0].preview.title}”)`
+                  : "Title (optional — defaults to the file name)"
+                : "Untitled Note..."
+            }
             type="text"
             autoFocus={mode === "typed"}
           />
@@ -290,14 +370,16 @@ export default function NoteEditor() {
                       {files.length ? "Add more files" : "Drop your existing notes here"}
                     </p>
                     <p className="font-body-sm text-body-sm text-on-surface-variant max-w-md mx-auto">
-                      Or click to browse. Each file becomes its own note and is linked to the rest of this subject
-                      automatically.
+                      Or click to browse. Each file becomes its own note; long documents are split into one note per
+                      subtopic, and everything is linked to the rest of this subject automatically.
                     </p>
                   </div>
                   <div className="flex items-center gap-space-sm mt-space-xs text-outline font-label-md text-label-md flex-wrap justify-center">
                     <span>PDF</span>
                     <span>•</span>
                     <span>Word (.docx)</span>
+                    <span>•</span>
+                    <span>PowerPoint (.pptx)</span>
                     <span>•</span>
                     <span>TXT / Markdown</span>
                     <span>•</span>
@@ -313,7 +395,7 @@ export default function NoteEditor() {
                   {files.map((f) => (
                     <li
                       key={f.id}
-                      className={`flex items-center gap-space-md px-space-md py-space-sm rounded-lg border ${
+                      className={`flex items-start gap-space-md px-space-md py-space-sm rounded-lg border ${
                         f.status === "error"
                           ? "border-error/40 bg-error-container/30"
                           : "border-outline-variant/30 bg-surface-container-low"
@@ -333,8 +415,9 @@ export default function NoteEditor() {
                               ? "Reading and linking…"
                               : f.status === "done"
                                 ? "Added"
-                                : prettySize(f.file.size)}
+                                : `${prettySize(f.file.size)}${f.previewing ? " · looking for subtopics…" : ""}`}
                         </p>
+                        {f.status !== "error" && f.preview && <SplitPreview item={f} onToggle={(split) => setStatus(f.id, { split })} />}
                       </div>
                       {f.status === "working" ? (
                         <Icon name="sync" className="text-base animate-spin text-secondary" />
@@ -402,6 +485,10 @@ export default function NoteEditor() {
             <p className="font-body-sm text-body-sm text-on-surface leading-normal">
               When you save, Mind Atlas extracts this note&apos;s most distinctive keywords (TF-IDF) and connects it to
               any existing note in this subject that shares enough of them. No manual tagging needed.
+              <br />
+              <br />
+              A long upload with headings or slide titles is split along them: the document becomes a parent note and
+              each subtopic its own note, so tests and feedback can point at the exact subtopic you need to revisit.
             </p>
           </div>
         </aside>

@@ -4,6 +4,30 @@ import { api } from "../lib/api.js";
 import { setLastAttempt } from "../lib/recent.js";
 import Icon from "../components/Icon.jsx";
 import Ring from "../components/Ring.jsx";
+import TopicName from "../components/TopicName.jsx";
+import { topicParts } from "../lib/notes.js";
+
+const shortName = (t) => topicParts(t).name;
+
+// Subtopic scores grouped under their document, weakest document first. The
+// server stores this as feedback.documentScores; older reports without it are
+// grouped here from topicScores so they render the same way.
+function groupByDocument(topics) {
+  const docs = new Map();
+  for (const t of topics) {
+    if (!t.parentTopicId) continue;
+    const key = String(t.parentTopicId);
+    if (!docs.has(key)) docs.set(key, { parentTopicId: key, parentTopic: t.parentTopic, subtopics: [] });
+    docs.get(key).subtopics.push(t);
+  }
+  return [...docs.values()]
+    .map((d) => {
+      const n = d.subtopics.reduce((a, t) => a + t.questionsAnswered, 0);
+      const accuracy = n ? d.subtopics.reduce((a, t) => a + t.accuracy * t.questionsAnswered, 0) / n : 0;
+      return { ...d, accuracy, questionsAnswered: n, subtopics: [...d.subtopics].sort((a, b) => a.accuracy - b.accuracy) };
+    })
+    .sort((a, b) => a.accuracy - b.accuracy);
+}
 
 // The feedback text (template or LLM) may contain **bold** spans. Render
 // those as <strong> instead of showing literal asterisks. Deliberately
@@ -93,6 +117,7 @@ export default function Insights() {
   const band = stats.mastery >= 80 ? "Strong recall" : stats.mastery >= 50 ? "Getting there" : "Needs more work";
   const took = attempt ? duration(attempt.startedAt, attempt.submittedAt) : null;
   const subjectId = test?.subjectId;
+  const documents = groupByDocument(stats.topics);
 
   return (
     <div className="max-w-6xl mx-auto w-full flex flex-col gap-space-2xl pb-space-xl">
@@ -160,7 +185,10 @@ export default function Insights() {
           <div className="absolute -left-8 bottom-10 w-40 h-40 rounded-full bg-tertiary/30 blur-2xl"></div>
           <div className="relative p-space-lg text-inverse-on-surface flex flex-col gap-space-xs">
             <span className="font-label-sm text-label-sm tracking-widest uppercase text-tertiary font-semibold">Focus next</span>
-            <h3 className="font-headline-sm text-headline-sm leading-snug">{stats.attention?.topic || "Nothing to review"}</h3>
+            <h3 className="font-headline-sm text-headline-sm leading-snug">{stats.attention ? shortName(stats.attention) : "Nothing to review"}</h3>
+            {stats.attention && topicParts(stats.attention).parent && (
+              <span className="font-label-md text-label-md opacity-80">in {topicParts(stats.attention).parent}</span>
+            )}
             {stats.attention && (
               <p className="font-body-sm text-body-sm opacity-80">
                 {Math.round(stats.attention.accuracy * 100)}% correct across {stats.attention.questionsAnswered}{" "}
@@ -185,7 +213,11 @@ export default function Insights() {
                 </span>
               )}
             </div>
-            <h4 className="font-headline-sm text-headline-sm text-primary">{stats.strongest?.topic || "—"}</h4>
+            {stats.strongest ? (
+              <TopicName topic={stats.strongest} as="h4" className="font-headline-sm text-headline-sm text-primary" />
+            ) : (
+              <h4 className="font-headline-sm text-headline-sm text-primary">—</h4>
+            )}
             <p className="font-body-sm text-body-sm text-on-surface-variant">Highest share of correct answers in this attempt.</p>
           </div>
         </div>
@@ -203,7 +235,11 @@ export default function Insights() {
                 </span>
               )}
             </div>
-            <h4 className="font-headline-sm text-headline-sm text-primary">{stats.attention?.topic || "—"}</h4>
+            {stats.attention ? (
+              <TopicName topic={stats.attention} as="h4" className="font-headline-sm text-headline-sm text-primary" />
+            ) : (
+              <h4 className="font-headline-sm text-headline-sm text-primary">—</h4>
+            )}
             <p className="font-body-sm text-body-sm text-on-surface-variant">Highest attention score once accuracy and response time are combined.</p>
           </div>
         </div>
@@ -220,16 +256,66 @@ export default function Insights() {
               </span>
             </div>
             <h4 className="font-headline-sm text-headline-sm text-primary">
-              {stats.topics.length > 1 && stats.slowest ? `Slowest on ${stats.slowest.topic}` : "Steady pace"}
+              {stats.topics.length > 1 && stats.slowest ? `Slowest on ${shortName(stats.slowest)}` : "Steady pace"}
             </h4>
             <p className="font-body-sm text-body-sm text-on-surface-variant">
               {stats.topics.length > 1 && stats.fastest && stats.slowest
-                ? `${Math.round(stats.slowest.avgTimeMs / 1000)}s per question there, versus ${Math.round(stats.fastest.avgTimeMs / 1000)}s on ${stats.fastest.topic}.`
+                ? `${Math.round(stats.slowest.avgTimeMs / 1000)}s per question there, versus ${Math.round(stats.fastest.avgTimeMs / 1000)}s on ${shortName(stats.fastest)}.`
                 : "Only one topic came up, so there is nothing to compare against."}
             </p>
           </div>
         </div>
       </section>
+
+      {documents.length > 0 && (
+        <section className="bg-surface-container-lowest rounded-xl p-space-xl shadow-sm flex flex-col gap-space-lg" data-testid="document-breakdown">
+          <div className="flex flex-col">
+            <span className="font-label-md text-label-md uppercase tracking-wider text-secondary">Subtopic breakdown</span>
+            <h3 className="font-headline-sm text-headline-sm text-primary">Inside each document</h3>
+          </div>
+          {documents.map((d) => (
+            <div key={d.parentTopicId} className="flex flex-col gap-space-sm">
+              <div className="flex items-center justify-between gap-space-md">
+                <Link
+                  to={subjectId ? `/subjects/${subjectId}?note=${d.parentTopicId}` : "#"}
+                  className="font-ui-title text-ui-title text-on-surface font-semibold hover:text-secondary flex items-center gap-space-xs min-w-0"
+                >
+                  <Icon name="description" className="text-base text-secondary shrink-0" />
+                  <span className="truncate">{d.parentTopic}</span>
+                </Link>
+                <span className="font-label-md text-label-md text-on-surface-variant shrink-0">
+                  {Math.round(d.accuracy * 100)}% overall · {d.subtopics.length} {d.subtopics.length === 1 ? "subtopic" : "subtopics"} tested
+                </span>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-space-xs">
+                {d.subtopics.map((t) => {
+                  const pctv = Math.round(t.accuracy * 100);
+                  return (
+                    <Link
+                      key={t.topicId}
+                      to={subjectId ? `/subjects/${subjectId}?note=${t.topicId}` : "#"}
+                      data-testid="subtopic-score"
+                      className="flex items-center justify-between gap-space-sm px-space-md py-space-sm rounded-lg bg-surface-container-low hover:bg-surface-container transition-colors"
+                    >
+                      <span className="font-ui-body text-ui-body text-on-surface truncate">{shortName(t)}</span>
+                      <span
+                        className={`font-label-md text-label-md font-semibold px-space-xs py-space-2xs rounded shrink-0 ${
+                          pctv < 50 ? "bg-tertiary-container text-on-tertiary-container" : "bg-secondary-container text-on-secondary-container"
+                        }`}
+                      >
+                        {pctv}%
+                      </span>
+                    </Link>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+          <p className="font-label-sm text-label-sm text-on-surface-variant">
+            Subtopics come from the document&apos;s own headings. Click one to re-read exactly that section.
+          </p>
+        </section>
+      )}
 
       <section className="grid grid-cols-1 lg:grid-cols-12 gap-space-xl items-start">
         <div className="lg:col-span-7 bg-surface-container-low rounded-xl p-space-xl shadow-sm flex flex-col gap-space-md">
@@ -239,10 +325,11 @@ export default function Insights() {
           </div>
           <div className="flex flex-col gap-space-sm">
             {stats.topics.map((t) => (
-              <div key={t.topic} className="bg-surface-container-lowest rounded-lg p-space-md shadow-sm">
+              <div key={t.topicId || t.topic} className="bg-surface-container-lowest rounded-lg p-space-md shadow-sm" data-testid="topic-rank">
                 <div className="flex items-center justify-between gap-space-md mb-space-xs">
-                  <span className="font-ui-title text-ui-title text-on-surface font-semibold truncate">
-                    #{t.rank} {t.topic}
+                  <span className="font-ui-title text-ui-title text-on-surface font-semibold flex items-baseline gap-space-xs min-w-0">
+                    <span className="shrink-0">#{t.rank}</span>
+                    <TopicName topic={t} />
                   </span>
                   <span className="font-label-md text-label-md text-on-surface-variant shrink-0">
                     {Math.round(t.accuracy * 100)}% correct · {Math.round(t.avgTimeMs / 1000)}s avg
@@ -269,10 +356,13 @@ export default function Insights() {
           </div>
           {[
             subjectId && {
-              to: `/subjects/${subjectId}`,
+              // topicId is the note id, so this opens exactly that subtopic
+              to: stats.attention?.topicId ? `/subjects/${subjectId}?note=${stats.attention.topicId}` : `/subjects/${subjectId}`,
               icon: "auto_stories",
-              title: stats.attention ? `Re-read your notes on ${stats.attention.topic}` : "Re-read your notes",
-              body: "Start with the topic that needs the most attention.",
+              title: stats.attention ? `Re-read your notes on ${shortName(stats.attention)}` : "Re-read your notes",
+              body: topicParts(stats.attention).parent
+                ? `Opens that section of ${topicParts(stats.attention).parent}.`
+                : "Start with the topic that needs the most attention.",
             },
             subjectId && {
               to: `/subjects/${subjectId}/tests`,
@@ -320,7 +410,7 @@ export default function Insights() {
               const diff = after - before;
               return (
                 <div key={d.topicId} className="bg-surface-container-low rounded-lg p-space-md flex items-center justify-between gap-space-md">
-                  <span className="font-ui-title text-ui-title text-on-surface truncate">{d.topicLabel}</span>
+                  <TopicName topic={d.topicLabel} className="font-ui-title text-ui-title text-on-surface" />
                   <span className="font-label-md text-label-md text-on-surface-variant shrink-0 flex items-center gap-space-xs">
                     {before}% <Icon name="arrow_forward" className="text-sm" /> <strong className="text-on-surface">{after}%</strong>
                     <span className={`px-space-xs py-space-2xs rounded font-semibold ${diff >= 0 ? "bg-secondary-container text-on-secondary-container" : "bg-tertiary-container text-on-tertiary-container"}`}>

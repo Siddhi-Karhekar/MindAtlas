@@ -39,6 +39,12 @@ export async function loadOwnedSubject(req, res, next) {
 //                       also gets a clusterId); see clusterNotes()
 //   removedEdges      - links the student marked as wrong, same- or cross-
 //                       subject, so the page can offer to restore them
+//   containsEdges     - document -> subtopic links for long uploads that were
+//                       split into subtopics (derived from parentNoteId, never
+//                       stored). Each node also carries parentNoteId /
+//                       childCount / order / sectionGroup. A split document's
+//                       own node has no similarity links and no cluster: its
+//                       subtopics are the topics that link and cluster.
 // Removed links are left out of `edges`, the cross-subject lists, clusters
 // and every count, exactly as if they had never been linked.
 router.get("/:id/graph", loadOwnedSubject, async (req, res) => {
@@ -67,8 +73,10 @@ router.get("/:id/graph", loadOwnedSubject, async (req, res) => {
   const known = new Set([...ownIds, ...external.map((n) => String(n._id))]);
   const isKnown = (e) => known.has(String(e.sourceNoteId)) && known.has(String(e.targetNoteId));
   const usable = crossEdges.filter(isKnown);
-  // Same-subject links only: a cluster is a group within this subject.
-  const { clusterOf, clusters } = clusterNotes(notes, edges);
+  // Same-subject links only: a cluster is a group within this subject. Split
+  // document parents are containers, not topics, so they are not clustered.
+  const isSplitParent = (n) => !n.parentNoteId && (n.childCount || 0) > 0;
+  const { clusterOf, clusters } = clusterNotes(notes.filter((n) => !isSplitParent(n)), edges);
 
   res.json({
     nodes: notes.map((n) => ({
@@ -78,9 +86,16 @@ router.get("/:id/graph", loadOwnedSubject, async (req, res) => {
       sourceType: n.sourceType,
       createdAt: n.createdAt,
       clusterId: clusterOf.get(String(n._id)),
+      parentNoteId: n.parentNoteId || null,
+      childCount: n.childCount || 0,
+      order: n.order ?? null,
+      sectionGroup: n.sectionGroup || null,
     })),
     clusters,
     edges: edges.map(toApiEdge),
+    containsEdges: notes
+      .filter((n) => n.parentNoteId && ownIds.has(String(n.parentNoteId)))
+      .map((n) => ({ id: `contains-${n._id}`, source: n.parentNoteId, target: n._id, edgeType: "contains" })),
     crossSubjectEdges: usable.filter((e) => e.edgeType === "cross-subject").map(toApiEdge),
     rejectedEdges: usable.filter((e) => e.edgeType === "rejected").map(toApiEdge),
     removedEdges: [...allSameEdges, ...allCrossEdges.filter(isKnown)].filter(isRemoved).map(toApiEdge),

@@ -1,7 +1,10 @@
 import "dotenv/config";
+import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
 import express from "express";
 import cors from "cors";
-import { connectDB } from "./db/index.js";
+import { connectDB, flushDB } from "./db/index.js";
 import { assertAuthConfig } from "./middleware/auth.js";
 import { rateLimit } from "./middleware/rateLimit.js";
 import authRoutes from "./routes/auth.js";
@@ -57,6 +60,21 @@ app.use((req, res, next) => {
 
 app.use(express.json({ limit: "2mb" }));
 
+// Local file database: persist a write request's changes before answering it.
+app.use((req, res, next) => {
+  if (req.method === "GET" || req.method === "HEAD") return next();
+  const send = res.json.bind(res);
+  res.json = (body) => {
+    try {
+      flushDB();
+    } catch (err) {
+      console.error("[db] failed to save:", err.message);
+    }
+    return send(body);
+  };
+  next();
+});
+
 app.get("/api/health", (req, res) => res.json({ ok: true }));
 
 // Rate limits: a generous ceiling for the whole API, a tight one on
@@ -90,6 +108,23 @@ app.use("/api/graph", graphRoutes);
 app.use("/api", testRoutes);
 // attempts routes cover both /api/tests/:id/attempts and /api/attempts/:id/...
 app.use("/api", attemptRoutes);
+
+// Unknown API routes get a JSON 404 rather than the SPA's index.html.
+app.use("/api", (req, res) => res.status(404).json({ error: "not found" }));
+
+// Single-service deploy: if the React client has been built (client/dist),
+// serve it from this same server so the whole app lives on one URL and the
+// browser never makes a cross-origin call. Any non-API path falls back to
+// index.html so React Router's client-side routes survive a page refresh.
+const clientDist = process.env.CLIENT_DIST
+  ? path.resolve(process.env.CLIENT_DIST)
+  : path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../client/dist");
+if (fs.existsSync(path.join(clientDist, "index.html"))) {
+  app.use(express.static(clientDist, { index: false, maxAge: "1h" }));
+  app.use("/assets", express.static(path.join(clientDist, "assets"), { immutable: true, maxAge: "1y" }));
+  app.get("*", (req, res) => res.sendFile(path.join(clientDist, "index.html")));
+  console.log(`[server] serving web client from ${clientDist}`);
+}
 
 app.use((err, req, res, next) => {
   console.error(err);

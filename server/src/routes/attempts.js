@@ -5,7 +5,7 @@ import { createAttempt, findAttemptsBySubject, findOwnedAttempt, markAttemptSubm
 import { upsertResponse, findResponsesByAttempt, updateResponseGrade } from "../models/Response.js";
 import { createFeedbackReport, findFeedbackByAttempt, findFeedbackBySubject } from "../models/FeedbackReport.js";
 import { requireAuth } from "../middleware/auth.js";
-import { computeTopicScores, computeMarksSummary, phraseFeedback } from "../services/feedbackEngine.js";
+import { computeDocumentRollup, computeTopicScores, computeMarksSummary, phraseFeedback } from "../services/feedbackEngine.js";
 import { gradeAttemptResponses, quickTheoryScore } from "../services/gradingEngine.js";
 import { nextDifficulty, pickNextQuestion, startingDifficulty } from "../services/adaptiveEngine.js";
 import { applyAttemptToMastery } from "../services/masteryEngine.js";
@@ -13,6 +13,7 @@ import { findMasteryBySubject, masteryMapForSubject, upsertMastery } from "../mo
 import { findOwnedSubject } from "../models/Subject.js";
 import { difficultyForMastery } from "../services/masteryEngine.js";
 import { findTestsBySubject } from "../models/Test.js";
+import { findNotesBySubject } from "../models/Note.js";
 
 const router = Router();
 router.use(requireAuth);
@@ -224,6 +225,7 @@ router.post("/attempts/:id/submit", loadOwnedAttempt, async (req, res) => {
     ownerId: req.user.id,
     subjectId: req.attempt.subjectId,
     topicScores,
+    documentScores: computeDocumentRollup(topicScores),
     masteryDeltas,
     feedbackText: text,
     generatedBy,
@@ -259,12 +261,16 @@ router.get("/subjects/:id/progress", async (req, res) => {
   const subject = await findOwnedSubject(req.params.id, req.user.id);
   if (!subject) return res.status(404).json({ error: "subject not found" });
 
-  const [masteryRows, reports, attempts, tests] = await Promise.all([
+  const [masteryRows, reports, attempts, tests, notes] = await Promise.all([
     findMasteryBySubject(req.user.id, subject._id),
     findFeedbackBySubject(req.user.id, subject._id),
     findAttemptsBySubject(req.user.id, subject._id),
     findTestsBySubject(subject._id),
+    findNotesBySubject(subject._id),
   ]);
+  // topicId is a note id, so the note hierarchy says which document a topic
+  // is a subtopic of - read fresh, so a renamed document shows its new name.
+  const noteById = new Map(notes.map((n) => [String(n._id), n]));
 
   const testTitleById = new Map(tests.map((t) => [String(t._id), t.title]));
 
@@ -281,9 +287,15 @@ router.get("/subjects/:id/progress", async (req, res) => {
   }
 
   const topics = masteryRows
-    .map((m) => ({
+    .map((m) => {
+      const note = noteById.get(String(m.topicId));
+      const parent = note?.parentNoteId ? noteById.get(String(note.parentNoteId)) : null;
+      return {
       topicId: m.topicId,
       topic: m.topicLabel,
+      subtopic: parent ? note.title : null,
+      parentTopicId: parent ? parent._id : null,
+      parentTopic: parent ? parent.title : null,
       pKnown: m.pKnown,
       observations: m.observations,
       // What tier this topic alone would be served at - the visible link
@@ -291,7 +303,8 @@ router.get("/subjects/:id/progress", async (req, res) => {
       tier: difficultyForMastery(m.pKnown),
       updatedAt: m.updatedAt,
       trend: trendByTopic.get(String(m.topicId)) || [],
-    }))
+      };
+    })
     .sort((a, b) => a.pKnown - b.pKnown); // weakest first
 
   const submitted = attempts.filter((a) => a.status === "submitted");
