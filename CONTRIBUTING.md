@@ -405,6 +405,46 @@ other three to finish anything. Start now:
 5. **Secrets hygiene**: confirm `.env` is git-ignored (it already is),
    add a `gitleaks` scan step to CI as a second line of defense.
 
+> **Status: Member 4's prototype work** (26 Sep 2026, branch
+> `infra/ci-and-compose`).
+>
+> | Item | Status |
+> | --- | --- |
+> | Dockerfile | Done earlier (root `Dockerfile`, one image: the API serves the built client) |
+> | `docker-compose.yml` | **Done** - that image + a real `mongo:7`, data in a named volume. `docker compose up --build`, then http://localhost:4000 |
+> | CI (`.github/workflows/ci.yml`) | **Done** - on every push and every PR into `main`: server `npm test`, client lint + build, Docker image build, `npm audit --audit-level=high` for both, `gitleaks` over the full history |
+> | Deploy | **Live** on Render + MongoDB Atlas M0 (Mumbai) - see "Open decision" below |
+> | Secrets | `.env` git-ignored; gitleaks finds nothing in the history; secrets live only in Render's Environment settings |
+>
+> Verified locally before pushing: all 182 server checks pass, client lint and
+> build pass, no high/critical advisories (the server has 3 *moderate* ones,
+> which don't fail CI), the Docker image builds, and the compose stack signs up
+> a user and saves a note to its own MongoDB.
+>
+> **Currently deployed** (two Render services, auto-deploy from `main`):
+> - `mindatlas` (Static Site, root `client`) - https://mindatlas.onrender.com,
+>   env `VITE_API_BASE=https://mindatlas-api.onrender.com/api`, rewrite
+>   `/*` -> `/index.html`.
+> - `mindatlas-api` (Web Service, root `server`) - env `NODE_ENV`,
+>   `MONGODB_URI`, `JWT_SECRET`, `TRUST_PROXY=1`, `NODE_VERSION=22`,
+>   `CORS_ORIGIN=https://mindatlas.onrender.com`, optional `GROQ_API_KEY`.
+>
+> **Open decision for the team:** `render.yaml` describes a *single* service
+> named `mindatlas` (API serving the client - no CORS needed), which is not
+> what is deployed and whose name clashes with the static site above. Pick one
+> setup: either keep the two live services and drop/adjust `render.yaml`, or
+> move to the single service (delete the static site first, then deploy the
+> Blueprint). Don't apply the Blueprint as-is.
+>
+> **Things everyone should know**
+> - **CI ports**: the server tests start the API on 4598 and 4599 - don't add
+>   anything to CI that uses them.
+> - **Free-tier sleep**: the API sleeps after 15 idle minutes; the first
+>   request then takes ~20-50 s. Open `/api/health` a minute before a demo.
+> - **Local dev never needs Atlas**: with no `MONGODB_URI` the server keeps a
+>   local file database. Don't point your local `.env` at the live Atlas
+>   database - your test data would show up on the live site.
+
 ## 4. The shared contracts (read this before you start)
 
 These are the things all four of you are implicitly depending on — change
