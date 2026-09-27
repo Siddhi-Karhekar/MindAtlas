@@ -5,37 +5,90 @@ root `README.md` for what exists today), and lays out how to divide work
 so four people can build in parallel without constantly blocking on each
 other or fighting merge conflicts.
 
-## 0. After the Saturday demo — status and next phase (read this first)
+> **Proposed update (27 Sep 2026), for team review.** This version corrects
+> §0 of the `main` copy (`d202772`) after re-checking the code and the
+> unmerged branches. The main corrections: the unmerged
+> `test-generation-and-feedback` branch does **not** contain the question
+> quality or dark-mode changes its commit messages describe, and the plan is
+> now scoped to finish by **Saturday 3 Oct**. Changed places are marked
+> **(corrected 27 Sep)** or **(new 27 Sep)**.
+
+## 0. After the Saturday demo — status and this week's plan (read this first)
 
 The prototype was demoed on Saturday 26 Sep 2026. This section records a
-status check of `main` at `9b31902` (27 Sep), then lists what each member
-builds next. The Saturday scope that used to be here is now §0a, with a
+status check of `main` at `d202772` (27 Sep), then lists what each member
+builds this week. The Saturday scope that used to be here is now §0a, with a
 status note on each item. Sections 1–5 are marked up the same way: **Done**
 where the code shows it, **Not done** with a comment where it doesn't.
 
-**Health of `main` (checked 27 Sep):** all 182 server checks pass (`npm test`
-in `server/`), and the client lints (10 warnings, no errors) and builds. CI
-(`.github/workflows/ci.yml`) runs these checks on every push and every PR.
+**Health of `main` (checked 27 Sep):** all server checks pass (`npm test` in
+`server/`; 181 checks, 3 of which need network for Tesseract's model and are
+skipped offline). The `FAIL` lines printed under "OLD mongoStore.js (before
+the fix)" are deliberate: they show the old bug and are not failures. The
+client lints (10 warnings, no errors) and builds. `npm audit` shows 3
+moderate advisories on the server and nothing high or critical. CI
+(`.github/workflows/ci.yml`, 4 jobs) runs these checks on every push and
+every PR.
 
-### Before anyone merges anything else
+### Step 0 for everyone: sync with `main` (new 27 Sep)
 
-1. **`test-generation-and-feedback` would undo the graph page.** Its two
-   unmerged commits (26 Sep) fix sign-in with autofilled emails, improve
-   question quality and add the database status to `/api/health`. We want
-   all of those. But commit `d3cf125` also replaces
-   `client/src/pages/KnowledgeGraph.jsx` with an older version (877 lines
-   removed). Merged as it is, that removes link removal and Undo, the keyword
-   map, cluster colouring, the cross-subject and "Considered, not linked"
-   lists, and the subtopic grouping. The only graph change the commit means
-   to make is showing link lines in dark mode. Plan: Member 2 ports that fix
-   onto the current graph page in a small `graph/` PR. Member 3 then restores
-   `main`'s `KnowledgeGraph.jsx` on the branch
-   (`git checkout origin/main -- client/src/pages/KnowledgeGraph.jsx`)
-   before merging.
+At least one local copy is still checked out on `test-generation-and-feedback`
+with a `main` from 24 Sep, so it has the old graph page, the old copy of this
+file and no CI workflow. Before starting anything this week:
+
+```bash
+git fetch origin
+git checkout main
+git pull
+git branch -vv        # every new branch should start from this main
+```
+
+### Before anyone merges anything else (corrected 27 Sep)
+
+1. **Do not merge `test-generation-and-feedback`, not even with the graph
+   page restored.** What its two unmerged commits (26 Sep) actually change:
+
+   | Commit | Says | Actually changes |
+   | --- | --- | --- |
+   | `d3cf125` | better questions, dark-mode link lines | `KnowledgeGraph.jsx` replaced by the older copy from `c317224` (877 lines removed), plus 6 new checks in `server/test/documentStructure.test.mjs` |
+   | `2d394fc` | sign-in autofill, question quality, dark-mode lines, DB status | `SignIn.jsx`, `server/src/db/index.js`, `server/src/index.js`, `server/src/routes/auth.js` only |
+
+   - **Question quality was never committed.** `testEngine.js` and
+     `documentStructure.js` are the same on the branch, on `main` and on the
+     laptop the commits came from. Of the 7 new checks, 5 fail against that
+     code ("rejected (not a statement)…"), so merging the branch turns
+     `npm test` and CI red.
+   - **There is no dark-mode fix in it.** The old graph page it brings back
+     colours link lines exactly as `main` does (`--c-primary` for
+     document→subtopic lines, `--c-outline` for unselected links). The
+     dark-mode fix still has to be written (Member 2, item 1).
+   - **A normal merge would not conflict.** Git merges it cleanly and
+     silently deletes link removal and Undo, the keyword map, cluster
+     colouring, the cross-subject and "Considered, not linked" lists, and
+     subtopic grouping.
+
+   **Plan (Member 3, item 1):** take only the two fixes worth keeping, the
+   sign-in autofill fix and the database status in `/api/health`, onto a
+   fresh branch from `main`:
+
+   ```bash
+   git checkout main && git pull
+   git checkout -b tests/signin-and-health
+   git checkout origin/test-generation-and-feedback -- \
+     client/src/pages/SignIn.jsx server/src/db/index.js \
+     server/src/index.js server/src/routes/auth.js
+   cd server && npm test && cd ../client && npm run lint && npm run build
+   ```
+
+   Open that as a PR. Once it merges, delete `test-generation-and-feedback`
+   (locally and on GitHub) so nobody merges it by accident. The 5 failing
+   checks come back later, together with the question-quality code that
+   makes them pass (Member 3, item 3).
 2. **`notes/knowledge-ingestion` is stale.** It adds reference textbooks
    (24 Sep), but it was branched before subtopic splitting landed, and its
-   own `sectionSplitter.js` overlaps `services/documentStructure.js` on
-   `main`. Rebase it and keep only the textbook parts (Member 1, item 2).
+   own `sectionSplitter.js` and `middleware/upload.js` overlap
+   `services/documentStructure.js` and `uploadSingle` on `main`. Rebase it
+   and keep only the textbook parts (Member 1, item 2).
 
 ### Decision: mastery stays on BKT
 
@@ -44,7 +97,7 @@ prototype. That swap never happened: `masteryEngine.js` still runs BKT, and
 the demo ran on it. The plan was to bring BKT back after Saturday anyway, so
 **BKT is now the mastery model** and the swap is dropped. Two places in
 `README.md` still say otherwise, the prototype-scope note near the top and
-"What's next" item 1, and both need fixing (Member 3, item 3).
+"What's next" item 1, and both need fixing (Member 3, item 5).
 
 ### Status of the Saturday build order
 
@@ -55,47 +108,93 @@ the demo ran on it. The plan was to bring BKT back after Saturday anyway, so
 | 3. Rule-based test-taking | **Not done as planned** | The staircase is rule-based, but mastery still uses BKT, which is now kept on purpose (see above). `adaptiveEngine.js` comments still say "IRT-inspired" |
 | Docker, compose, CI, deploy (Member 4) | **Done** | PR #6; live on Render + MongoDB Atlas. The `render.yaml` decision is still open |
 
-### Next phase: what each member builds next
+### This week: what each member builds (corrected 27 Sep)
 
-This is the short list, in order. The details and reasons are in each
-member's section of §3.
+Target: everything in "Must" merged to `main`, green in CI and working on the
+live site by **Saturday 3 Oct**. "Should" items go in if there is time.
+"After this week" items are not started this week. The details and reasons
+are in each member's section of §3.
 
 **Member 1: notes**
-1. Summarization, grounded in the note's own text (backlog item 1; not started).
-2. Textbook linking: rebase `notes/knowledge-ingestion` onto `main` (backlog item 2).
-3. Editing and deleting a note (new).
-4. Study tools from the Digital Second Brain prototype: flashcards, key
-   concepts, "explain like I'm 5" (new).
+- Must: 1. Summarization, grounded in the note's own text (backlog item 1; not started).
+- Must: 2. Textbook linking: rebase `notes/knowledge-ingestion` onto `main` (backlog item 2).
+- Must: 3. Editing and deleting a note; pairs with Member 2's item 3.
+- Should: 4. Study tools from the Digital Second Brain prototype: flashcards,
+  key concepts, "explain like I'm 5". Reuses item 1's grounded prompt and
+  fallback, so start it only once item 1 is merged.
 
 **Member 2: knowledge graph**
-1. Port the dark-mode link-line fix so `test-generation-and-feedback` can
-   merge safely (new, urgent).
-2. A relink tool that recomputes links with the current rule (new; needed
-   before any change to the linking rule).
-3. Fix a note's links when it is edited or deleted; pairs with Member 1's
-   item 3 (new).
-4. Tune the linking thresholds on real notes, then TextRank keywords.
-5. MiniLM sentence embeddings (backlog item 1).
-6. Louvain/Leiden clustering, and feeding link corrections back into the
-   linking rule (backlog item 2).
+- Must: 1. Write the dark-mode link-line fix on the current graph page
+  (corrected: there is nothing to port from the old branch).
+- Must: 2. A relink tool that recomputes links with the current rule (needed
+  before any change to the linking rule).
+- Must: 3. Fix a note's links when it is edited or deleted; pairs with
+  Member 1's item 3.
+- Should: 4. Tune the linking thresholds on real notes.
+- After this week: TextRank keywords, MiniLM sentence embeddings,
+  Louvain/Leiden clustering, feeding link corrections back into the linking
+  rule, search across all subjects.
 
 **Member 3: tests and feedback**
-1. Merge `test-generation-and-feedback` without its `KnowledgeGraph.jsx`
-   change (urgent).
-2. Enforce the time limit on the server as well as in the browser (new).
-3. Make the docs match BKT, and reword "IRT-inspired" (new).
-4. Quality upgrades: distractor gating for LLM-drafted questions, fuzzy
-   excerpt matching, a stricter theory-grading prompt (README "What's next"
-   item 5).
-5. Optional webcam proctoring (stretch).
+- Must: 1. Bring over the sign-in and `/api/health` fixes on a fresh branch,
+  then delete `test-generation-and-feedback` (corrected, see above).
+- Must: 2. Enforce the time limit on the server as well as in the browser.
+- Must: 3. Question quality: write the change the 26 Sep commit describes
+  (only real statements become questions, one blank on a technical term,
+  teacher-style theory questions) and bring back its 6 new checks, all passing
+  (new).
+- Must: 4. Make the docs match BKT, and reword "IRT-inspired" (also owns the
+  single README "What's next" PR; see "Shared files this week").
+- Should: 5. Quality upgrades: distractor gating for LLM-drafted questions,
+  fuzzy excerpt matching, a stricter theory-grading prompt (README "What's
+  next" item 5).
+- After this week: optional webcam proctoring.
 
 **Member 4: containers and cloud**
-1. Settle the `render.yaml` decision and make `DEPLOY.md` match what is deployed.
-2. Protect `main` (§1 step 4; not done).
-3. An uptime pinger before demos, and a database backup before any data migration.
-4. Production hardening (README "What's next" item 8), plus the 3 moderate
-   npm advisories.
-5. Fix README "What's next" item 7, which still says CI is open.
+- Must: 1. Settle the `render.yaml` decision and make `DEPLOY.md` match what is deployed.
+- Must: 2. Protect `main` (§1 step 4; not done), requiring the 4 CI jobs.
+- Must: 3. An uptime pinger before demos, and a database backup before
+  Member 2's relink runs on the live site.
+- Should: 4. Production hardening (README "What's next" item 8), plus the 3
+  moderate npm advisories.
+- Must: 5. README "What's next" item 7 (CI is done), as a commit on Member
+  3's README PR.
+
+### Order of work and hand-offs (new 27 Sep)
+
+| Day | Member 1 | Member 2 | Member 3 | Member 4 |
+| --- | --- | --- | --- | --- |
+| Mon 28 | Summarization endpoint + fallback | Dark-mode fix (small PR) | Sign-in/health PR, delete old branch | `render.yaml` decision, `DEPLOY.md`; protect `main` |
+| Tue 29 | Summarization UI; start textbook rebase | Relink tool (in-memory DB first) | Server-side time limit | Uptime pinger; backup script for Atlas |
+| Wed 30 | Textbook rebase, PR | Relink PR; agree the edit/delete rule with Member 1 | Question quality + its 6 checks | Take an Atlas backup; run Member 2's relink on live |
+| Thu 1 | Edit/delete a note (`db/` delete + test) | Links after edit/delete | Question quality PR; README/BKT docs PR | Hardening; npm advisories |
+| Fri 2 | Study tools (should) | Threshold tuning (should) | Quality upgrades (should) | Hardening PR; check `/api/health` shows `kind: "mongodb"`, `persistent: true` |
+| Sat 3 | Full end-to-end check on the live site by all four; fix only what breaks | | | |
+
+Hand-offs that block someone:
+
+- **Member 2's relink (Wed) needs Member 4's Atlas backup first.** Don't run
+  relink on the live database without it.
+- **Member 1's edit/delete and Member 2's link clean-up land together.**
+  Agree on the rule on Wed (proposal: a note that a test has used can't be
+  edited or deleted; what deleting a split document does to its subtopics),
+  then either one PR from both, or Member 2's clean-up merges first and
+  Member 1's PR calls it.
+- **Member 1's study tools reuse the summarization prompt**, so they wait for
+  summarization to merge.
+
+### Shared files this week (new 27 Sep)
+
+These files are edited by more than one person this week. Merge in this
+order, and rebase on `main` before opening the second PR:
+
+| File | Who | Order |
+| --- | --- | --- |
+| `README.md` "What's next" | Member 3 (items 1, 4, prototype note), Member 4 (item 7) | One PR, opened by Member 3; Member 4 adds a commit to it |
+| `server/src/index.js` | Member 3 (`/api/health`), Member 1 (summarize/textbook routes), Member 4 (hardening) | Member 3 → Member 1 → Member 4; each keeps to one-line additions (§4) |
+| `server/src/routes/notes.js`, `models/Note.js`, `server/src/db/` | Member 1 (edit/delete, textbooks), Member 2 (links after edit/delete) | Per the edit/delete hand-off above |
+| `client/src/lib/api.js` | Everyone | Add new functions at the end of the file to keep conflicts trivial |
+| `server/.env.example` | Anyone adding an env var | In the same PR that uses it (§4) |
 
 ## 0a. Saturday prototype scope (26 Sep 2026) — kept for reference
 
@@ -400,9 +499,11 @@ the `/api/subjects/:id/graph` route, `client/src/pages/KnowledgeGraph.jsx`.
 > - `tfidf.js` ignores "cont", "contd" and "continued" (slide-continuation
 >   markers).
 >
-> **Risk:** the unmerged `test-generation-and-feedback` branch would replace
-> the graph page with an older version. See §0, "Before anyone merges
-> anything else", and next-phase item 1 below.
+> **Risk (corrected 27 Sep):** the unmerged `test-generation-and-feedback`
+> branch would replace the graph page with an older version, and it contains
+> no dark-mode change. Member 3 is taking only its sign-in and
+> `/api/health` fixes onto a fresh branch and then deleting it. See §0,
+> "Before anyone merges anything else".
 
 What's already there: TF-IDF keyword extraction + cosine-similarity
 edge creation within a subject — this is deliberately a stand-in for
@@ -516,13 +617,17 @@ total count. The graph page opens it from a note's "Keyword map" button.
 Its quality is only as good as the stored keywords, so TextRank keywords
 (README "What's next") would improve it directly.
 
-**Next phase (after the demo), in order:**
-1. **Dark-mode link lines on the current graph page** (urgent). `d3cf125`
-   on `test-generation-and-feedback` draws link lines in `var(--c-primary)`
-   so they show in dark mode. On `main`, unselected same-subject links use
-   `var(--c-outline)`. Make the same fix on the current `KnowledgeGraph.jsx`
-   in a small `graph/` PR, so Member 3 can merge their branch without its
-   old copy of the page.
+**Next phase (after the demo), in order.** Items 1–3 are "Must" this week,
+item 4 is "Should", and items 5–7 are after this week (see §0).
+1. **Dark-mode link lines on the current graph page** (corrected 27 Sep).
+   The earlier plan was to port a fix from `d3cf125`, but that commit has no
+   dark-mode change: its graph page colours lines exactly as `main` does.
+   On `main`, unselected same-subject links are drawn in `var(--c-outline)`
+   (`#5c5c52` in dark mode) at 0.4 opacity, which is hard to see on the dark
+   background. Write the fix on the current `KnowledgeGraph.jsx` (for
+   example a dark-mode-only link colour variable in `index.css`, or a higher
+   opacity) and check it in both themes, in a small `graph/` PR. Nobody is
+   blocked on it.
 2. **A relink tool.** Links are only worked out when a note is created, so
    any change to the linking rule (items 4–6) leaves every existing link on
    the old rule. Add a relink for one student's notes that recomputes links
@@ -535,7 +640,8 @@ Its quality is only as good as the stored keywords, so TextRank keywords
    note is deleted, its links must stop showing and counting everywhere.
    There is no delete in the database layer yet, so either add one or flag
    the edges the way removed links are flagged.
-4. **Tune the thresholds on real notes, then TextRank keywords.** The
+4. **Tune the thresholds on real notes (this week), then TextRank keywords
+   (after this week).** The
    0.12 / 0.25 + two-keyword rule was tuned on sample notes. Re-check it on
    `sample-notes/` and the team's own notes on the live site. TextRank
    keywords then improve both linking and the keyword map.
@@ -601,24 +707,39 @@ doc, is kept below for reference:
 > - **Also on `main`** (`c317224`, 26 Sep): tests, mastery and feedback work
 >   per subtopic, so feedback can name a subtopic ("Paging in Unit 3").
 >   Questions are drafted only from relevant text.
-> - **Not merged yet:** two commits on `test-generation-and-feedback`
->   (26 Sep). Read §0 before merging them.
+> - **Not merged yet (corrected 27 Sep):** two commits on
+>   `test-generation-and-feedback` (26 Sep). Only the sign-in autofill fix
+>   and the `/api/health` database status are real code changes. The
+>   question-quality change was never committed (only its checks were, and
+>   5 of them fail), and the graph-page change is an old copy of the page.
+>   Don't merge the branch; see §0.
 >
-> **Next phase, in order:**
-> 1. **Merge `test-generation-and-feedback` without its `KnowledgeGraph.jsx`
->    change** (urgent). Wait for Member 2's dark-mode fix, restore `main`'s
->    `KnowledgeGraph.jsx` on the branch, then merge.
+> **Next phase, in order (corrected 27 Sep).** Items 1–4 are "Must" this
+> week, item 5 is "Should", item 6 is after this week.
+> 1. **Bring over the sign-in and `/api/health` fixes** on a fresh
+>    `tests/signin-and-health` branch from `main` (commands in §0), then
+>    delete `test-generation-and-feedback` locally and on GitHub. Doesn't
+>    wait for anyone.
 > 2. **Enforce the time limit on the server.** Each attempt already stores
 >    `startedAt`, so reject answers and submissions that arrive after
 >    `startedAt + durationMinutes` plus a short grace period. That way the
->    limit holds even if someone edits the page.
-> 3. **Make the docs match BKT.** Fix the README's prototype-scope note and
+>    limit holds even if someone edits the page. Add checks for it to
+>    `npm test`.
+> 3. **Question quality** (new). Write the change `d3cf125` describes but
+>    doesn't contain: only real statements become questions (no headings,
+>    syllabus lines, lab tasks, questions or sentence fragments), one blank
+>    on a technical term, and teacher-style theory questions. The checks are
+>    ready: take `server/test/documentStructure.test.mjs` from the old branch
+>    (6 new checks: 5 "rejected (not a statement)" and 1 "accepted: a
+>    definition") and make them all pass.
+> 4. **Make the docs match BKT.** Fix the README's prototype-scope note and
 >    "What's next" items 1 and 4. Reword the "IRT-inspired" comment in
->    `adaptiveEngine.js` to call it a rule-based staircase.
-> 4. **Quality upgrades** (README "What's next" item 5): distractor gating
+>    `adaptiveEngine.js` to call it a rule-based staircase. This is the one
+>    README "What's next" PR this week; Member 4 adds item 7 to it.
+> 5. **Quality upgrades** (README "What's next" item 5): distractor gating
 >    for LLM-drafted questions, fuzzy (not word-for-word) excerpt matching,
 >    and a stricter theory-grading prompt.
-> 5. **Optional webcam proctoring** (stretch).
+> 6. **Optional webcam proctoring** (stretch, after this week).
 >
 > Later, once the live site has enough answers to learn from: fit the BKT
 > parameters and Rasch question difficulties from that data instead of the
@@ -705,7 +826,7 @@ other three to finish anything. Start now:
 >    PRs too.
 > 3. **Uptime and backups.** Before demos, point an uptime pinger at
 >    `/api/health` (`DEPLOY.md` already suggests UptimeRobot) so the free API
->    doesn't sleep. Once `test-generation-and-feedback` merges, `/api/health`
+>    doesn't sleep. Once Member 3's `tests/signin-and-health` PR merges, `/api/health`
 >    also reports the database; check that the live site shows
 >    `kind: "mongodb"` and `persistent: true`. The free M0 cluster has no
 >    automatic backups, so export the database before any data migration,
@@ -714,7 +835,8 @@ other three to finish anything. Start now:
 >    shared rate-limit store if the API ever runs as more than one instance,
 >    and secret rotation. Also check whether the 3 moderate npm advisories
 >    have fixes.
-> 5. **Fix README "What's next" item 7** to say CI is done.
+> 5. **Fix README "What's next" item 7** to say CI is done, as a commit on
+>    Member 3's README PR so the section is edited in one place.
 
 ## 4. The shared contracts (read this before you start)
 
