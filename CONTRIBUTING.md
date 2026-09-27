@@ -5,7 +5,102 @@ root `README.md` for what exists today), and lays out how to divide work
 so four people can build in parallel without constantly blocking on each
 other or fighting merge conflicts.
 
-## 0. Saturday prototype scope — read this first
+## 0. After the Saturday demo — status and next phase (read this first)
+
+The prototype was demoed on Saturday 26 Sep 2026. This section records a
+status check of `main` at `9b31902` (27 Sep), then lists what each member
+builds next. The Saturday scope that used to be here is now §0a, with a
+status note on each item. Sections 1–5 are marked up the same way: **Done**
+where the code shows it, **Not done** with a comment where it doesn't.
+
+**Health of `main` (checked 27 Sep):** all 182 server checks pass (`npm test`
+in `server/`), and the client lints (10 warnings, no errors) and builds. CI
+(`.github/workflows/ci.yml`) runs these checks on every push and every PR.
+
+### Before anyone merges anything else
+
+1. **`test-generation-and-feedback` would undo the graph page.** Its two
+   unmerged commits (26 Sep) fix sign-in with autofilled emails, improve
+   question quality and add the database status to `/api/health`. We want
+   all of those. But commit `d3cf125` also replaces
+   `client/src/pages/KnowledgeGraph.jsx` with an older version (877 lines
+   removed). Merged as it is, that removes link removal and Undo, the keyword
+   map, cluster colouring, the cross-subject and "Considered, not linked"
+   lists, and the subtopic grouping. The only graph change the commit means
+   to make is showing link lines in dark mode. Plan: Member 2 ports that fix
+   onto the current graph page in a small `graph/` PR. Member 3 then restores
+   `main`'s `KnowledgeGraph.jsx` on the branch
+   (`git checkout origin/main -- client/src/pages/KnowledgeGraph.jsx`)
+   before merging.
+2. **`notes/knowledge-ingestion` is stale.** It adds reference textbooks
+   (24 Sep), but it was branched before subtopic splitting landed, and its
+   own `sectionSplitter.js` overlaps `services/documentStructure.js` on
+   `main`. Rebase it and keep only the textbook parts (Member 1, item 2).
+
+### Decision: mastery stays on BKT
+
+§0a said to swap Bayesian Knowledge Tracing for plain accuracy for the
+prototype. That swap never happened: `masteryEngine.js` still runs BKT, and
+the demo ran on it. The plan was to bring BKT back after Saturday anyway, so
+**BKT is now the mastery model** and the swap is dropped. Two places in
+`README.md` still say otherwise, the prototype-scope note near the top and
+"What's next" item 1, and both need fixing (Member 3, item 3).
+
+### Status of the Saturday build order
+
+| Step | Status | Comment |
+| --- | --- | --- |
+| 1. Notes ingestion | **Done** | Verified and hardened (PR #4). Since then, `c317224` added `.pptx` support and splitting long uploads into subtopic notes |
+| 2. Knowledge graph with ambiguity handling | **Done** | PRs #1–#3: cross-subject linking with disambiguation, clustering, removing a wrong link, keyword map |
+| 3. Rule-based test-taking | **Not done as planned** | The staircase is rule-based, but mastery still uses BKT, which is now kept on purpose (see above). `adaptiveEngine.js` comments still say "IRT-inspired" |
+| Docker, compose, CI, deploy (Member 4) | **Done** | PR #6; live on Render + MongoDB Atlas. The `render.yaml` decision is still open |
+
+### Next phase: what each member builds next
+
+This is the short list, in order. The details and reasons are in each
+member's section of §3.
+
+**Member 1: notes**
+1. Summarization, grounded in the note's own text (backlog item 1; not started).
+2. Textbook linking: rebase `notes/knowledge-ingestion` onto `main` (backlog item 2).
+3. Editing and deleting a note (new).
+4. Study tools from the Digital Second Brain prototype: flashcards, key
+   concepts, "explain like I'm 5" (new).
+
+**Member 2: knowledge graph**
+1. Port the dark-mode link-line fix so `test-generation-and-feedback` can
+   merge safely (new, urgent).
+2. A relink tool that recomputes links with the current rule (new; needed
+   before any change to the linking rule).
+3. Fix a note's links when it is edited or deleted; pairs with Member 1's
+   item 3 (new).
+4. Tune the linking thresholds on real notes, then TextRank keywords.
+5. MiniLM sentence embeddings (backlog item 1).
+6. Louvain/Leiden clustering, and feeding link corrections back into the
+   linking rule (backlog item 2).
+
+**Member 3: tests and feedback**
+1. Merge `test-generation-and-feedback` without its `KnowledgeGraph.jsx`
+   change (urgent).
+2. Enforce the time limit on the server as well as in the browser (new).
+3. Make the docs match BKT, and reword "IRT-inspired" (new).
+4. Quality upgrades: distractor gating for LLM-drafted questions, fuzzy
+   excerpt matching, a stricter theory-grading prompt (README "What's next"
+   item 5).
+5. Optional webcam proctoring (stretch).
+
+**Member 4: containers and cloud**
+1. Settle the `render.yaml` decision and make `DEPLOY.md` match what is deployed.
+2. Protect `main` (§1 step 4; not done).
+3. An uptime pinger before demos, and a database backup before any data migration.
+4. Production hardening (README "What's next" item 8), plus the 3 moderate
+   npm advisories.
+5. Fix README "What's next" item 7, which still says CI is open.
+
+## 0a. Saturday prototype scope (26 Sep 2026) — kept for reference
+
+> **Status (27 Sep):** the prototype was demoed on 26 Sep. The status notes
+> below each item say what actually shipped; §0 has the summary.
 
 This week's target is a submittable **prototype**, not the full system
 described in Section 3 below. Two scope decisions for the prototype only —
@@ -18,6 +113,11 @@ Tracing, no IRT, no logistic-regression difficulty calibration. Concretely:
   easy/medium/hard) is *already* plain rule-based — keep it as is, just
   strip the "IRT-inspired" framing from its comments/docs so nobody has to
   defend a statistical model this build doesn't have calibration data for.
+
+  **Status (27 Sep): not done.** The comment at the top of
+  `adaptiveEngine.js` still calls it the "IRT-inspired staircase
+  controller". No user-facing text mentions IRT, so this is low priority now
+  (Member 3, next-phase item 3).
 - `masteryEngine.js`'s Bayesian Knowledge Tracing update is the one part
   that's genuinely probabilistic (a Bayes-rule posterior, `pKnown`). Replace
   it with a deterministic rule: track `correctCount` / `totalCount` per
@@ -30,6 +130,10 @@ Tracing, no IRT, no logistic-regression difficulty calibration. Concretely:
   see `docs/Test_Generation_Feedback_Feasibility_Report.docx` §5's Future
   Scope for why BKT is deferred rather than dropped for good).
 
+  **Status (27 Sep): not done, and now dropped.** BKT still runs and the
+  demo ran on it. The team is keeping BKT as the mastery model (see §0,
+  "Decision: mastery stays on BKT"), so nobody should make this swap now.
+
 **Build order — don't start the next step until the previous one is tested
 end to end:**
 
@@ -37,12 +141,16 @@ end to end:**
    this is mostly *already built* (both backend and the `NoteEditor.jsx`
    upload UI accept all four), so this step is testing and hardening, not
    new construction. See Member 1's section below for the checklist.
+   **Status: done** (25 Sep, PR #4).
 2. **Knowledge graph, with ambiguity handling.** The real gap: today's
    `graphEngine.js` only links notes within the same subject. See Member 2's
    section below for the specific rule-based disambiguation to add.
+   **Status: done** (24–25 Sep, PRs #1–#3).
 3. **Rule-based test-taking.** Mostly the mastery-engine swap described
    above, plus removing IRT/BKT language from anything user-facing. See
    Member 3's section below.
+   **Status: not done as written.** No user-facing text mentions IRT or BKT,
+   but the mastery swap never happened and is now dropped (see §0).
 
 ## 1. Get a shared repo first
 
@@ -63,6 +171,13 @@ working off the same history:
    merging, at minimum). Nobody pushes straight to `main` — see the
    branch workflow below.
 
+> **Status (27 Sep):** steps 1–3 are **done**. The shared repo is
+> `github.com/Siddhi-Karhekar/MindAtlas` (named `MindAtlas`, not
+> `mind-atlas`). Step 4 is **not done**: GitHub reports `main` as
+> unprotected, and docs updates have been pushed straight to it. Now that CI
+> exists, protect `main` and require the CI jobs to pass (Member 4,
+> next-phase item 2).
+
 ## 2. Branch convention
 
 One branch per person per piece of work, named `<role>/<short-description>`:
@@ -82,6 +197,11 @@ Open a pull request into `main` when a piece is working end to end
 (build passes, you tested it manually). Small, frequent PRs beat one
 giant branch per person — easier to review, easier to unstick if
 something's broken.
+
+> **Status (27 Sep): in use.** PRs #1–#4 and #6 came from `graph/…`,
+> `notes/…` and `infra/…` branches. PR #5 came from
+> `test-generation-and-feedback`, which should have been `tests/…`. It isn't
+> worth renaming now, but use `tests/…` for new test work.
 
 ## 3. Who owns what
 
@@ -143,6 +263,15 @@ to show.
 >   it as `server/eng.traineddata` (now git-ignored); with no network they are
 >   skipped.
 
+> **Also on `main` since then** (commit `c317224`, 26 Sep; made on the tests
+> branch but in Member 1's files): long PDF, Word, PowerPoint (`.pptx`, new)
+> and markdown uploads are split into one parent note plus one note per
+> subtopic (`services/documentStructure.js`), and the upload screen previews
+> the subtopics first (`POST /api/subjects/:id/notes/preview`). Tests:
+> `server/test/documentStructure.test.mjs` and
+> `verify/e2e_document_split_test.py`. Suggest Member 1 treats
+> `documentStructure.js` as theirs from now on.
+
 What's missing (post-Saturday backlog, not this week):
 1. **Summarization** — a new endpoint that takes a note's raw text (or a
    linked textbook chunk) and returns an LLM-generated summary via the
@@ -151,10 +280,38 @@ What's missing (post-Saturday backlog, not this week):
    allowed to use the note's own extracted text as context, never
    open-domain — that's what keeps it from hallucinating facts that
    aren't in the source material.
+
+   **Status (27 Sep): not done.** There is no summarization endpoint on
+   `main` and no branch for one. Build it together with item 4, which uses
+   the same grounded prompt and the same fallback.
 2. **Textbook linking** — the `textbooks` collection from the schema
    (Section E of the deep-dive doc) isn't built yet: upload a textbook,
    chunk it, and let a note reference it so summaries and later the test
    generator can pull grounded context from it.
+
+   **Status (27 Sep): not on `main`.** Branch `notes/knowledge-ingestion`
+   (24 Sep, never merged) has a `Textbook` model, `routes/textbooks.js` and
+   `services/textbook.js`. It was branched before subtopic splitting landed,
+   so rebase it onto `main`. Drop its `sectionSplitter.js` in favour of
+   `services/documentStructure.js`, and use the `uploadSingle` already on
+   `main` rather than the branch's own copy of `middleware/upload.js`.
+
+Next phase (new items, after the two above):
+
+3. **Edit and delete a note** (from the Digital Second Brain prototype).
+   Proposed rule (Member 2, 25 Sep): a note can be edited or deleted only
+   while no test has used it. Questions quote note text word for word, and
+   mastery is keyed by note id, so changing a used note would break both.
+   After an edit or delete, call Member 2's link clean-up (Member 2,
+   next-phase item 3) so the graph doesn't keep stale links. Decide what
+   deleting a split document does to its subtopics. The database layer has
+   no delete operation yet (`server/src/db/`); if you add one, add a case to
+   `server/test/mongoStore.test.mjs`.
+4. **Study tools** (from the Digital Second Brain prototype): flashcards,
+   key concepts and "explain like I'm 5" for a note, grounded in the note's
+   own text like summarization. Without `GROQ_API_KEY` they must fall back to
+   simple rule-based output and never hide or show an error, which is the
+   rule the rest of the app already follows.
 
 ### Member 2 — Knowledge graph generation
 **Owns:** `server/src/services/tfidf.js`, `server/src/services/graphEngine.js`,
@@ -231,6 +388,21 @@ the `/api/subjects/:id/graph` route, `client/src/pages/KnowledgeGraph.jsx`.
 > - Backlog unchanged: MiniLM sentence embeddings, real Louvain/Leiden
 >   clustering, and feeding students' link corrections back into the
 >   linking rule.
+
+> **Update (27 Sep): all of the above is still true on `main`.** Subtopic
+> splitting (`c317224`, 26 Sep) made four changes in Member 2's files:
+> - `graphEngine.js` never links a split document's parent note. Only its
+>   subtopics are topics, so linking the parent would just repeat their links.
+> - The graph API adds `containsEdges` (document → subtopic). These are
+>   structure only and are never counted as links.
+> - The graph page draws `containsEdges`, groups subtopics around their
+>   document and counts "topics" rather than "notes".
+> - `tfidf.js` ignores "cont", "contd" and "continued" (slide-continuation
+>   markers).
+>
+> **Risk:** the unmerged `test-generation-and-feedback` branch would replace
+> the graph page with an older version. See §0, "Before anyone merges
+> anything else", and next-phase item 1 below.
 
 What's already there: TF-IDF keyword extraction + cosine-similarity
 edge creation within a subject — this is deliberately a stand-in for
@@ -310,6 +482,9 @@ tested):
    the only contract the rest of the app depends on, so this is a
    contained change to `tfidf.js` plus whatever's needed to keep
    `cosineSimilarity()` working on the new vector shape.
+
+   **Status (27 Sep): not started.** Needs the relink tool (next-phase
+   item 2) first, or every existing link stays on the old TF-IDF vectors.
 2. **Real Louvain/Leiden community detection** in place of the
    connected-components stand-in above, and the **correction loop**: a
    `POST /api/graph/edges/:id/correct` route (already named in the
@@ -328,6 +503,9 @@ tested):
    (edges have no owner field); someone else's link is a 404. Still open:
    feeding corrections back into the linking rule itself.
 
+   **Status (27 Sep): unchanged.** The correction route is done. Louvain/Leiden
+   and feeding corrections back into the linking rule are not started.
+
 **Also built (ported from the Digital Second Brain prototype):** a per-note
 keyword map, `GET /api/graph/notes/:noteId/keyword-map`
 (`services/keywordMap.js`, rule-based). For each of a note's stored top
@@ -337,6 +515,35 @@ keyword or its own plural), and up to three sentences that use it, plus the
 total count. The graph page opens it from a note's "Keyword map" button.
 Its quality is only as good as the stored keywords, so TextRank keywords
 (README "What's next") would improve it directly.
+
+**Next phase (after the demo), in order:**
+1. **Dark-mode link lines on the current graph page** (urgent). `d3cf125`
+   on `test-generation-and-feedback` draws link lines in `var(--c-primary)`
+   so they show in dark mode. On `main`, unselected same-subject links use
+   `var(--c-outline)`. Make the same fix on the current `KnowledgeGraph.jsx`
+   in a small `graph/` PR, so Member 3 can merge their branch without its
+   old copy of the page.
+2. **A relink tool.** Links are only worked out when a note is created, so
+   any change to the linking rule (items 4–6) leaves every existing link on
+   the old rule. Add a relink for one student's notes that recomputes links
+   with the current rule and keeps every `correction: "removed"` flag. It
+   also fixes the known limit above, notes saved to MongoDB before PR #1.
+   Take a database backup before running it on the live site (Member 4,
+   next-phase item 3).
+3. **Links after an edit or delete** (pairs with Member 1's item 3). When a
+   note's text changes, recompute its links (item 2, for one note). When a
+   note is deleted, its links must stop showing and counting everywhere.
+   There is no delete in the database layer yet, so either add one or flag
+   the edges the way removed links are flagged.
+4. **Tune the thresholds on real notes, then TextRank keywords.** The
+   0.12 / 0.25 + two-keyword rule was tuned on sample notes. Re-check it on
+   `sample-notes/` and the team's own notes on the live site. TextRank
+   keywords then improve both linking and the keyword map.
+5. **MiniLM sentence embeddings** (backlog item 1).
+6. **Louvain/Leiden clustering and the correction feedback loop** (backlog
+   item 2).
+7. Optional, from the Digital Second Brain prototype: search across all
+   subjects. The graph page's search only covers the current subject.
 
 ### Member 3 — Test generation & feedback
 **Owns:** `server/src/routes/tests.js`, `server/src/routes/attempts.js`,
@@ -349,7 +556,7 @@ and theory generation with the hallucination gate, an adaptive staircase
 attempt flow, deterministic per-topic feedback). Cross-attempt mastery
 (`masteryEngine.js`) currently uses Bayesian Knowledge Tracing, per the
 feasibility report's top recommendation — **for the Saturday prototype,
-replace it with the plain rule-based version described in Section 0 above**
+replace it with the plain rule-based version described in Section 0a above**
 (rolling accuracy per topic instead of a Bayesian posterior; same cut points
 and observation guard, so `adaptiveEngine.js` and `feedbackEngine.js` don't
 need to change). Keep BKT as the documented post-prototype upgrade, don't
@@ -378,6 +585,44 @@ doc, is kept below for reference:
    ordering (score first, LLM narrates second) is the specific design
    decision the architecture doc calls out as what keeps the feedback
    auditable — don't invert it.
+
+> **Status (27 Sep)**
+> - **Steps 1–4: done** (see above).
+> - **BKT → accuracy swap: not done, and now dropped.** BKT stays as the
+>   mastery model (see §0). `server/test/masteryEngine.test.mjs` already
+>   covers it (32 checks). The "don't ship it running this week" note above
+>   no longer applies.
+> - **Timer: done in the browser, not on the server.** `TestAttempt.jsx`
+>   counts down from `durationMinutes` and submits when it reaches zero. The
+>   server doesn't check the time, so answers sent after the deadline are
+>   still accepted. The README's "What's next" item 4 still says there is no
+>   countdown.
+> - **Webcam proctoring: not started** (stretch goal, unchanged).
+> - **Also on `main`** (`c317224`, 26 Sep): tests, mastery and feedback work
+>   per subtopic, so feedback can name a subtopic ("Paging in Unit 3").
+>   Questions are drafted only from relevant text.
+> - **Not merged yet:** two commits on `test-generation-and-feedback`
+>   (26 Sep). Read §0 before merging them.
+>
+> **Next phase, in order:**
+> 1. **Merge `test-generation-and-feedback` without its `KnowledgeGraph.jsx`
+>    change** (urgent). Wait for Member 2's dark-mode fix, restore `main`'s
+>    `KnowledgeGraph.jsx` on the branch, then merge.
+> 2. **Enforce the time limit on the server.** Each attempt already stores
+>    `startedAt`, so reject answers and submissions that arrive after
+>    `startedAt + durationMinutes` plus a short grace period. That way the
+>    limit holds even if someone edits the page.
+> 3. **Make the docs match BKT.** Fix the README's prototype-scope note and
+>    "What's next" items 1 and 4. Reword the "IRT-inspired" comment in
+>    `adaptiveEngine.js` to call it a rule-based staircase.
+> 4. **Quality upgrades** (README "What's next" item 5): distractor gating
+>    for LLM-drafted questions, fuzzy (not word-for-word) excerpt matching,
+>    and a stricter theory-grading prompt.
+> 5. **Optional webcam proctoring** (stretch).
+>
+> Later, once the live site has enough answers to learn from: fit the BKT
+> parameters and Rasch question difficulties from that data instead of the
+> defaults.
 
 ### Member 4 — Containerization & cloud
 **Owns:** new — `server/Dockerfile`, `client/Dockerfile`,
@@ -445,6 +690,32 @@ other three to finish anything. Start now:
 >   local file database. Don't point your local `.env` at the live Atlas
 >   database - your test data would show up on the live site.
 
+> **Status (27 Sep):** CI, compose and the deploy are as described above.
+> Still open:
+> - **`render.yaml` decision: not made.** `DEPLOY.md` still walks through the
+>   single-service Blueprint, which is not what is deployed.
+> - **README "What's next" item 7** still says CI is open. It isn't.
+> - **Branch protection** (§1 step 4): not done.
+>
+> **Next phase, in order:**
+> 1. **Settle `render.yaml`** with the team, then make `DEPLOY.md` describe
+>    the setup that is actually live.
+> 2. **Protect `main`** with the repo owner: require a PR, and require the
+>    four CI jobs to pass before merging. Docs-only changes will then need
+>    PRs too.
+> 3. **Uptime and backups.** Before demos, point an uptime pinger at
+>    `/api/health` (`DEPLOY.md` already suggests UptimeRobot) so the free API
+>    doesn't sleep. Once `test-generation-and-feedback` merges, `/api/health`
+>    also reports the database; check that the live site shows
+>    `kind: "mongodb"` and `persistent: true`. The free M0 cluster has no
+>    automatic backups, so export the database before any data migration,
+>    such as Member 2's relink tool.
+> 4. **Production hardening** (README "What's next" item 8): `helmet`, a
+>    shared rate-limit store if the API ever runs as more than one instance,
+>    and secret rotation. Also check whether the 3 moderate npm advisories
+>    have fixes.
+> 5. **Fix README "What's next" item 7** to say CI is done.
+
 ## 4. The shared contracts (read this before you start)
 
 These are the things all four of you are implicitly depending on — change
@@ -467,7 +738,22 @@ them in a PR that says so explicitly, not as a side effect of unrelated work.
   deploy configs are built from.
 - **Ports**: API on `4000`, client dev server on `5173`, both
   configurable via `PORT` / `vite.config.js` — don't hardcode either
-  elsewhere.
+  elsewhere. The server tests also start the API on `4598` and `4599`.
+
+Added since the demo prep (26 Sep):
+
+- **Split documents**: a long upload becomes one parent note
+  (`parentNoteId: null`, `childCount: N`) and N child notes, one per
+  subtopic (`parentNoteId` = the parent's id, `order` 0..N-1). The children
+  are the topics that get linked, tested and tracked. The parent is only a
+  container: it is never linked, and selecting it for a test selects its
+  subtopics. Check for it with `isSplitParent()` from
+  `server/src/models/Note.js` or `client/src/lib/notes.js` rather than
+  re-deriving the rule.
+- **Local database file**: with no `MONGODB_URI`, data is saved to
+  `server/data/mindatlas-db.json` (git-ignored). Tests must set
+  `DB_FILE=memory` so they never write to it. Never point a local `.env` at
+  the live Atlas database.
 
 ## 5. Suggested first two weeks
 
@@ -484,3 +770,8 @@ blocked on anyone else for the first stretch:
   grounding context), so sequence that piece second if you want the
   best results, or stub it against raw note text in the meantime and
   swap the source in later.
+
+> **Status (27 Sep): done.** All three happened, with one change of order:
+> the Docker/CI PR merged last (#6, 26 Sep) rather than first. Question
+> drafting was built against raw note text, because summarization isn't
+> built yet. For what comes next, see §0.

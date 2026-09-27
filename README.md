@@ -17,7 +17,7 @@ Team roles and branch conventions are in [`CONTRIBUTING.md`](CONTRIBUTING.md).
 > pipeline below runs on plain rule-based logic only (no Bayesian Knowledge
 > Tracing, no IRT/logistic-regression calibration) while the team finishes
 > notes ingestion and the knowledge graph's cross-subject disambiguation.
-> See [`CONTRIBUTING.md` §0](CONTRIBUTING.md#0-saturday-prototype-scope--read-this-first)
+> See [`CONTRIBUTING.md` §0a](CONTRIBUTING.md#0a-saturday-prototype-scope-26-sep-2026--kept-for-reference)
 > for the exact scope and build order.
 
 ## What works today
