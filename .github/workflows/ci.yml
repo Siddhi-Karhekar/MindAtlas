@@ -1,0 +1,80 @@
+# Continuous integration for Mind Atlas (Member 4, CONTRIBUTING.md §3).
+# Runs on every push and every pull request into main, so a PR shows a green
+# tick only when the server tests pass, the client lints and builds, the
+# production Docker image builds, there are no high/critical npm advisories,
+# and no secrets were committed.
+#
+# The server tests start the real API on ports 4598 and 4599 (see
+# server/test/graphRoutes.test.mjs and noteUploads.test.mjs) - nothing else in
+# this workflow may use those ports.
+
+name: CI
+
+on:
+  push:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# A newer push to the same branch cancels the run still in progress.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  server:
+    name: Server - test and audit
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+      - run: npm ci
+      - run: npm test
+      - name: npm audit (fail on high/critical)
+        run: npm audit --omit=dev --audit-level=high
+
+  client:
+    name: Client - lint, build and audit
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: client
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run build
+      - name: npm audit (fail on high/critical)
+        run: npm audit --omit=dev --audit-level=high
+
+  docker:
+    name: Docker image builds
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build --tag mindatlas:ci .
+
+  secrets:
+    name: No committed secrets (gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # scan the whole history, not just the last commit
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,40 @@
+# Local production-like stack (Member 4, CONTRIBUTING.md §3): the same image
+# that is deployed (see Dockerfile - the API serves the built client) plus a
+# real MongoDB, so you can try the app exactly as it runs in the cloud without
+# touching the live MongoDB Atlas database.
+#
+#   docker compose up --build        then open http://localhost:4000
+#   docker compose down              stop (data is kept)
+#   docker compose down -v           stop and delete the database
+#
+# Optional: put GROQ_API_KEY=... (and a JWT_SECRET of 32+ characters) in a
+# .env file next to this one - it is git-ignored.
+
+services:
+  app:
+    build: .
+    ports:
+      - "4000:4000"
+    environment:
+      MONGODB_URI: mongodb://mongo:27017
+      # Local-only default; production gets a real secret from Render.
+      JWT_SECRET: ${JWT_SECRET:-local-compose-only-secret-not-for-production-use}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+    depends_on:
+      mongo:
+        condition: service_healthy
+    restart: unless-stopped
+
+  mongo:
+    image: mongo:7
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+volumes:
+  mongo-data:
