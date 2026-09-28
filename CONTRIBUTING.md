@@ -55,7 +55,7 @@ git branch -vv        # every new branch should start from this main
 
    - **Question quality was never committed.** `testEngine.js` and
      `documentStructure.js` are the same on the branch, on `main` and on the
-     laptop the commits came from. Of the 7 new checks, 5 fail against that
+     laptop the commits came from. Of the 6 new checks, 5 fail against that
      code ("rejected (not a statement)…"), so merging the branch turns
      `npm test` and CI red.
    - **There is no dark-mode fix in it.** The old graph page it brings back
@@ -97,7 +97,7 @@ prototype. That swap never happened: `masteryEngine.js` still runs BKT, and
 the demo ran on it. The plan was to bring BKT back after Saturday anyway, so
 **BKT is now the mastery model** and the swap is dropped. Two places in
 `README.md` still say otherwise, the prototype-scope note near the top and
-"What's next" item 1, and both need fixing (Member 3, item 5).
+"What's next" item 1, and both need fixing (Member 3, item 4).
 
 ### Status of the Saturday build order
 
@@ -216,7 +216,7 @@ Tracing, no IRT, no logistic-regression difficulty calibration. Concretely:
   **Status (27 Sep): not done.** The comment at the top of
   `adaptiveEngine.js` still calls it the "IRT-inspired staircase
   controller". No user-facing text mentions IRT, so this is low priority now
-  (Member 3, next-phase item 3).
+  (Member 3, next-phase item 4).
 - `masteryEngine.js`'s Bayesian Knowledge Tracing update is the one part
   that's genuinely probabilistic (a Bayes-rule posterior, `pKnown`). Replace
   it with a deterministic rule: track `correctCount` / `totalCount` per
