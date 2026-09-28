@@ -54,7 +54,7 @@ function buildContext(notes) {
 
 async function generateMcqWithLLM(notes, mcqCount) {
   const context = buildContext(notes);
-  const prompt = `You are drafting multiple-choice questions for a student's self-test, using ONLY the notes below as source material. Do not use any outside knowledge - every question's correct answer must be directly supported by a verbatim short excerpt from these notes. Aim for a roughly even mix of easy, medium, and hard questions across the set, and spread the questions across as many different ### sections as possible - each section is a separate topic the student is assessed on. Ask only about the subject matter itself - never about titles, headers, footers, page numbers, course codes, the table of contents, authors, references or other document metadata, and never quote such text as the supportingExcerpt.
+  const prompt = `You are drafting multiple-choice questions for a student's self-test, using ONLY the notes below as source material. Do not use any outside knowledge - every question's correct answer must be directly supported by a verbatim short excerpt from these notes. Aim for a roughly even mix of easy, medium, and hard questions across the set, and spread the questions across as many different ### sections as possible - each section is a separate topic the student is assessed on. Ask only about the subject matter itself - never about titles, headers, footers, page numbers, course codes, the table of contents, authors, references or other document metadata, and never quote such text as the supportingExcerpt. In a fill-in-the-blank question, blank the whole technical term (for example "continuous integration", never just "integration"), and make every option a complete term of the same kind and similar length.
 
 NOTES:
 ${context}
@@ -219,6 +219,128 @@ function sentenceFor(note, keyword) {
   return hits.find((s) => (s.match(all) || []).length === 1) || hits[0] || null;
 }
 
+// ---------------------------------------------------------------------------
+// Blank the whole term, not one word of it
+// ---------------------------------------------------------------------------
+// TF-IDF keywords are single words, but many subject terms are several words.
+// Blanking only "integration" in "continuous integration" leaves
+// "continuous _____": it asks about half a term and hints at the answer. So
+// the keyword is widened to the whole term it belongs to in its sentence. A
+// neighbouring word joins the term when the note treats the pair as one term:
+//   - the longer phrase occurs at least twice in the note, or
+//   - the neighbour is also one of the note's keywords and the phrase is used
+//     like a noun ("the block cipher", "a block cipher"), or
+//   - the phrase is spelled out before its acronym ("continuous integration (CI)").
+// A term never crosses punctuation, a stop word or a generic word, and is
+// at most MAX_TERM_WORDS words long.
+const MAX_TERM_WORDS = 4;
+
+const phraseRe = (words, flags = "gi") =>
+  new RegExp(`(?<![A-Za-z0-9])${words.map(escapeRe).join("\\s+")}(?![A-Za-z0-9])`, flags);
+
+// "Inter-Domain" contributes both I and D ("Classless Inter-Domain Routing" -> CIDR)
+const initialsOf = (words) => words.flatMap((w) => w.split("-").filter(Boolean)).map((w) => w[0]).join("").toUpperCase();
+
+function joinableWord(word) {
+  const w = word.toLowerCase();
+  return /^[a-z][a-z0-9-]*$/i.test(word) && tokenize(w).length === 1 && !GENERIC.has(w) && !/ly$/.test(w);
+}
+
+// A word the note uses as a verb ("encrypts a block", "shifts each letter")
+// is never part of a term, even when the phrase repeats ("block cipher
+// encrypts", "stream cipher encrypts").
+function hasVerbEvidence(word, text) {
+  return new RegExp(`(?<![A-Za-z0-9])${escapeRe(word)}\\s+(?:the|a|an|each|every|its|their|this|these|those|all)\\b`, "i").test(text);
+}
+
+// `side` is the side the new word joins on. The main noun of an English term
+// comes last and its modifiers come first ("data link layer"). On the left, a
+// keyword joins when the note uses the whole phrase as a noun ("the block
+// cipher"). On the right, a keyword joins only when the note also uses that
+// word as the head of a noun phrase ("a cipher", "the physical layer"), since
+// a word after the term is often its verb ("layer groups bits").
+function isTermInNote(words, note, side) {
+  const text = String(note.rawText || "");
+  const added = side === "left" ? words[0] : words[words.length - 1];
+  if (hasVerbEvidence(added, text)) return false;
+  if ((text.match(phraseRe(words)) || []).length >= 2) return true;
+  if (words.length >= 2 && new RegExp(`${phraseRe(words, "").source}\\s*\\(${initialsOf(words)}s?\\)`, "i").test(text)) return true;
+  if (!(note.keywords || []).includes(added.toLowerCase())) return false;
+  if (side === "left") return hasNounEvidence(words.map(escapeRe).join("\\s+"), text);
+  // "a cipher", "the physical layer": the word heads a noun phrase somewhere
+  return new RegExp(`\\b${NOUN_LEAD}\\s+(?:[A-Za-z-]+\\s+)?${escapeRe(added)}\\b`, "i").test(text);
+}
+
+/**
+ * The whole term that `keyword` belongs to in `sentence`, as written there
+ * ("continuous integration"), or the keyword itself when it stands alone.
+ */
+export function termFor(note, sentence, keyword) {
+  const tokens = String(sentence || "").split(/\s+/).filter(Boolean);
+  const core = (t) => t.replace(/^[^A-Za-z0-9]+|[^A-Za-z0-9]+$/g, "");
+  const at = tokens.findIndex((t) => core(t).toLowerCase() === keyword.toLowerCase());
+  if (at === -1) {
+    // inside a compound like "TCP/IP": keep the keyword as the sentence writes it
+    const m = sentence.match(wholeWord(keyword));
+    return m ? m[0] : keyword;
+  }
+  // A term spelled out before its acronym is taken whole, however long:
+  // "Classless Inter-Domain Routing (CIDR)".
+  for (let end = at; end < Math.min(tokens.length - 1, at + MAX_TERM_WORDS); end++) {
+    const acronym = tokens[end + 1].match(/^\(([A-Z]{2,})s?\)[.,;:]?$/);
+    if (!acronym || !/[A-Za-z0-9]$/.test(tokens[end])) continue;
+    for (let start = end; start >= Math.max(0, end - 5); start--) {
+      const words = tokens.slice(start, end + 1).map(core);
+      if (start <= at && initialsOf(words) === acronym[1]) {
+        if (start === 0 && /^[A-Z][a-z]+$/.test(words[0]) && words.length > 1 && /^[a-z]/.test(words[1])) words[0] = words[0].toLowerCase();
+        return words.join(" ");
+      }
+    }
+  }
+  // a token with punctuation in front ends the term on its left; with
+  // punctuation after it, on its right
+  const cleanLeft = (t) => !/^[^A-Za-z0-9]/.test(t);
+  const cleanRight = (t) => !/[^A-Za-z0-9]$/.test(t);
+  let lo = at;
+  let hi = at;
+  let grew = true;
+  while (grew && hi - lo + 1 < MAX_TERM_WORDS) {
+    grew = false;
+    const words = tokens.slice(lo, hi + 1).map(core);
+    const left = tokens[lo - 1];
+    if (left && cleanLeft(tokens[lo]) && cleanRight(left) && cleanLeft(left) && joinableWord(core(left)) && isTermInNote([core(left), ...words], note, "left")) {
+      lo -= 1;
+      grew = true;
+      continue;
+    }
+    const right = tokens[hi + 1];
+    if (right && cleanRight(tokens[hi]) && cleanLeft(right) && joinableWord(core(right)) && isTermInNote([...words, core(right)], note, "right")) {
+      hi += 1;
+      grew = true;
+    }
+  }
+  const words = tokens.slice(lo, hi + 1).map(core);
+  // "Continuous" is only capitalised because it starts the sentence
+  if (lo === 0 && /^[A-Z][a-z]+$/.test(words[0])) words[0] = words[0].toLowerCase();
+  return words.join(" ");
+}
+
+/** A note's term for `word`, from the first content sentence that uses it. */
+function termInNote(note, word) {
+  const sentence = sentenceFor(note, word);
+  return sentence ? termFor(note, sentence, word) : word;
+}
+
+/** `sentence` with every occurrence of `term` (and a leftover lone `keyword`) blanked. */
+export function blankTerm(sentence, term, keyword) {
+  const words = term.split(/\s+/);
+  let out = sentence.replace(phraseRe(words), "_____");
+  // an acronym straight after the blank spells out the answer's initials
+  if (words.length >= 2) out = out.replace(new RegExp(`_____\\s*\\(${initialsOf(words)}s?\\)`, "g"), "_____");
+  // blank every occurrence, so a second mention can't give the answer away
+  return out.replace(new RegExp(wholeWord(keyword).source, "gi"), "_____");
+}
+
 // Frequent-but-empty words TF-IDF can still rank highly. As an answer they make
 // a question trivial or meaningless ("_____ device is attached" -> "every").
 const GENERIC = new Set([
@@ -283,7 +405,7 @@ function shuffle(arr) {
  * Only if a tiny corpus still can't supply 3 are clearly-labelled
  * placeholders used, so the question always has 4 unique options.
  */
-function pickDistractors(note, notes, keyword, sentence) {
+function pickDistractors(note, notes, keyword, sentence, answer = keyword) {
   const sentenceNorm = normalize(sentence);
   const noteTextNorm = normalize(note.rawText);
   const corpusText = notes.map((n) => n.rawText).join(" ");
@@ -314,12 +436,32 @@ function pickDistractors(note, notes, keyword, sentence) {
     allKeywords.filter(usable),
   ];
 
+  // Each candidate word is widened to its own whole term, from the note it
+  // comes from, so a two-word answer isn't the only two-word option. Terms
+  // as long as the answer are preferred, so length gives nothing away.
+  const answerLength = answer.split(/\s+/).length;
+  const sourceOf = (w) =>
+    notes.find((n) => n !== note && n.keywords.includes(w)) ||
+    notes.find((n) => n.keywords.includes(w)) ||
+    notes.find((n) => wholeWord(w).test(n.rawText || ""));
+  const asTerm = (w) => {
+    const source = sourceOf(w);
+    const term = source ? termInNote(source, w) : w;
+    return term.split(/\s+/).some((x) => sentenceNorm.includes(x.toLowerCase())) && term !== w ? w : term;
+  };
+
   const picked = [];
   for (const tier of tiers) {
-    for (const w of shuffle(tier)) {
+    const terms = shuffle(tier)
+      .map(asTerm)
+      .map((term, i) => ({ term, i, gap: Math.abs(term.split(/\s+/).length - answerLength) }))
+      .sort((a, b) => a.gap - b.gap || a.i - b.i)
+      .map((x) => x.term);
+    for (const t of terms) {
       if (picked.length === 3) break;
+      if (normalize(t) === normalize(answer)) continue;
       // no two distractors that are forms of one word ("network"/"networks")
-      if (!picked.some((x) => x.slice(0, 5) === w.slice(0, 5))) picked.push(w);
+      if (!picked.some((x) => normalize(x).slice(0, 5) === normalize(t).slice(0, 5))) picked.push(t);
     }
   }
   for (let i = 1; picked.length < 3; i++) picked.push(`${keyword}-related term ${i}`);
@@ -412,17 +554,18 @@ function generateMcqFallback(notes, mcqCount, masteryMap) {
     // nounLikeKeywords only offers keywords that have such a sentence
     const sentence = sentenceFor(note, keyword);
     if (!sentence) continue;
-    // blank every occurrence, so a second mention can't give the answer away
-    const blanked = sentence.replace(new RegExp(wholeWord(keyword).source, "gi"), "_____");
+    // the answer is the whole term ("continuous integration"), not one word of it
+    const answer = termFor(note, sentence, keyword);
+    const blanked = blankTerm(sentence, answer, keyword);
 
-    const options = shuffle([...pickDistractors(note, notes, keyword, sentence), keyword]);
+    const options = shuffle([...pickDistractors(note, notes, keyword, sentence, answer), answer]);
 
     drafts.push({
       topicId: note._id,
       topic: labelOf(note),
       prompt: `Fill in the blank: "${blanked}"`,
       options,
-      correctAnswer: keyword,
+      correctAnswer: answer,
       supportingExcerpt: sentence,
       difficulty,
     });

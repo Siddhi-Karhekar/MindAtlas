@@ -3,7 +3,7 @@
 // Runs with no server and no files: `node test/documentStructure.test.mjs`.
 import { blocksFromPlainText, segmentDocument, MAX_SECTIONS } from "../src/services/documentStructure.js";
 import { buildPdfBlocks } from "../src/services/documentText.js";
-import { isQuestionWorthy } from "../src/services/testEngine.js";
+import { isQuestionWorthy, termFor, blankTerm } from "../src/services/testEngine.js";
 
 let failures = 0;
 const check = (label, cond, detail = "") => {
@@ -80,6 +80,40 @@ for (const junk of [
 ]) check(`rejected (not a statement): ${JSON.stringify(junk).slice(0, 44)}...`, !isQuestionWorthy(junk));
 check("accepted: a real sentence", isQuestionWorthy("From the bottom up, the physical layer transmits raw bits over the medium."));
 check("accepted: a definition", isQuestionWorthy("A block cipher encrypts a fixed-size block of plaintext into a block of ciphertext of the same size."));
+
+console.log("\n=== Fill-in-the-blank: the whole term is blanked ===");
+const ciNote = {
+  rawText:
+    "Continuous integration (CI) is the practice of merging every change into a shared branch several times a day. With continuous integration, each merge triggers an automated build.",
+  keywords: ["continuous", "integration", "build", "merge"],
+};
+const ciSentence = "Continuous integration (CI) is the practice of merging every change into a shared branch several times a day.";
+const ciTerm = termFor(ciNote, ciSentence, "integration");
+check("a two-word term is blanked whole, not one word of it", ciTerm === "continuous integration", ciTerm);
+const ciBlank = blankTerm(ciSentence, ciTerm, "integration");
+check("the acronym after the term is removed, so it can't give the answer away", ciBlank.startsWith("_____ is the practice") && !ciBlank.includes("(CI)"), ciBlank);
+const cipherNote = {
+  rawText:
+    "A block cipher encrypts a fixed-size block of plaintext. A stream cipher encrypts one bit at a time. The Caesar cipher shifts each letter by a fixed number of places. The key space of a cipher is the set of all keys.",
+  keywords: ["cipher", "block", "stream", "encrypts", "plaintext"],
+};
+const cipherTerm = termFor(cipherNote, "A block cipher encrypts a fixed-size block of plaintext.", "cipher");
+check("a modifier the note uses as part of the term joins it", cipherTerm === "block cipher", cipherTerm);
+check("a verb after the term never joins it", !/encrypts/.test(cipherTerm), cipherTerm);
+const caesarTerm = termFor(cipherNote, "The Caesar cipher shifts each letter by a fixed number of places.", "caesar");
+check("a term grows to the right into its main noun", caesarTerm === "Caesar cipher", caesarTerm);
+const layerNote = {
+  rawText:
+    "The physical layer transmits raw bits over the medium. The data link layer groups bits into frames and detects errors. The network layer routes packets.",
+  keywords: ["layer", "bits", "data", "link", "groups", "frames"],
+};
+const linkTerm = termFor(layerNote, "The data link layer groups bits into frames and detects errors.", "link");
+check("a three-word term is found from its middle word", linkTerm === "data link layer", linkTerm);
+const cidr = "Classless Inter-Domain Routing (CIDR) abandoned fixed classes and allows the network prefix to be any length.";
+const cidrTerm = termFor({ rawText: cidr, keywords: ["routing", "prefix"] }, cidr, "routing");
+check("a term spelled out before its acronym is taken whole", cidrTerm === "Classless Inter-Domain Routing", cidrTerm);
+check("a keyword inside a compound keeps the sentence's capitals", termFor({ rawText: "", keywords: [] }, "The TCP/IP model is the practical architecture of the Internet.", "tcp") === "TCP");
+check("a word standing alone stays one word", termFor(layerNote, "The physical layer transmits raw bits over the medium.", "bits") === "bits");
 
 console.log(failures ? `\n${failures} FAILING CHECK(S)` : "\nAll checks passed.");
 process.exit(failures ? 1 : 0);
