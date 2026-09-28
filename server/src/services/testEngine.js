@@ -139,6 +139,55 @@ export function isQuestionWorthy(sentence) {
   const alpha = words.filter((w) => /[a-z]/i.test(w));
   const lower = alpha.filter((w) => /^[("']?[a-z]/.test(w)).length;
   if (alpha.length === 0 || lower / alpha.length < 0.5) return false;
+  if (!isStatement(s)) return false;
+  return true;
+}
+
+// A question has to be built from a statement of fact. Uploaded notes also
+// hold exercises ("Write a program ...", "Convert the plaintext ..."), the
+// notes' own questions ("What is the key space ...?"), syllabus lines
+// ("Foundations of X: topic, topic, topic.") and fragments cut off by a page
+// or column break ("and application layers into one, so ..."). Blanking a word
+// in any of those gives a question that makes no sense.
+
+// Verbs that open an instruction or exercise. Only verbs that are rarely the
+// first word of a statement are listed: "Design", "State", "List", "Use",
+// "Note", "Name", "Study" and "Test" also start ordinary sentences as nouns
+// ("State machines ...", "List scheduling ..."), so they are left out.
+const IMPERATIVE_START = new RegExp(
+  "^(?:" +
+    [
+      "write", "convert", "explain", "implement", "describe", "calculate", "compute", "define",
+      "discuss", "compare", "solve", "develop", "prove", "derive", "encrypt", "decrypt",
+      "determine", "identify", "illustrate", "outline", "enumerate", "evaluate", "perform",
+      "simulate", "construct", "create", "mention", "justify", "differentiate", "distinguish",
+      "analyse", "analyze", "find", "give", "draw", "sketch", "demonstrate", "elaborate",
+      "summarize", "summarise", "classify", "estimate", "verify", "execute", "run", "install",
+      "configure", "consider", "suppose", "assume", "let", "show", "fill", "choose", "attempt",
+      "tabulate", "list out", "write down", "briefly",
+    ].join("|") +
+    ")(?=[\\s,:])",
+  "i"
+);
+
+/** True when the sentence states something, rather than asking or instructing. */
+export function isStatement(sentence) {
+  const s = String(sentence || "").trim().replace(/^[("'\u201c\u2018]+/, "");
+  // a question from the notes, not a fact to ask about
+  if (/\?["')\]\u201d\u2019]?$/.test(s)) return false;
+  // a fragment: prose sentences start with a capital or a digit. A first word
+  // with a capital inside it ("iPhone", "eBPF") still counts as a start.
+  if (!/^(?:[A-Z0-9]|[a-z]+[A-Z])/.test(s)) return false;
+  // an exercise or lab task
+  if (IMPERATIVE_START.test(s)) return false;
+  // a syllabus line: a capitalised title, a colon, then a list of topics
+  const colon = s.indexOf(":");
+  if (colon > 0) {
+    const head = s.slice(0, colon).trim().split(/\s+/);
+    const capitalised = head.filter((w) => /^[A-Z]/.test(w)).length;
+    const commas = (s.slice(colon).match(/,/g) || []).length;
+    if (head.length >= 2 && head.length <= 8 && capitalised >= 2 && commas >= 2) return false;
+  }
   return true;
 }
 
