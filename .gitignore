@@ -7,3 +7,5 @@ dist/
 *.traineddata
 # local database (server/data/mindatlas-db.json) - personal data, never commit
 server/data/
+# database backups (npm run db:backup) - every student's data, never commit
+server/backups/

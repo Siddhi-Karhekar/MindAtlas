@@ -1,14 +1,26 @@
-# Render Blueprint - deploys Mind Atlas as ONE web service: the Express API
-# also serves the built React client, so the whole app is on a single URL.
-# In Render: New + -> Blueprint -> pick this repo. You'll be asked for the
-# two values marked `sync: false` below.
+# Render Blueprint for Mind Atlas - describes exactly what is live today:
+# TWO services that auto-deploy from `main`, plus MongoDB Atlas (not on Render).
+#
+#   mindatlas      Static Site  - the React client  https://mindatlas.onrender.com
+#   mindatlas-api  Web Service  - the Express API   https://mindatlas-api.onrender.com
+#
+# The live services were created by hand from the dashboard; this file is the
+# written record of their settings, and lets anyone rebuild them from scratch
+# (New + -> Blueprint -> this repo). DEPLOY.md explains every setting.
+#
+# Before applying it to a workspace that already runs these services, read
+# DEPLOY.md "Rebuilding from this Blueprint": JWT_SECRET is regenerated (which
+# signs everyone out) and the two `sync: false` values are asked for again.
+
 services:
+  # --- API -----------------------------------------------------------------
   - type: web
-    name: mindatlas
+    name: mindatlas-api
     runtime: node
     plan: free
-    region: singapore
-    buildCommand: npm run build
+    region: singapore          # closest Render region to the Atlas cluster (AWS Mumbai)
+    rootDir: server
+    buildCommand: npm ci
     startCommand: npm start
     healthCheckPath: /api/health
     autoDeploy: true
@@ -16,12 +28,32 @@ services:
       - key: NODE_VERSION
         value: "22"
       - key: NODE_ENV
-        value: production
+        value: production      # also makes the server refuse to start without MONGODB_URI
       - key: TRUST_PROXY
         value: "1"
+      - key: CORS_ORIGIN
+        value: https://mindatlas.onrender.com   # the static site below - no trailing slash
       - key: JWT_SECRET
-        generateValue: true   # Render creates a strong random secret
+        generateValue: true    # Render creates a strong random secret
       - key: MONGODB_URI
-        sync: false           # paste your MongoDB Atlas connection string
+        sync: false            # MongoDB Atlas connection string - spelled exactly MONGODB_URI
       - key: GROQ_API_KEY
-        sync: false           # optional - leave blank for rule-based fallback
+        sync: false            # optional - leave blank for the rule-based fallback
+
+  # --- Client --------------------------------------------------------------
+  - type: web
+    name: mindatlas
+    runtime: static
+    rootDir: client
+    buildCommand: npm ci && npm run build
+    staticPublishPath: dist
+    autoDeploy: true
+    envVars:
+      - key: VITE_API_BASE     # baked in at build time - redeploy the site if the API URL changes
+        value: https://mindatlas-api.onrender.com/api
+    routes:
+      # React Router handles pages like /subjects/:id in the browser; without
+      # this, refreshing any page but the home page is a 404.
+      - type: rewrite
+        source: /*
+        destination: /index.html

@@ -7,6 +7,8 @@
   "scripts": {
     "dev": "node src/index.js",
     "start": "node src/index.js",
+    "db:backup": "node scripts/db-backup.mjs",
+    "db:restore": "node scripts/db-restore.mjs",
     "test": "node test/mongoStore.test.mjs && node test/masteryEngine.test.mjs && node test/graphEngine.test.mjs && node test/graphRoutes.test.mjs && node test/keywordMap.test.mjs && node test/noteUploads.test.mjs && node test/documentStructure.test.mjs"
   },
   "dependencies": {
@@ -14,6 +16,7 @@
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
+    "helmet": "^8.3.0",
     "jsonwebtoken": "^9.0.2",
     "jszip": "^3.10.1",
     "mammoth": "^1.12.3",
