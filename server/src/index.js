@@ -7,6 +7,7 @@ import cors from "cors";
 import { connectDB, flushDB } from "./db/index.js";
 import { assertAuthConfig } from "./middleware/auth.js";
 import { rateLimit } from "./middleware/rateLimit.js";
+import { securityHeaders } from "./middleware/securityHeaders.js";
 import authRoutes from "./routes/auth.js";
 import subjectRoutes from "./routes/subjects.js";
 import noteRoutes from "./routes/notes.js";
@@ -49,14 +50,10 @@ app.use(
   })
 );
 
-// Baseline security headers (a small, dependency-free subset of what
-// `helmet` would set - swap for helmet if you want the full set).
-app.use((req, res, next) => {
-  res.setHeader("X-Content-Type-Options", "nosniff");
-  res.setHeader("X-Frame-Options", "DENY");
-  res.setHeader("Referrer-Policy", "no-referrer");
-  next();
-});
+// Security headers (helmet): HSTS, nosniff, no framing, no referrer, and a
+// Content-Security-Policy for the single-service deploy where this server
+// also serves the React app. See middleware/securityHeaders.js.
+app.use(securityHeaders());
 
 app.use(express.json({ limit: "2mb" }));
 

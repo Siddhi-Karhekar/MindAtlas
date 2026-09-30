@@ -20,6 +20,20 @@ export async function connectDB() {
     return;
   }
 
+  // In production a missing MONGODB_URI is always a mistake: the fallback
+  // file database lives on the host's disk, and Render (like most hosts)
+  // wipes that disk on every restart, redeploy and wake-up - so accounts and
+  // notes would silently vanish. Fail the deploy loudly instead. (This once
+  // happened for real: the variable was saved on Render as "MONDODB_URI".)
+  if (process.env.NODE_ENV === "production" && process.env.ALLOW_FILE_DB !== "true") {
+    const nearMisses = Object.keys(process.env).filter((k) => /MONG|DB_?UR/i.test(k));
+    throw new Error(
+      "MONGODB_URI is not set, and NODE_ENV=production. Set it to your MongoDB Atlas " +
+        "connection string (or set ALLOW_FILE_DB=true to use a local file database on purpose)." +
+        (nearMisses.length ? ` Similar variables found: ${nearMisses.join(", ")} - check the spelling.` : "")
+    );
+  }
+
   const setting = process.env.DB_FILE?.trim();
   if (setting && setting.toLowerCase() === "memory") {
     console.log("[db] DB_FILE=memory - using an in-memory database (data resets on every restart)");
