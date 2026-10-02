@@ -38,6 +38,29 @@ Team roles and branch conventions are in [`CONTRIBUTING.md`](CONTRIBUTING.md).
   "Paging in Unit 3 needs attention", not just "Unit 3". Logic lives in
   `services/documentStructure.js` (splitting) and `services/documentText.js`
   (extraction); `verify/e2e_document_split_test.py` covers it end to end.
+- **Subtopics keep their place in the document's outline.** Each subtopic
+  records its `path` - every heading above it, outermost first
+  (`["3. Data Link Layer"]`, or `["Unit 3", "Memory", ...]` for a deeper
+  document) - and the notes shelf shows the document as a collapsible tree to
+  any depth. Storage stays two levels (document -> subtopics), so tests,
+  mastery and the graph are untouched. PowerPoint sections and "Section
+  Header" slides count as a level; headings too thin to be notes of their own
+  stay inside their note as sub-headings.
+- **Notes keep their structure and are shown in one style.** Every note is
+  stored twice: `rawText` (plain text - what keywords, links, questions and
+  grading use, word for word) and `content` (the same words as headings,
+  paragraphs, bulleted and numbered lists with their nesting, tables and the
+  terms the author set in bold). All five inputs produce it: Word list and
+  heading styles, slide outline levels, bullets / numbering / bold fonts and
+  indentation in PDFs, markdown or plain typed text (`- `, `1.`, `**term**`,
+  a title-like line of its own), and photos, where OCR's line positions and
+  letter heights give headings and lists back. The reading pane formats it
+  the same way whatever the source (`client/src/components/NoteContent.jsx`):
+  each main topic has a colour that only its headings and key terms wear,
+  heading size and weight follow the level, and lists get real markers.
+  Rule-based throughout - no API key. Notes saved before this get their
+  `content` worked out when they are read. Old `.doc` / `.ppt` files are
+  refused with a "Save As .docx / .pptx" message.
 - Every new note gets a TF-IDF vector and top keywords; cosine similarity
   against the other notes in the *same* subject creates weighted graph edges
   (threshold 0.12), rendered with Cytoscape.js.
@@ -229,15 +252,18 @@ server/src/
                  tests, questions, attempts, responses, feedback_reports)
   middleware/    JWT auth, in-memory rate limiter
   routes/        auth, subjects (+ graph), notes, tests, attempts
-  services/      ocr, documentText (PDF/DOCX/PPTX/text extraction),
-                 documentStructure (split long documents into subtopics),
+  services/      ocr, documentText (PDF/DOCX/PPTX/text extraction, with
+                 structure), documentStructure (split long documents into
+                 subtopics; a note's formatted `content`),
                  tfidf, graphEngine, llm, testEngine (question
                  generation + gate), adaptiveEngine (staircase),
                  gradingEngine (theory answers), feedbackEngine (scoring)
 
 client/src/
-  lib/           API client + auth context
-  components/    shared app shell (nav, sign-out)
+  lib/           API client + auth context; notes (outline tree),
+                 noteFormat (key terms and topic colours)
+  components/    shared app shell (nav, sign-out); NoteContent (the one
+                 place a note's text is formatted)
   pages/         SignIn, Home, SubjectWorkspace, KnowledgeGraph,
                  Tests (builder), TestAttempt (focus mode), Insights
 

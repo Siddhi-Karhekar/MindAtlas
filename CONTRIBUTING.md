@@ -272,6 +272,50 @@ to show.
 > `verify/e2e_document_split_test.py`. Suggest Member 1 treats
 > `documentStructure.js` as theirs from now on.
 
+> **Formatted notes and the document outline** (2 Oct 2026, branch
+> `notes/ingestion-hardening`; Member 1's files, done by Member 3 while
+> Member 1 is away). Notes used to be stored as one flat string, so bullets,
+> sub-headings and bold terms were lost and every source looked different.
+>
+> **What changed**
+> - **`content` on every note**: the note's words as blocks - `heading`
+>   (level 1-4), `para`, `item` (a list entry: `depth`, `ordered`, optional
+>   `marker`), `label`, `table` - plus `strong`, the terms the author set in
+>   bold. `rawText` is unchanged and is still what keywords, links, questions
+>   and grading use; `content` is for display only. The block shapes are
+>   listed at the top of `services/documentStructure.js`.
+> - **`path` on every subtopic**: the headings above it, outermost first.
+>   `sectionGroup` is still there and still means the nearest one. The
+>   hierarchy stays two levels in the database (see §4); the deeper outline
+>   is rebuilt from `path` by `outlineTree()` in `client/src/lib/notes.js`.
+> - **Every extractor keeps structure** (`services/documentText.js`): Word
+>   lists (nested), tables and bold; slide outline levels, tables, bold and
+>   deck sections; PDF bullets, numbering, indentation and bold fonts; plain
+>   text and markdown lists, `**bold**`, tables and title-like lines. Photos
+>   are rebuilt from OCR line positions and letter heights
+>   (`blocksFromOcrLines`), so a photo's `rawText` is now reflowed
+>   paragraphs rather than Tesseract's raw line breaks.
+> - **Choosing where to split** now measures the text under each heading
+>   level, counting "(cont.)" slides once. A document where only one chapter
+>   has third-level headings splits at the second level, and those headings
+>   stay inside their note.
+> - **One renderer**: `client/src/components/NoteContent.jsx`. Topic colours
+>   are `--c-topic-1..6` in `index.css` (each at least 4.5:1 on the note
+>   surface in both themes); which words are key terms is decided in
+>   `client/src/lib/noteFormat.js`.
+> - **Old notes** have no `content` in the database. `withContent()` in
+>   `routes/notes.js` works it out from `rawText` on every read, so nothing
+>   needs migrating. Old PowerPoint notes lose their bullets this way (the
+>   old `rawText` did not record them) - re-upload the deck to get them.
+> - **Tests**: new `server/test/noteContent.test.mjs` (66 checks, part of
+>   `npm test`). It starts the real API on **port 4597**, so CI must leave
+>   that port free too (Member 4).
+>
+> **Still open**: scanned PDFs (they need a page renderer before OCR) and
+> old `.doc` / `.ppt` files, which are refused with a "Save As" message.
+> Formatting is rule-based; an optional LLM tidy-up could sit on top later
+> but must never touch `rawText`.
+
 What's missing (post-Saturday backlog, not this week):
 1. **Summarization** — a new endpoint that takes a note's raw text (or a
    linked textbook chunk) and returns an LLM-generated summary via the
@@ -750,6 +794,13 @@ Added since the demo prep (26 Sep):
   subtopics. Check for it with `isSplitParent()` from
   `server/src/models/Note.js` or `client/src/lib/notes.js` rather than
   re-deriving the rule.
+- **A note's text has two forms**: `rawText` (plain; anything that reads,
+  quotes, scores or links a note uses this) and `content` (blocks, for
+  display only). If you change one when saving a note, keep the other in
+  step - both come from the same blocks in `routes/notes.js`. Never generate
+  questions from `content`, and never show `rawText` where `content` exists.
+- **Server test ports**: `4597` (note content), `4598` (graph routes) and
+  `4599` (note uploads).
 - **Local database file**: with no `MONGODB_URI`, data is saved to
   `server/data/mindatlas-db.json` (git-ignored). Tests must set
   `DB_FILE=memory` so they never write to it. Never point a local `.env` at

@@ -14,6 +14,19 @@ const notes = () => getCollection("notes");
 // and what mastery and feedback are keyed on. A split parent is a container.
 // `sectionGroup` is the coarser heading a subtopic sat under in the source
 // (e.g. "Memory Management" for "Paging"), kept for display only.
+// `path` is the full version of that: every heading above the subtopic,
+// outermost first (["Unit 3", "Memory Management"]). The notes shelf rebuilds
+// the document's outline from it, to any depth, while the stored hierarchy
+// stays two levels - so tests, mastery and the graph are unaffected.
+//
+// A note's text is stored twice, for two different readers:
+//   - `rawText`: plain text. What keywords, links, questions and grading work
+//     on, and what questions quote word for word. Never formatted.
+//   - `content`: the same words as blocks (headings with a level, paragraphs,
+//     bulleted / numbered list entries with their depth, tables, and the terms
+//     the author set in bold) - what the reading pane formats. Display only.
+// Notes saved before `content` existed get it worked out from `rawText` when
+// they are read (see withContent in routes/notes.js).
 
 export async function createNote({
   ownerId,
@@ -29,6 +42,8 @@ export async function createNote({
   sectionGroup = null,
   childCount = 0,
   splitMethod = null,
+  content = null,
+  path = [],
 }) {
   return notes().insertOne({
     ownerId,
@@ -44,6 +59,8 @@ export async function createNote({
     sectionGroup,
     childCount,
     splitMethod,
+    content,
+    path,
     createdAt: new Date(),
   });
 }

@@ -4,8 +4,8 @@ import { createNote, findNotesByOwner, findNotesBySubject, isSplitParent, setChi
 import { requireAuth } from "../middleware/auth.js";
 import { uploadSingle } from "../middleware/upload.js";
 import { extractTextFromImage } from "../services/ocr.js";
-import { classifyUpload, extractDocument, titleFromFilename } from "../services/documentText.js";
-import { blocksFromPlainText, countWords, segmentDocument } from "../services/documentStructure.js";
+import { blocksFromOcrLines, classifyUpload, extractDocument, titleFromFilename } from "../services/documentText.js";
+import { blocksFromPlainText, countWords, normalizeContent, segmentDocument } from "../services/documentStructure.js";
 import { computeTfidf } from "../services/tfidf.js";
 import { updateGraphForNote } from "../services/graphEngine.js";
 
@@ -14,6 +14,28 @@ router.use(requireAuth);
 
 const UNSUPPORTED =
   "unsupported file type - upload a PDF, Word (.docx), PowerPoint (.pptx), text/markdown file or an image";
+// The pre-2007 Office formats are a different, binary file format that the
+// readers here cannot open - say how to fix it rather than "unsupported".
+const LEGACY_OFFICE = {
+  ".doc": "old Word files (.doc) can't be read - open it in Word and use Save As > Word Document (.docx), then upload that",
+  ".ppt": "old PowerPoint files (.ppt) can't be read - open it in PowerPoint and use Save As > PowerPoint Presentation (.pptx), then upload that",
+};
+const NO_SPLIT = { sections: [], method: "none", docTitle: null };
+
+/**
+ * A note as the client reads it: always with formatted `content` and a `path`.
+ * Notes saved before those fields existed get them worked out here from what
+ * they do have, so old notes are formatted the same way as new ones.
+ */
+function withContent(note) {
+  if (!note) return note;
+  const content =
+    Array.isArray(note.content) && note.content.length
+      ? note.content
+      : normalizeContent(blocksFromPlainText(note.rawText, { ocr: note.sourceType === "image" }), { title: note.title });
+  const path = Array.isArray(note.path) && note.path.length ? note.path : note.sectionGroup ? [note.sectionGroup] : [];
+  return { ...note, content, path };
+}
 
 /**
  * Read an uploaded file into { content, sourceType, ocrFailed, blocks }.
@@ -21,10 +43,13 @@ const UNSUPPORTED =
  */
 async function readUpload(file) {
   const kind = classifyUpload(file);
-  if (!kind) throw new Error(UNSUPPORTED);
+  if (!kind) {
+    const ext = (String(file.originalname || "").match(/\.[a-z0-9]+$/i)?.[0] || "").toLowerCase();
+    throw new Error(LEGACY_OFFICE[ext] || UNSUPPORTED);
+  }
   if (kind === "image") {
-    // scanned / photographed notes: read with OCR. No structure to split on.
-    const { text, ocrFailed } = await extractTextFromImage(file.buffer);
+    // scanned / photographed notes: read with OCR.
+    const { text, ocrFailed, lines } = await extractTextFromImage(file.buffer);
     if (!text) {
       throw new Error(
         ocrFailed
@@ -32,7 +57,12 @@ async function readUpload(file) {
           : "no readable text found in this image - try a sharper, well-lit photo, or type the note instead"
       );
     }
-    return { kind, content: text, sourceType: "image", ocrFailed, blocks: null };
+    // The page's structure is rebuilt from where OCR found each line and how
+    // tall it is; the note's text is that rebuilt version, so a heading is a
+    // line of its own and a wrapped sentence is whole again.
+    const page = lines?.length ? blocksFromOcrLines(lines) : null;
+    if (page?.text) return { kind, content: page.text, sourceType: "image", ocrFailed, blocks: page.blocks };
+    return { kind, content: text, sourceType: "image", ocrFailed, blocks: blocksFromPlainText(text, { ocr: true }) };
   }
   const { text, blocks } = await extractDocument(file, kind);
   if (!text) {
@@ -59,7 +89,9 @@ router.post("/:id/notes/preview", uploadSingle("file", 10), async (req, res) => 
   } catch (err) {
     return res.status(400).json({ error: err.message });
   }
-  const seg = read.blocks ? segmentDocument(read.blocks) : { sections: [], method: "none", docTitle: null };
+  let seg = read.blocks ? segmentDocument(read.blocks) : NO_SPLIT;
+  // a photo is only split where it has real headings, never into even parts
+  if (read.sourceType !== "file" && seg.method === "chunks") seg = NO_SPLIT;
   res.json({
     kind: read.kind,
     title:
@@ -70,6 +102,7 @@ router.post("/:id/notes/preview", uploadSingle("file", 10), async (req, res) => 
     sections: seg.sections.map((s) => ({
       title: s.title,
       group: s.group,
+      path: s.path || [],
       words: countWords(s.text),
       excerpt: s.text.slice(0, 160),
     })),
@@ -115,11 +148,13 @@ router.post("/:id/notes", uploadSingle("file", 10), async (req, res) => {
 
   // Typed notes can be long, structured documents too (pasted lecture notes
   // with markdown headings), so they go through the same splitter.
-  // Only real headings split a typed note, though - never the evenly-sized
-  // "parts" fallback, which would be a surprise for text the student wrote.
-  if (!blocks && sourceType === "typed" && wantSplit && content) blocks = blocksFromPlainText(content);
-  let seg = wantSplit && blocks ? segmentDocument(blocks) : { sections: [], method: "none" };
-  if (sourceType === "typed" && seg.method === "chunks") seg = { sections: [], method: "none" };
+  // Only real headings split a typed note or a photo, though - never the
+  // evenly-sized "parts" fallback, which would be a surprise for text the
+  // student wrote. The blocks are needed either way: they are what the note's
+  // formatted `content` is built from.
+  if (!blocks && content) blocks = blocksFromPlainText(content);
+  let seg = wantSplit && blocks ? segmentDocument(blocks) : NO_SPLIT;
+  if (sourceType !== "file" && seg.method === "chunks") seg = NO_SPLIT;
   // A file name like "unit3_final_v2" makes a worse title than the heading the
   // document gives itself, so an untitled upload uses its own title if found.
   if (req.file && !userTitle && seg.docTitle && seg.sections.length >= 2) title = seg.docTitle;
@@ -151,9 +186,10 @@ router.post("/:id/notes", uploadSingle("file", 10), async (req, res) => {
       keywords,
       vector,
       ocrFailed,
+      content: normalizeContent(blocks, { title: title.trim() }),
     });
     const edges = await updateGraphForNote(note, ownerNotes);
-    return res.status(201).json({ note, children: [], ...countLinks(edges) });
+    return res.status(201).json({ note: withContent(note), children: [], ...countLinks(edges) });
   }
 
   // Parent: keeps the whole text for reading, and document-level keywords for
@@ -170,6 +206,8 @@ router.post("/:id/notes", uploadSingle("file", 10), async (req, res) => {
     ocrFailed,
     childCount: seg.sections.length,
     splitMethod: seg.method,
+    // the whole document, formatted, for "Read the full document"
+    content: normalizeContent(blocks, { title: seg.docTitle || title.trim() }),
   });
 
   // Children: each subtopic's IDF is computed against the rest of the subject
@@ -196,6 +234,8 @@ router.post("/:id/notes", uploadSingle("file", 10), async (req, res) => {
       parentNoteId: parent._id,
       order: i,
       sectionGroup: s.group || null,
+      path: s.path || [],
+      content: s.content,
     });
     // Link against the rest of the subject and the siblings saved before it,
     // so related subtopics inside one document connect to each other too.
@@ -205,7 +245,11 @@ router.post("/:id/notes", uploadSingle("file", 10), async (req, res) => {
   }
   await setChildCount(parent._id, children.length);
 
-  res.status(201).json({ note: { ...parent, childCount: children.length }, children, ...countLinks(allEdges) });
+  res.status(201).json({
+    note: withContent({ ...parent, childCount: children.length }),
+    children: children.map(withContent),
+    ...countLinks(allEdges),
+  });
 });
 
 router.get("/:id/notes", async (req, res) => {
@@ -213,7 +257,7 @@ router.get("/:id/notes", async (req, res) => {
   if (!subject) return res.status(404).json({ error: "subject not found" });
 
   const notes = await findNotesBySubject(subject._id);
-  res.json({ notes });
+  res.json({ notes: notes.map(withContent) });
 });
 
 export default router;

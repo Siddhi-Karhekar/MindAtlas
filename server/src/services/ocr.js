@@ -17,9 +17,10 @@ const MIN_CONFIDENT_WORDS = 3;
  * (offline / restricted sandbox), we fail soft and let the caller decide
  * what to do rather than crashing the request.
  *
- * Returns { text, ocrFailed }: ocrFailed means OCR could not run at all (a
- * damaged image, or no language model); empty text with ocrFailed false
- * means it ran and found no readable text.
+ * Returns { text, ocrFailed, lines }: ocrFailed means OCR could not run at all
+ * (a damaged image, or no language model); empty text with ocrFailed false
+ * means it ran and found no readable text. `lines` is the same text line by
+ * line with each line's position and letter height.
  */
 export async function extractTextFromImage(buffer) {
   let worker;
@@ -40,7 +41,18 @@ export async function extractTextFromImage(buffer) {
     if (data.words && confidentWords.length < MIN_CONFIDENT_WORDS) {
       return { text: "", ocrFailed: false };
     }
-    return { text: data.text.trim(), ocrFailed: false };
+    // Where each line sits and how tall its letters are: the same clues a PDF
+    // gives, so headings and list nesting can be recovered from a photo too
+    // (see blocksFromOcrLines in documentText.js).
+    const lines = (data.lines || [])
+      .map((l) => ({
+        text: String(l.text || "").replace(/\s+/g, " ").trim(),
+        x: l.bbox?.x0,
+        y: l.baseline ? (l.baseline.y0 + l.baseline.y1) / 2 : l.bbox?.y1,
+        size: l.rowAttributes?.row_height || (l.bbox ? l.bbox.y1 - l.bbox.y0 : 0),
+      }))
+      .filter((l) => l.text);
+    return { text: data.text.trim(), ocrFailed: false, lines };
   } catch (err) {
     // tesseract.js rejects with a plain string, not an Error, for job failures
     const message = String(err?.message || err);
