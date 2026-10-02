@@ -3,6 +3,8 @@ import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom"
 import { api } from "../lib/api.js";
 import { readingMinutes, wordCount } from "../lib/format.js";
 import Icon from "../components/Icon.jsx";
+import { flattenOutline, outlineTree } from "../lib/notes.js";
+import { topicClass } from "../lib/noteFormat.js";
 
 // Small static preview of the subject's current graph: nodes on a circle, real
 // edges between them. Just enough to show where a new note will land.
@@ -37,7 +39,11 @@ function SplitPreview({ item, onToggle }) {
   if (sections.length < 2) {
     return <p className="font-label-md text-label-md text-on-surface-variant mt-space-2xs">No subtopics detected — saved as one note.</p>;
   }
-  const shown = open ? sections : sections.slice(0, 5);
+  // The outline the document will be saved as: main topics in their colours,
+  // with the subtopics that sit under each (rows with `words` become notes;
+  // rows without are headings that only group them).
+  const rows = flattenOutline(outlineTree(sections));
+  const shown = open ? rows : rows.slice(0, 12);
   return (
     <div className="mt-space-xs flex flex-col gap-space-xs" data-testid="split-preview">
       <label className="inline-flex items-center gap-space-xs font-label-md text-label-md text-on-surface cursor-pointer select-none w-fit">
@@ -55,18 +61,23 @@ function SplitPreview({ item, onToggle }) {
       </label>
       {item.split !== false && (
         <ol className="flex flex-col gap-space-2xs pl-space-md border-l-2 border-secondary/30">
-          {shown.map((s, i) => (
-            <li key={i} className="font-body-sm text-body-sm text-on-surface flex items-baseline gap-space-xs min-w-0">
-              <span className="text-on-surface-variant font-label-sm text-label-sm shrink-0 w-5 text-right">{i + 1}.</span>
-              <span className="truncate">{s.title}</span>
-              {s.group && <span className="text-on-surface-variant font-label-sm text-label-sm truncate shrink">· {s.group}</span>}
-              <span className="text-outline font-label-sm text-label-sm shrink-0 ml-auto">{s.words} words</span>
+          {shown.map((n) => (
+            <li
+              key={n.key}
+              data-testid={n.item ? "preview-subtopic" : "preview-group"}
+              className={`font-body-sm text-body-sm flex items-baseline gap-space-xs min-w-0 ${topicClass(n.colorIndex)}`}
+              style={{ paddingLeft: `${n.depth * 16}px` }}
+            >
+              <span className={`truncate ${n.depth === 0 ? "text-topic font-bold" : n.item ? "text-on-surface" : "text-on-surface-variant font-semibold"}`}>
+                {n.title}
+              </span>
+              {n.item && <span className="text-outline font-label-sm text-label-sm shrink-0 ml-auto">{n.item.words} words</span>}
             </li>
           ))}
-          {sections.length > 5 && (
+          {rows.length > 12 && (
             <li>
               <button type="button" onClick={() => setOpen((v) => !v)} className="font-label-md text-label-md text-secondary hover:underline">
-                {open ? "Show fewer" : `Show all ${sections.length}`}
+                {open ? "Show fewer" : `Show the whole outline (${sections.length} subtopics)`}
               </button>
             </li>
           )}
@@ -81,6 +92,9 @@ const ACCEPT = ".pdf,.docx,.pptx,.txt,.md,.markdown,.csv,image/*";
 const EXT_OK = /\.(pdf|docx|pptx|txt|md|markdown|text|csv|png|jpe?g|gif|webp|bmp|tiff?)$/i;
 
 function fileProblem(f) {
+  // the pre-2007 Office formats can't be read; say how to get past it
+  if (/\.doc$/i.test(f.name)) return "Old Word format (.doc) — open it in Word and Save As .docx, then upload that";
+  if (/\.ppt$/i.test(f.name)) return "Old PowerPoint format (.ppt) — open it in PowerPoint and Save As .pptx, then upload that";
   if (!(EXT_OK.test(f.name) || f.type.startsWith("image/") || f.type.startsWith("text/")))
     return "Unsupported type — use PDF, Word (.docx), PowerPoint (.pptx), text/markdown or an image";
   if (f.size > MAX_BYTES) return "Larger than 10 MB";
@@ -327,7 +341,7 @@ export default function NoteEditor() {
               onChange={(e) => setContent(e.target.value)}
               rows={16}
               className="w-full bg-transparent resize-y min-h-[320px] text-on-surface font-body-lg text-body-lg leading-relaxed focus:outline-none placeholder-outline"
-              placeholder="Type or paste the note's text. Leave a blank line between paragraphs."
+              placeholder={"Type or paste the note's text. Leave a blank line between paragraphs.\n\nIt is formatted for you when you save:\n# Heading   ## Sub-heading\n- bullet     1. numbered step\n**key term**"}
             />
           ) : (
             <div className="flex flex-col gap-space-lg">
@@ -489,6 +503,10 @@ export default function NoteEditor() {
               <br />
               A long upload with headings or slide titles is split along them: the document becomes a parent note and
               each subtopic its own note, so tests and feedback can point at the exact subtopic you need to revisit.
+              <br />
+              <br />
+              Headings, bullets, numbered steps, tables and bold terms are kept and shown in one consistent style,
+              whatever the file looked like. Each main topic gets its own colour.
             </p>
           </div>
         </aside>
