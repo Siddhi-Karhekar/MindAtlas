@@ -13,6 +13,7 @@ import noteRoutes from "./routes/notes.js";
 import testRoutes from "./routes/tests.js";
 import attemptRoutes from "./routes/attempts.js";
 import graphRoutes from "./routes/graph.js";
+import { semanticStatus, warmSemanticModel } from "./services/embeddings.js";
 
 assertAuthConfig();
 
@@ -79,7 +80,9 @@ app.use((req, res, next) => {
 // restart - open /api/health on the live site to check the deployment.
 app.get("/api/health", (req, res) => {
   const { kind, persistent } = dbInfo();
-  res.json({ ok: true, db: { kind, persistent } });
+  // `semantic.active` says whether questions are being ranked by meaning (the
+  // optional embedding model) or by rules alone, and why not if not
+  res.json({ ok: true, db: { kind, persistent }, semantic: semanticStatus() });
 });
 
 // Rate limits: a generous ceiling for the whole API, a tight one on
@@ -141,6 +144,7 @@ const PORT = process.env.PORT || 4000;
 connectDB()
   .then(() => {
     app.listen(PORT, () => console.log(`[server] listening on :${PORT}`));
+    warmSemanticModel(); // background; a no-op unless the add-on is installed
   })
   .catch((err) => {
     console.error("[server] failed to start:", err);

@@ -1,6 +1,14 @@
 import { callLLM, llmAvailable, parseJsonLoose } from "./llm.js";
 import { tokenize } from "./tfidf.js";
 import { topicWeight } from "./masteryEngine.js";
+import { blocksOf, isContentExcerpt, isQuestionWorthy, isStatement, quotableText } from "./studyText.js";
+import { GENERIC, studyFor, termKey, termPattern } from "./keyTerms.js";
+import { cosine, getEmbedder } from "./embeddings.js";
+
+// The rules for which sentences are subject matter live in studyText.js; they
+// are re-exported here because this is where callers and tests have always
+// found them.
+export { isQuestionWorthy, isStatement };
 
 // Mirrors Diagram 3, step 1 of the architecture doc: an LLM drafts
 // candidate questions, but every single one passes through a decision
@@ -15,6 +23,19 @@ import { topicWeight } from "./masteryEngine.js";
 // mixed tests). Both go through the same grounding gate; only the shape
 // of what's being verified differs (an options/correctAnswer pair for
 // mcq, a modelAnswer + keyPoints rubric for theory).
+//
+// Where the rule-based questions come from (no LLM key needed):
+//   studyText.js  - which sentences are subject matter at all (never the
+//                   college name, an exercise, a contents line), by structure,
+//                   by rule and - when the embedding model is installed - by
+//                   meaning;
+//   keyTerms.js   - the note's key terms as WHOLE terms ("distributed
+//                   computing"), so a blank hides the term, not half of it;
+//   this file     - turns a term and its sentences into a question.
+// The embedding model (embeddings.js) is optional everywhere: with it,
+// relevance, term ranking and distractors are judged by meaning; without it,
+// by the rules alone. An LLM, when configured, drafts from the same study
+// sentences, so it never sees the non-subject text either.
 //
 // Every accepted question also carries a `difficulty` tier
 // ("easy"|"medium"|"hard"). This is what routes/attempts.js's adaptive
@@ -44,17 +65,47 @@ function isSupportedByContext(excerpt, contextText) {
 // upload (set by routes/tests.js), the note title otherwise.
 const labelOf = (n) => n?.topicLabel || n?.title;
 
+// Everything a question is allowed to quote: the hallucination gate checks
+// excerpts against this.
 function buildContext(notes) {
-  return notes.map((n) => `### ${labelOf(n)}\n${n.rawText}`).join("\n\n");
+  return notes.map((n) => `### ${labelOf(n)}\n${quotableText(n)}`).join("\n\n");
+}
+
+// What an LLM is given to draft from: only the study sentences, grouped under
+// the headings they came from, plus the note's key terms. Still the note's own
+// words, so every excerpt it quotes passes the gate above.
+function buildStudyContext(notes, studies) {
+  return notes
+    .map((n) => {
+      const study = studies.get(n);
+      if (!study?.sentences.length) return `### ${labelOf(n)}\n${n.rawText}`;
+      const lines = [];
+      let section = null;
+      for (const sn of study.sentences) {
+        if (sn.section && sn.section !== section) lines.push(`[${sn.section}]`);
+        section = sn.section;
+        lines.push(sn.kind === "item" ? `- ${sn.text}` : sn.text);
+      }
+      const terms = study.terms.slice(0, 10).map((t) => t.term).join(", ");
+      return `### ${labelOf(n)}\n${terms ? `Key terms: ${terms}\n` : ""}${lines.join("\n")}`;
+    })
+    .join("\n\n");
 }
 
 // ---------------------------------------------------------------------------
 // MCQ generation (unchanged behavior, renamed for symmetry with theory)
 // ---------------------------------------------------------------------------
 
-async function generateMcqWithLLM(notes, mcqCount) {
-  const context = buildContext(notes);
-  const prompt = `You are drafting multiple-choice questions for a student's self-test, using ONLY the notes below as source material. Do not use any outside knowledge - every question's correct answer must be directly supported by a verbatim short excerpt from these notes. Aim for a roughly even mix of easy, medium, and hard questions across the set, and spread the questions across as many different ### sections as possible - each section is a separate topic the student is assessed on. Ask only about the subject matter itself - never about titles, headers, footers, page numbers, course codes, the table of contents, authors, references or other document metadata, and never quote such text as the supportingExcerpt. In a fill-in-the-blank question, blank the whole technical term (for example "continuous integration", never just "integration"), and make every option a complete term of the same kind and similar length.
+async function generateMcqWithLLM(notes, mcqCount, masteryMap, studies) {
+  const context = buildStudyContext(notes, studies);
+  const prompt = `You are setting multiple-choice questions for a university examination paper, using ONLY the notes below as source material. Do not use any outside knowledge - every question's correct answer must be directly supported by a verbatim short excerpt from these notes.
+
+Rules:
+- Ask about the subject matter only: concepts, definitions, properties, mechanisms, differences, causes and effects. Never ask about the document itself (titles, authors, the college or department, course codes, page numbers, the syllabus) and never turn an exercise or an instruction ("Write a program ...", "Calculate ...") into a question.
+- Word each question the way an examiner would: one clear question, complete in itself, with no reference to "the notes" or "the passage".
+- In a fill-in-the-blank question, blank the WHOLE technical term (for example "continuous integration", never just "integration"), blank every occurrence of it in the sentence, and make every option a complete term of the same kind and similar length.
+- All four options must be plausible to someone who has not studied; exactly one is correct. No "all of the above" or "none of the above".
+- Spread the questions across as many different ### sections as possible - each section is a separate topic the student is assessed on - and aim for a roughly even mix of easy, medium and hard.
 
 NOTES:
 ${context}
@@ -107,88 +158,6 @@ const NOUN_LEAD = "(?:the|a|an|of|its|their|by|between|in|and|these|those|each|w
 
 function hasNounEvidence(word, text) {
   return new RegExp(`\\b${NOUN_LEAD}\\s+${word}\\b`, "i").test(text);
-}
-
-// ---------------------------------------------------------------------------
-// Which text is worth asking about
-// ---------------------------------------------------------------------------
-// A note's raw text is not all subject matter. An uploaded PDF also carries
-// its title page, table of contents, running headers ("CS302 Computer
-// Networks - Department of ... Page 1"), course codes and references. Those
-// lines contain the note's keywords too ("Networks", "protocols"), so a naive
-// "first sentence containing the keyword" pick turned them into nonsense
-// questions. Questions are only ever built from sentences that pass this
-// filter: real prose sentences, not headings, lists of titles or page furniture.
-
-const BOILERPLATE =
-  /\bpage\s+\d+\b|\bpage\s+\d+\s+of\s+\d+|\.{3,}|…|\btable of contents\b|^contents\b|\ball rights reserved\b|©|\bsemester\s+[ivx\d]+\b|\blecture notes\b|\bdepartment of\b|https?:\/\/|\bwww\./i;
-
-/** True for a sentence that is subject matter a question can be built from. */
-export function isQuestionWorthy(sentence) {
-  const s = String(sentence || "").trim();
-  if (/\n\s*\n/.test(s)) return false; // spans several paragraphs: a split went wrong
-  const words = s.split(/\s+/).filter(Boolean);
-  if (words.length < 6 || words.length > 60) return false;
-  if (!/[.!?]["')\]]?$/.test(s)) return false; // a complete sentence, not a heading or list line
-  if (BOILERPLATE.test(s)) return false;
-  // a numbered heading glued onto the sentence ("... 1.1 Network Topologies A
-  // network topology describes ..."), as older or messier extraction produces
-  if (/(^|\s)\d+(\.\d+)+\.?\s+[A-Z]/.test(s)) return false;
-  // Headings, titles and tables of contents are Mostly Capitalised Words;
-  // prose is mostly lower-case words.
-  const alpha = words.filter((w) => /[a-z]/i.test(w));
-  const lower = alpha.filter((w) => /^[("']?[a-z]/.test(w)).length;
-  if (alpha.length === 0 || lower / alpha.length < 0.5) return false;
-  if (!isStatement(s)) return false;
-  return true;
-}
-
-// A question has to be built from a statement of fact. Uploaded notes also
-// hold exercises ("Write a program ...", "Convert the plaintext ..."), the
-// notes' own questions ("What is the key space ...?"), syllabus lines
-// ("Foundations of X: topic, topic, topic.") and fragments cut off by a page
-// or column break ("and application layers into one, so ..."). Blanking a word
-// in any of those gives a question that makes no sense.
-
-// Verbs that open an instruction or exercise. Only verbs that are rarely the
-// first word of a statement are listed: "Design", "State", "List", "Use",
-// "Note", "Name", "Study" and "Test" also start ordinary sentences as nouns
-// ("State machines ...", "List scheduling ..."), so they are left out.
-const IMPERATIVE_START = new RegExp(
-  "^(?:" +
-    [
-      "write", "convert", "explain", "implement", "describe", "calculate", "compute", "define",
-      "discuss", "compare", "solve", "develop", "prove", "derive", "encrypt", "decrypt",
-      "determine", "identify", "illustrate", "outline", "enumerate", "evaluate", "perform",
-      "simulate", "construct", "create", "mention", "justify", "differentiate", "distinguish",
-      "analyse", "analyze", "find", "give", "draw", "sketch", "demonstrate", "elaborate",
-      "summarize", "summarise", "classify", "estimate", "verify", "execute", "run", "install",
-      "configure", "consider", "suppose", "assume", "let", "show", "fill", "choose", "attempt",
-      "tabulate", "list out", "write down", "briefly",
-    ].join("|") +
-    ")(?=[\\s,:])",
-  "i"
-);
-
-/** True when the sentence states something, rather than asking or instructing. */
-export function isStatement(sentence) {
-  const s = String(sentence || "").trim().replace(/^[("'\u201c\u2018]+/, "");
-  // a question from the notes, not a fact to ask about
-  if (/\?["')\]\u201d\u2019]?$/.test(s)) return false;
-  // a fragment: prose sentences start with a capital or a digit. A first word
-  // with a capital inside it ("iPhone", "eBPF") still counts as a start.
-  if (!/^(?:[A-Z0-9]|[a-z]+[A-Z])/.test(s)) return false;
-  // an exercise or lab task
-  if (IMPERATIVE_START.test(s)) return false;
-  // a syllabus line: a capitalised title, a colon, then a list of topics
-  const colon = s.indexOf(":");
-  if (colon > 0) {
-    const head = s.slice(0, colon).trim().split(/\s+/);
-    const capitalised = head.filter((w) => /^[A-Z]/.test(w)).length;
-    const commas = (s.slice(colon).match(/,/g) || []).length;
-    if (head.length >= 2 && head.length <= 8 && capitalised >= 2 && commas >= 2) return false;
-  }
-  return true;
 }
 
 const sentenceCache = new WeakMap();
@@ -340,17 +309,6 @@ export function blankTerm(sentence, term, keyword) {
   // blank every occurrence, so a second mention can't give the answer away
   return out.replace(new RegExp(wholeWord(keyword).source, "gi"), "_____");
 }
-
-// Frequent-but-empty words TF-IDF can still rank highly. As an answer they make
-// a question trivial or meaningless ("_____ device is attached" -> "every").
-const GENERIC = new Set([
-  "every", "one", "two", "three", "four", "five", "many", "much", "more", "most", "less", "least", "other",
-  "another", "some", "any", "all", "both", "either", "neither", "first", "second", "last", "next", "new",
-  "same", "different", "such", "used", "use", "uses", "using", "called", "based", "example", "examples",
-  "following", "given", "general", "type", "types", "way", "ways", "thing", "things", "part", "parts",
-  "number", "numbers", "set", "case", "cases", "time", "times", "unit", "page", "chapter", "section",
-  "notes", "lecture", "semester", "department", "introduction", "summary", "figure", "table",
-]);
 
 function nounLikeKeywords(note) {
   // only keywords that are real content words AND appear, as whole words, in
@@ -538,39 +496,264 @@ function pickUnusedKeyword(note, wantedTier, startIndex, used) {
   return null;
 }
 
-function generateMcqFallback(notes, mcqCount, masteryMap) {
+// ---------------------------------------------------------------------------
+// Fill-in-the-blank from key terms
+// ---------------------------------------------------------------------------
+// The answer is one of the note's key terms (keyTerms.js), which are whole
+// terms by construction, and the sentence is one of its study sentences
+// (studyText.js), which are subject matter by construction. What is left to
+// decide here is which sentence shows the term best, and which wrong options
+// are worth offering.
+
+// How far down a note's ranked terms questions may reach. Below this, a "term"
+// is a word that happens to recur ("mechanism", "request").
+const TERM_CUT = { semantic: 0.4, rules: 0.12 };
+
+const wordsIn = (s) => String(s).split(/\s+/).filter(Boolean);
+const lowerFirst = (s) => (/^[A-Z][a-z]/.test(s) ? s[0].toLowerCase() + s.slice(1) : s);
+
+// "A deadlock is ...", "... is called a deadlock": the sentence that says what
+// the term IS makes the fairest blank.
+function definesTerm(sentence, term) {
+  const t = termPattern(term, "i").source;
+  return (
+    // "is a ...", "are the ...": says what it is. "is stored", "are sent" do not.
+    new RegExp(`${t}\\s+(?:\\([^)]*\\)\\s+)?(?:(?:is|are)\\s+(?:an?|the|one|any|defined|called|known)|refers to|means|denotes|represents|can be defined as)\\b`, "i").test(sentence) ||
+    new RegExp(`\\b(?:called|termed|known as|referred to as)\\s+(?:an?\\s+|the\\s+)?${t}`, "i").test(sentence) ||
+    new RegExp(`^${t}\\s*:`, "i").test(sentence)
+  );
+}
+
+/** `sentence` with every occurrence of the whole term blanked. */
+function blankWhole(sentence, term) {
+  let out = sentence.replace(termPattern(term.term), "_____");
+  if (term.abbr) {
+    // the acronym after the blank, or anywhere else, would give the answer away
+    out = out
+      .replace(new RegExp(`_____\\s*\\(${term.abbr}s?\\)`, "g"), "_____")
+      .replace(new RegExp(`(?<![A-Za-z0-9])${term.abbr}s?(?![A-Za-z0-9])`, "g"), "_____");
+  }
+  return out.replace(/_____(?:\s+_____)+/g, "_____");
+}
+
+// The term as this sentence writes it ("vector clocks"), so the options read
+// correctly in the blank.
+function answerAsWritten(sentence, term) {
+  const m = termPattern(term.term, "i").exec(sentence);
+  if (!m) return term.term;
+  // a capital that is only there because the term opens the sentence
+  return m.index === 0 && /^[a-z]/.test(term.term) ? lowerFirst(m[0]) : m[0];
+}
+
+const isPlural = (text, term) => wordsIn(text).pop().toLowerCase() !== term.key.split(" ").pop();
+function pluralise(text) {
+  const words = wordsIn(text);
+  const last = words[words.length - 1];
+  if (/[^s]s$/i.test(last) || /^[A-Z0-9/+-]+$/.test(last)) return text; // already plural, or an acronym
+  words[words.length - 1] = /[^aeiou]y$/i.test(last) ? `${last.slice(0, -1)}ies` : /(s|sh|ch|x|z)$/i.test(last) ? `${last}es` : `${last}s`;
+  return words.join(" ");
+}
+
+// The sentences that are about `term` itself. A sentence where the term only
+// appears inside a longer key term is about that one: "system" in "a
+// distributed system is ..." belongs to "distributed system".
+function sentencesAbout(study, term) {
+  const re = termPattern(term.term, "i");
+  const longer = study.terms.filter((t) => t.words > term.words && ` ${t.key} `.includes(` ${term.key} `)).map((t) => termPattern(t.term, "i"));
+  return study.sentences.filter((s) => re.test(s.text) && !longer.some((l) => l.test(s.text)));
+}
+
+// "nodes" -> "node", when the answer it sits beside is singular
+function singularise(t) {
+  const words = wordsIn(t.term);
+  const last = t.key.split(" ").pop();
+  if (/^[A-Z0-9/+-]+$/.test(words[words.length - 1]) || words[words.length - 1].toLowerCase() === last) return t.term;
+  words[words.length - 1] = /^[A-Z]/.test(words[words.length - 1]) ? last[0].toUpperCase() + last.slice(1) : last;
+  return words.join(" ");
+}
+
+/** The study sentence that makes the best blank for `term`, or null. */
+function clozeSentence(study, term) {
+  const all = termPattern(term.term);
+  let best = null;
+  for (const s of sentencesAbout(study, term)) {
+    const rest = wordsIn(blankWhole(s.text, term)).filter((w) => !w.includes("_____"));
+    if (rest.length < 6) continue; // nothing left to answer from
+    const n = wordsIn(s.text).length;
+    const score =
+      (definesTerm(s.text, term.term) ? 3 : 0) +
+      ((s.text.match(all) || []).length === 1 ? 1 : 0) +
+      (n >= 10 && n <= 32 ? 0.5 : 0) +
+      (s.relevance || 0);
+    if (!best || score > best.score) best = { sentence: s.text, score };
+  }
+  return best?.sentence || null;
+}
+
+/** The terms of a note that a question can be asked about, best first. */
+function askableTerms(study) {
+  if (study.askable) return study.askable;
+  const top = study.terms[0]?.score || 0;
+  const cut = top * (study.semantic ? TERM_CUT.semantic : TERM_CUT.rules);
+  study.askable = study.terms.filter((t) => t.score >= cut && clozeSentence(study, t));
+  return study.askable;
+}
+
+// Same banding as the keyword version: the note's most central terms are the
+// easy questions, its least central the hard ones.
+function termForTier(study, tier, i) {
+  const terms = askableTerms(study);
+  const n = terms.length;
+  if (n === 0) return null;
+  const band = Math.max(1, Math.ceil(n / 3));
+  const start = tier === "easy" ? 0 : tier === "hard" ? Math.max(0, n - band) : Math.floor((n - band) / 2);
+  return terms[start + (i % Math.min(band, n - start))];
+}
+
+// `asked` holds the terms already used anywhere in this test: "transaction" is
+// a key term of several notes in one unit, and should be the answer only once
+// while other terms remain.
+function pickUnusedTerm(note, study, wantedTier, startIndex, used, asked) {
+  const wantedIdx = DIFFICULTY_TIERS.indexOf(wantedTier);
+  const nearest = [...DIFFICULTY_TIERS].sort(
+    (a, b) => Math.abs(DIFFICULTY_TIERS.indexOf(a) - wantedIdx) - Math.abs(DIFFICULTY_TIERS.indexOf(b) - wantedIdx)
+  );
+  for (const allowRepeat of [false, true]) {
+    for (const tier of nearest) {
+      for (let offset = 0; offset < 16; offset++) {
+        const term = termForTier(study, tier, startIndex + offset);
+        if (!term || used.has(`${note._id}|${term.key}`)) continue;
+        if (!allowRepeat && asked.has(term.key)) continue;
+        return { term, difficulty: tier };
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Three wrong options for a blank whose answer is `term`.
+ * A good distractor is a real term from the same subject, of the same shape as
+ * the answer, that is wrong here. So: never a term that is in the sentence,
+ * never the answer's own longer or shorter form ("locking" for "two-phase
+ * locking"), and terms the same length as the answer first. With the
+ * embedding model the candidates closest in meaning are preferred - close
+ * enough to tempt, but not so close as to be a synonym. Without it, terms of
+ * the same kind (sharing the answer's main noun) and from the same note come
+ * first.
+ */
+function termDistractors({ term, answer, note, notes, studies, sentence }) {
+  const answerWords = term.key.split(" ");
+  const head = answerWords[answerWords.length - 1];
+  const contains = (a, b) => ` ${a} `.includes(` ${b} `);
+  const pool = [];
+  const seen = new Set([term.key]);
+  for (const n of [note, ...notes.filter((x) => x !== note)]) {
+    for (const t of studies.get(n)?.terms || []) {
+      if (seen.has(t.key) || contains(t.key, term.key) || contains(term.key, t.key)) continue;
+      if (GENERIC.has(t.key) || termPattern(t.term, "i").test(sentence)) continue;
+      if (t.abbr && term.abbr && t.abbr === term.abbr) continue;
+      seen.add(t.key);
+      const closeness = term.vector && t.vector ? cosine(term.vector, t.vector) : null;
+      pool.push({
+        t,
+        gap: Math.abs(t.words - term.words),
+        // a near-synonym could be argued correct; an unrelated term is no test
+        fit: closeness === null ? 0 : closeness > 0.88 ? -1 : closeness,
+        sameKind: t.key.split(" ").pop() === head ? 1 : 0,
+        sameNote: n === note ? 1 : 0,
+        strength: t.score,
+      });
+    }
+  }
+  pool.sort((a, b) => a.gap - b.gap || b.fit - a.fit || b.sameKind - a.sameKind || b.sameNote - a.sameNote || b.strength - a.strength);
+
+  const plural = isPlural(answer, term);
+  const startsLower = /^[a-z]/.test(answer);
+  const titleCased = wordsIn(answer).length > 1 && wordsIn(answer).every((w) => /^[A-Z]/.test(w));
+  const picked = [];
+  for (const { t } of pool) {
+    if (picked.length === 3) break;
+    // the options agree in number with the answer, so grammar gives nothing away
+    let text = plural ? pluralise(t.term) : singularise(t);
+    // ...and in capitals: beside "Remote Procedure Call" the others are written
+    // the same way, or the capitals would point at the answer
+    if (titleCased) text = wordsIn(text).map((w) => (/^[a-z]/.test(w) ? w[0].toUpperCase() + w.slice(1) : w)).join(" ");
+    else if (!startsLower && /^[A-Z][a-z]/.test(answer)) text = text[0].toUpperCase() + text.slice(1);
+    if (normalize(text) === normalize(answer) || picked.some((p) => normalize(p) === normalize(text))) continue;
+    picked.push(text);
+  }
+  if (picked.length < 3) {
+    // a subject too small to supply three terms: fall back to single keywords
+    for (const w of pickDistractors(note, notes, head, sentence, answer)) {
+      if (picked.length === 3) break;
+      if (!picked.some((p) => normalize(p) === normalize(w))) picked.push(w);
+    }
+  }
+  return picked;
+}
+
+function clozeDraft({ term, difficulty, note, notes, studies }) {
+  const study = studies.get(note);
+  const sentence = clozeSentence(study, term);
+  if (!sentence) return null;
+  const answer = answerAsWritten(sentence, term);
+  const options = shuffle([...termDistractors({ term, answer, note, notes, studies, sentence }), answer]);
+  return {
+    topicId: note._id,
+    topic: labelOf(note),
+    prompt: `Fill in the blank: "${blankWhole(sentence, term)}"`,
+    options,
+    correctAnswer: answer,
+    supportingExcerpt: sentence,
+    difficulty,
+  };
+}
+
+// A note with no detectable key terms (a few lines of text) still gets
+// questions, the older way: a single keyword, widened to its term in place.
+function legacyClozeDraft({ note, notes, wanted, startIndex, used }) {
+  const picked = pickUnusedKeyword(note, wanted, startIndex, used);
+  if (!picked) return null;
+  const { keyword, difficulty } = picked;
+  used.add(`${note._id}|${keyword}`);
+  const sentence = sentenceFor(note, keyword);
+  if (!sentence) return null;
+  const answer = termFor(note, sentence, keyword);
+  return {
+    topicId: note._id,
+    topic: labelOf(note),
+    prompt: `Fill in the blank: "${blankTerm(sentence, answer, keyword)}"`,
+    options: shuffle([...pickDistractors(note, notes, keyword, sentence, answer), answer]),
+    correctAnswer: answer,
+    supportingExcerpt: sentence,
+    difficulty,
+  };
+}
+
+function generateMcqFallback(notes, mcqCount, masteryMap, studies) {
   const drafts = [];
-  const used = new Set(); // "note id|keyword" already turned into a question
+  const used = new Set(); // "note id|term" already turned into a question
+  const asked = new Set(); // terms already the answer to some question
   const order = weightedNoteOrder(notes, mcqCount, masteryMap);
 
   for (let i = 0; i < mcqCount; i++) {
     const note = order[i] || notes[i % notes.length];
     const wanted = DIFFICULTY_TIERS[i % DIFFICULTY_TIERS.length];
-    const picked = pickUnusedKeyword(note, wanted, Math.floor(i / notes.length), used);
+    const startIndex = Math.floor(i / notes.length);
+    const study = studies.get(note);
+    if (!study || askableTerms(study).length === 0) {
+      const draft = legacyClozeDraft({ note, notes, wanted, startIndex, used });
+      if (draft) drafts.push(draft);
+      continue;
+    }
+    const picked = pickUnusedTerm(note, study, wanted, startIndex, used, asked);
     if (!picked) continue; // this note is out of distinct questions; don't repeat one
-    const { keyword, difficulty } = picked;
-    used.add(`${note._id}|${keyword}`);
-
-    // nounLikeKeywords only offers keywords that have such a sentence
-    const sentence = sentenceFor(note, keyword);
-    if (!sentence) continue;
-    // the answer is the whole term ("continuous integration"), not one word of it
-    const answer = termFor(note, sentence, keyword);
-    const blanked = blankTerm(sentence, answer, keyword);
-
-    const options = shuffle([...pickDistractors(note, notes, keyword, sentence, answer), answer]);
-
-    drafts.push({
-      topicId: note._id,
-      topic: labelOf(note),
-      prompt: `Fill in the blank: "${blanked}"`,
-      options,
-      correctAnswer: answer,
-      supportingExcerpt: sentence,
-      difficulty,
-    });
+    used.add(`${note._id}|${picked.term.key}`);
+    asked.add(picked.term.key);
+    const draft = clozeDraft({ ...picked, note, notes, studies });
+    if (draft) drafts.push(draft);
   }
-
   return drafts;
 }
 
@@ -578,9 +761,16 @@ function generateMcqFallback(notes, mcqCount, masteryMap) {
 // Theory / short-answer generation
 // ---------------------------------------------------------------------------
 
-async function generateTheoryWithLLM(notes, theoryCount) {
-  const context = buildContext(notes);
-  const prompt = `You are drafting short-answer / theory questions for a student's self-test, using ONLY the notes below as source material. Each question should require a 1-4 sentence written explanation, not a single word. Aim for a roughly even mix of easy, medium, and hard questions across the set, and spread the questions across as many different ### sections as possible - each section is a separate topic the student is assessed on. Ask only about the subject matter itself - never about titles, headers, footers, page numbers, course codes, the table of contents, authors, references or other document metadata, and never quote such text as the supportingExcerpt.
+async function generateTheoryWithLLM(notes, theoryCount, masteryMap, studies) {
+  const context = buildStudyContext(notes, studies);
+  const prompt = `You are setting the theory (short-answer) section of a university examination paper, using ONLY the notes below as source material.
+
+Rules:
+- Ask about the subject matter only: concepts, definitions, properties, mechanisms, differences, causes and effects. Never ask about the document itself (titles, authors, the college or department, course codes, page numbers, the syllabus) and never copy an exercise or instruction from the notes as a question.
+- Word every question the way an examiner would, opening with a command word that fits what is asked: "Define ...", "Explain ...", "Describe ...", "State ...", "List ...", "Differentiate between ... and ...", "Why ...", "How does ...". One clear task per question, complete in itself, with no reference to "the notes" or "your notes".
+- Match the command word to the difficulty: Define / State / List are easy, Explain / Describe are medium, Differentiate / Why / How (reasoning) are hard. Aim for a roughly even mix.
+- The model answer must be what a full-marks answer would say, in 1-4 sentences, using only facts from the notes.
+- Spread the questions across as many different ### sections as possible - each section is a separate topic the student is assessed on.
 
 NOTES:
 ${context}
@@ -588,7 +778,8 @@ ${context}
 Return a JSON array of exactly ${theoryCount} objects, each shaped like:
 {
   "topic": "<the exact ### heading of the section this question is drawn from>",
-  "prompt": "<the open-ended question text, e.g. 'Explain ...' or 'Why does ...'>",
+  "prompt": "<the question, starting with its command word>",
+  "guidance": "<how much to write, e.g. 'Answer in two or three sentences.' or 'Give two points of difference.'>",
   "modelAnswer": "<a concise 1-4 sentence model answer, grounded in the notes>",
   "keyPoints": ["<short key phrase a good answer should mention>", "<another key phrase>", "..."],
   "supportingExcerpt": "<a short verbatim quote from the notes above that supports the model answer>",
@@ -602,60 +793,222 @@ Include 2 to 4 keyPoints per question. Return ONLY the JSON array, no other text
   return parsed;
 }
 
-// Zero-dependency fallback, same spirit as the MCQ cloze fallback: ask the
-// student to explain a note's top TF-IDF keyword in their own words, and
-// use that note's top keywords as the grading rubric (keyPoints) for the
-// deterministic keyword-overlap grader in gradingEngine.js. Grounded by
-// construction - the supporting excerpt IS the sentence the keyword came
-// from. Difficulty uses the same tier-first keywordForTier scheme as the
-// MCQ fallback.
-function generateTheoryFallback(notes, theoryCount, masteryMap) {
+// Rule-based theory questions, worded the way a question paper words them.
+//
+// A paper does not ask "explain what your notes say about X". It asks with a
+// command word that tells the student what kind of answer is wanted, and the
+// right command word depends on what the notes actually say about the term:
+//   Define ...                  the note has a sentence saying what the term is
+//   Explain ...                 the note says several things about the term
+//   List and explain ...        the note has a list under a heading
+//   Differentiate between ...   the note has two terms of the same kind
+// Each form has a natural difficulty (recall, understanding, comparison), which
+// is how the pool gets its easy / medium / hard spread. The model answer is
+// always the note's own sentences, so it is grounded by construction.
+
+const LIST_LABELS_TO_SKIP = /exercise|question|assignment|reference|bibliograph|objective|outcome|agenda|content|outline|syllabus|homework|problem/i;
+// "3.2 Error Detection" -> "Error Detection"; "Distributed Systems - Unit 1" -> "Distributed Systems"
+const cleanTitle = (t) =>
+  String(t || "")
+    .replace(/^\s*(?:\d+(?:\.\d+)*\.?|(?:unit|chapter|module|lecture|topic)\s+[\divx]+\s*[:.-]?)\s+/i, "")
+    .replace(/\s*[-–—:,(]\s*(?:unit|chapter|module|lecture|part)\s+[\divx]+\)?\s*$/i, "")
+    .trim();
+const sentenceCase = (s) => (s ? s[0].toUpperCase() + s.slice(1) : s);
+// "the two-phase locking protocol" reads better than a bare term after "Explain"
+const quoted = (term) => `“${term}”`;
+
+// What a good answer should mention: the other key terms in the model answer,
+// topped up with its distinctive words, never the term the question names.
+function keyPointsFor(study, modelAnswer, exclude = []) {
+  // nor a piece of it: "system" is no key point for "distributed system"
+  const named = (t) => exclude.some((x) => ` ${x.key} `.includes(` ${t.key} `) || ` ${t.key} `.includes(` ${x.key} `));
+  const fromTerms = study.terms.filter((t) => !named(t) && termPattern(t.term, "i").test(modelAnswer)).map((t) => t.term);
+  const namedWords = exclude.flatMap((t) => t.key.split(" "));
+  const fromWords = [...new Set(tokenize(modelAnswer))].filter(
+    (w) => w.length >= 5 && !GENERIC.has(w) && !namedWords.some((x) => w.startsWith(x.slice(0, 4))) && !fromTerms.some((t) => t.toLowerCase().includes(w))
+  );
+  const points = [...fromTerms, ...fromWords].slice(0, 4);
+  return points.length ? points : exclude.map((t) => t.term);
+}
+
+/** Every theory question this note can support, as drafts. */
+function theoryDrafts(note, study) {
+  if (study.theory) return study.theory;
+  const drafts = [];
+  const base = { topicId: note._id, topic: labelOf(note) };
+  const title = cleanTitle(note.title);
+  // A theory question needs a term worth a paragraph: a whole term, or one the
+  // author marked. Single unmarked words are used only when a note has too few
+  // of those and the model is there to vouch for them.
+  const strong = askableTerms(study).filter((t) => t.words > 1 || t.marks.length);
+  const terms = strong.length >= 3 || !study.semantic ? strong : askableTerms(study);
+  const sentencesOf = (t) => sentencesAbout(study, t).map((s) => s.text);
+
+  for (const t of terms) {
+    const about = sentencesOf(t);
+    const definition = about.find((s) => definesTerm(s, t.term));
+    if (definition) {
+      drafts.push({
+        ...base,
+        form: "define",
+        key: `define|${t.key}`,
+        difficulty: "easy",
+        prompt: `Define the term ${quoted(t.term)}.`,
+        guidance: "Answer in one or two sentences.",
+        modelAnswer: definition,
+        keyPoints: keyPointsFor(study, definition, [t]),
+        supportingExcerpt: definition,
+      });
+    }
+    if (about.length >= 2 || (about.length === 1 && !definition)) {
+      const answer = about.slice(0, 3).join(" ");
+      const sameAsTitle = termKey(title) === t.key || !title;
+      drafts.push({
+        ...base,
+        form: "explain",
+        key: `explain|${t.key}`,
+        difficulty: "medium",
+        prompt: sameAsTitle ? `Explain ${quoted(t.term)}.` : `Explain ${quoted(t.term)} with reference to ${title}.`,
+        guidance: about.length >= 2 ? "Answer in three or four sentences." : "Answer in two or three sentences.",
+        modelAnswer: answer,
+        keyPoints: keyPointsFor(study, answer, [t]),
+        supportingExcerpt: about[0],
+      });
+    }
+  }
+
+  // two terms of the same kind: "shared lock" / "exclusive lock"
+  const seenPairs = new Set();
+  for (const a of terms) {
+    for (const b of terms) {
+      if (a === b || a.words < 2 || b.words < 2) continue;
+      if (a.key.split(" ").pop() !== b.key.split(" ").pop()) continue;
+      const id = [a.key, b.key].sort().join("|");
+      if (seenPairs.has(id)) continue;
+      seenPairs.add(id);
+      const sa = sentencesOf(a);
+      const sb = sentencesOf(b);
+      const both = sa.find((s) => sb.includes(s));
+      const first = sa.find((s) => s !== both) || sa[0];
+      const second = sb.find((s) => s !== first) || sb[0];
+      if (!first || !second) continue;
+      const answer = first === second ? first : `${first} ${second}`;
+      drafts.push({
+        ...base,
+        form: "differentiate",
+        key: `differentiate|${id}`,
+        difficulty: "hard",
+        prompt: `Differentiate between ${quoted(a.term)} and ${quoted(b.term)}.`,
+        guidance: "Give at least two points of difference.",
+        modelAnswer: answer,
+        keyPoints: [...new Set([a.term, b.term, ...keyPointsFor(study, answer, [a, b])])].slice(0, 4),
+        supportingExcerpt: first,
+      });
+    }
+  }
+
+  // a list under a heading: "Characteristics" followed by four entries
+  const blocks = blocksOf(note);
+  const relevant = new Set(study.sentences.map((s) => s.text));
+  for (let i = -1; i < blocks.length; i++) {
+    // i = -1: a list straight under the note's own title ("ACID Properties")
+    const b = i < 0 ? { type: "heading", text: title } : blocks[i];
+    if (b.type !== "heading" && b.type !== "label") continue;
+    const label = String(b.text).replace(/:\s*$/, "").trim();
+    if (!label) continue;
+    if (LIST_LABELS_TO_SKIP.test(label) || wordsIn(label).length > 6) continue;
+    const items = [];
+    for (let j = i + 1; j < blocks.length && (blocks[j].type === "item" || (items.length === 0 && blocks[j].type === "para")); j++) {
+      if (blocks[j].type === "item" && (blocks[j].depth || 0) === 0) items.push(blocks[j].text);
+    }
+    // entries have to be statements about the subject, not tasks or fragments
+    const usable = items.filter((t) => relevant.has(t) || (wordsIn(t).length >= 4 && isStatement(sentenceCase(t))));
+    if (items.length < 3 || usable.length < items.length || !usable.some((t) => relevant.has(t))) continue;
+    const shown = items.slice(0, 6);
+    const lower = cleanTitle(label);
+    const generic = wordsIn(lower).every((w) => GENERIC.has(w.toLowerCase()) || /^(of|the|and)$/i.test(w));
+    const leads = shown.map((t) => t.match(/^([^:–—-]{2,40}?)\s*[:–—]\s+\S/)?.[1] || wordsIn(t).slice(0, 3).join(" "));
+    drafts.push({
+      ...base,
+      form: "list",
+      key: `list|${lower.toLowerCase()}`,
+      difficulty: shown.length >= 5 ? "hard" : "medium",
+      prompt:
+        generic && title
+          ? `List and briefly explain the ${lower.toLowerCase()} of ${title}.`
+          : `List and briefly explain the ${wordsIn(lower).map((w) => (/^[A-Z][a-z]/.test(w) ? w.toLowerCase() : w)).join(" ")}.`,
+      guidance: `Give ${shown.length} points.`,
+      modelAnswer: shown.map((t) => t.replace(/[.;]\s*$/, "")).join("; ") + ".",
+      keyPoints: leads.slice(0, 6),
+      supportingExcerpt: shown.find((t) => relevant.has(t)) || shown[0],
+    });
+  }
+
+  study.theory = drafts;
+  return drafts;
+}
+
+const FORMS_BY_TIER = {
+  easy: ["define", "list", "explain", "differentiate"],
+  medium: ["explain", "list", "define", "differentiate"],
+  hard: ["differentiate", "list", "explain", "define"],
+};
+
+function generateTheoryFallback(notes, theoryCount, masteryMap, studies) {
   const drafts = [];
   const used = new Set();
   const order = weightedNoteOrder(notes, theoryCount, masteryMap);
 
   for (let i = 0; i < theoryCount; i++) {
     const note = order[i] || notes[i % notes.length];
-    if (!note.keywords?.length) continue;
-    if (!contentSentences(note).length) continue; // nothing but headings / page furniture
-
     const wanted = DIFFICULTY_TIERS[i % DIFFICULTY_TIERS.length];
+    const study = studies.get(note);
+    const available = study ? theoryDrafts(note, study).filter((d) => !used.has(`${note._id}|${d.key}`)) : [];
+
+    if (available.length) {
+      // The form that suits the wanted difficulty, else the nearest that
+      // exists. A term is asked about once in the whole test - in one form,
+      // from one note - before any term is asked about a second time.
+      const about = (d) => `about|${d.key.split("|").slice(1).join("|")}`;
+      const fresh = available.filter((d) => !used.has(about(d)));
+      const pool = fresh.length ? fresh : available;
+      const form = FORMS_BY_TIER[wanted].find((f) => pool.some((d) => d.form === f));
+      const chosen = pool.find((d) => d.form === form);
+      const { form: _form, key, ...draft } = chosen;
+      used.add(`${note._id}|${key}`);
+      used.add(about(chosen));
+      drafts.push(draft);
+      continue;
+    }
+
+    // this note's terms are used up: a repeat would be worse than one fewer
+    if (study && askableTerms(study).length) continue;
+    // no key terms to build on at all: ask about a single keyword, as before
+    if (!note.keywords?.length || !contentSentences(note).length) continue;
     const picked = pickUnusedKeyword(note, wanted, Math.floor(i / notes.length), used);
     if (!picked) continue;
-    const { keyword: primary, difficulty } = picked;
-    used.add(`${note._id}|${primary}`);
-    const keyPoints = [...new Set([primary, ...note.keywords.filter((k) => !GENERIC.has(k))])].slice(0, 4);
-
-    const sentence = sentenceFor(note, primary);
+    const { keyword, difficulty } = picked;
+    used.add(`${note._id}|${keyword}`);
+    const sentence = sentenceFor(note, keyword);
     if (!sentence) continue;
-
+    const term = termFor(note, sentence, keyword);
     drafts.push({
       topicId: note._id,
       topic: labelOf(note),
-      prompt: `In your own words, explain what your notes on "${note.title}" say about "${primary}".`,
+      prompt: `Explain ${quoted(term)} with reference to ${cleanTitle(note.title)}.`,
+      guidance: "Answer in two or three sentences.",
       modelAnswer: sentence,
-      keyPoints,
+      keyPoints: [...new Set([term, ...note.keywords.filter((k) => !GENERIC.has(k))])].slice(0, 4),
       supportingExcerpt: sentence,
       difficulty,
     });
   }
-
   return drafts;
 }
 
 // ---------------------------------------------------------------------------
 // Shared grounding gate + orchestration
 // ---------------------------------------------------------------------------
-
-// An LLM excerpt is often a phrase rather than a full sentence, so it gets a
-// lighter check than isQuestionWorthy: just not page furniture or a heading.
-function isContentExcerpt(excerpt) {
-  const e = String(excerpt || "").trim();
-  if (BOILERPLATE.test(e)) return false;
-  const words = e.split(/\s+/).filter((w) => /[a-z]/i.test(w));
-  if (words.length >= 4 && words.filter((w) => /^[("']?[a-z]/.test(w)).length / words.length < 0.4) return false;
-  return true;
-}
 
 function isValidDraft(d, type, contextText) {
   if (!d?.prompt || !isSupportedByContext(d.supportingExcerpt, contextText)) return false;
@@ -683,7 +1036,7 @@ function isValidDraft(d, type, contextText) {
 function resolveSourceNote(draft, notes) {
   const excerpt = normalize(draft?.supportingExcerpt);
   if (excerpt.length >= 8) {
-    const byExcerpt = notes.find((n) => normalize(n.rawText).includes(excerpt));
+    const byExcerpt = notes.find((n) => normalize(quotableText(n)).includes(excerpt));
     if (byExcerpt) return byExcerpt;
   }
   const claimed = normalize(draft?.topic).replace(/^#+\s*/, "");
@@ -710,6 +1063,9 @@ function toQuestionItem(d, type, marksPerQuestion, notes, contextText, generated
     parentTopicId: sourceNote?.parentTopicId || null,
     parentTopic: sourceNote?.parentTopic || null,
     prompt: d?.prompt,
+    // how much to write ("Answer in two or three sentences."); shown with the
+    // question, like the instruction beside a question on a paper
+    guidance: type === "theory" && typeof d?.guidance === "string" ? d.guidance.trim().slice(0, 120) || null : null,
     supportingExcerpt: d?.supportingExcerpt,
     difficulty: normalizeDifficulty(d?.difficulty),
     marks: marksPerQuestion,
@@ -725,18 +1081,18 @@ function toQuestionItem(d, type, marksPerQuestion, notes, contextText, generated
   return { ...base, answerKey: d?.modelAnswer, keyPoints: d?.keyPoints };
 }
 
-async function generateBatch({ notes, count, generateLLM, generateFallback, masteryMap }) {
+async function generateBatch({ notes, count, generateLLM, generateFallback, masteryMap, studies }) {
   if (count <= 0) return { drafts: [], generatedBy: "none" };
 
   let drafts = null;
   let generatedBy = "rule-based-fallback";
 
   if (llmAvailable()) {
-    drafts = await generateLLM(notes, count, masteryMap);
+    drafts = await generateLLM(notes, count, masteryMap, studies);
     if (drafts) generatedBy = "llm";
   }
   if (!drafts || drafts.length === 0) {
-    drafts = generateFallback(notes, count, masteryMap);
+    drafts = generateFallback(notes, count, masteryMap, studies);
     generatedBy = "rule-based-fallback";
   }
   return { drafts, generatedBy };
@@ -748,16 +1104,36 @@ async function generateBatch({ notes, count, generateLLM, generateFallback, mast
  * accepted item carries a difficulty tier for adaptiveEngine.js to select
  * on. Callers should ask for more than they intend to deliver (see
  * routes/tests.js) so there's a real pool to be adaptive over.
- * Returns { accepted, discarded, mcqGeneratedBy, theoryGeneratedBy }.
+ * Returns { accepted, discarded, mcqGeneratedBy, theoryGeneratedBy, rankedBy }.
+ * `rankedBy` says how relevance and key terms were judged: "embeddings" when
+ * the model was available, "rules" otherwise.
  */
+// How long a test build will wait for the embedding model to finish loading
+// before going ahead on the rules alone. It keeps loading in the background.
+const SEMANTIC_WAIT_MS = 6000;
+
 export async function generateQuestions(notes, { mcqCount = 0, theoryCount = 0, marksPerQuestion, masteryMap = new Map() }) {
   const contextText = buildContext(notes);
   const accepted = [];
   const discarded = [];
 
+  // One study view per note: its subject sentences and its key terms. Both
+  // question types, and the LLM when there is one, draw from these.
+  let embedder = await getEmbedder({ waitMs: SEMANTIC_WAIT_MS });
+  const studies = new Map();
+  try {
+    for (const n of notes) studies.set(n, await studyFor(n, { corpus: notes, embedder }));
+  } catch (err) {
+    // the model failed mid-run: nothing about a test may depend on it
+    console.warn("[semantic] falling back to rule-based ranking for this test:", err?.message || err);
+    embedder = null;
+    studies.clear();
+    for (const n of notes) studies.set(n, await studyFor(n, { corpus: notes, embedder: null }));
+  }
+
   const [mcqBatch, theoryBatch] = await Promise.all([
-    generateBatch({ notes, count: mcqCount, generateLLM: generateMcqWithLLM, generateFallback: generateMcqFallback, masteryMap }),
-    generateBatch({ notes, count: theoryCount, generateLLM: generateTheoryWithLLM, generateFallback: generateTheoryFallback, masteryMap }),
+    generateBatch({ notes, count: mcqCount, generateLLM: generateMcqWithLLM, generateFallback: generateMcqFallback, masteryMap, studies }),
+    generateBatch({ notes, count: theoryCount, generateLLM: generateTheoryWithLLM, generateFallback: generateTheoryFallback, masteryMap, studies }),
   ]);
 
   for (const [type, batch] of [
@@ -775,5 +1151,6 @@ export async function generateQuestions(notes, { mcqCount = 0, theoryCount = 0, 
     discarded,
     mcqGeneratedBy: mcqCount > 0 ? mcqBatch.generatedBy : "none",
     theoryGeneratedBy: theoryCount > 0 ? theoryBatch.generatedBy : "none",
+    rankedBy: embedder ? "embeddings" : "rules",
   };
 }

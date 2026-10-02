@@ -478,6 +478,7 @@ export default function Tests() {
                     {result.theoryGeneratedBy && result.theoryGeneratedBy !== "none"
                       ? `Theory via ${result.theoryGeneratedBy === "llm" ? "LLM" : "rule-based fallback"}`
                       : ""}
+                    {result.rankedBy ? ` · relevance and key terms by ${result.rankedBy === "embeddings" ? "meaning (embedding model)" : "rules"}` : ""}
                   </span>
                 </div>
               )}

@@ -87,8 +87,35 @@ Team roles and branch conventions are in [`CONTRIBUTING.md`](CONTRIBUTING.md).
   in any mix. With a `GROQ_API_KEY` an LLM drafts them from the selected
   notes only; every question must quote a supporting excerpt that appears
   verbatim in those notes (the "hallucination gate") or it is discarded.
-  Without a key, a rule-based fallback builds cloze MCQs and
-  explain-the-keyword theory questions from TF-IDF keywords.
+  Without a key, a rule-based generator builds fill-in-the-blank MCQs and
+  exam-style theory questions (see the next three points).
+- **Only subject matter is asked about.** Questions are built from a note's
+  *study sentences* (`services/studyText.js`): text from its paragraphs and
+  list entries that states a fact. The college and department, "prepared by",
+  contents pages, references, and exercises ("Write a program ...",
+  "Calculate ...") never qualify. An LLM, when configured, is given only
+  those sentences too.
+- **Key terms are whole terms.** `services/keyTerms.js` finds a note's terms
+  as phrases - "distributed computing", "two-phase locking", "Remote
+  Procedure Call (RPC)" - from words that recur together, headings, bold
+  type and the term a list entry opens with. A blank hides the whole term,
+  everywhere in the sentence, and the wrong options are other whole terms
+  matched in length, number and capitals. (TF-IDF keywords are single words,
+  which is why blanks used to hide half a term; they are still what the
+  knowledge graph links on.)
+- **Theory questions are worded like a question paper**, with a command
+  word chosen from what the note says about the term - *Define* (it has a
+  defining sentence), *Explain*, *List and briefly explain* (a list under a
+  heading), *Differentiate between* (two terms of the same kind) - plus the
+  marks and how much to write.
+- **Optional: ranking by meaning.** `npm run semantic:install` (in `server/`)
+  adds a small embedding model, all-MiniLM-L6-v2, run locally through
+  `@huggingface/transformers` - free, no key, no API. With it, relevance,
+  term ranking and distractors are judged by meaning rather than rules
+  (`services/embeddings.js`); `/api/health` reports whether it is active.
+  It is an add-on on purpose: it needs about 500 MB on disk and about 125 MB
+  of memory, so a default install, CI and the deploy do not include it, and
+  everything works without it. `SEMANTIC_MODEL=off` switches it off.
 - **Adaptive delivery** - each test builds a pool about 1.5x larger than
   what a student sees; a 1-up-1-down staircase over easy/medium/hard tiers
   picks the next question one at a time, in a timed "focus mode".
@@ -177,6 +204,8 @@ Copy `server/.env.example` to `server/.env` and `client/.env.example` to
 | `DB_FILE` | Where the local database file lives (when `MONGODB_URI` is blank). `DB_FILE=memory` = throwaway in-memory DB, wiped on restart |
 | `JWT_SECRET` | 32+ random characters. **Required in production** (server refuses to start without it); dev falls back to an insecure default with a warning |
 | `GROQ_API_KEY` | Enables LLM question drafting, theory grading and feedback phrasing |
+| `SEMANTIC_MODEL` | `off` disables the optional embedding model even when it is installed (`npm run semantic:install`) |
+| `SEMANTIC_MODEL_PATH` | A local folder holding the model, to skip its one-time download |
 | `NODE_ENV` | Set to `production` when deployed |
 | `CORS_ORIGIN` | Comma-separated allowed browser origins. Blank in dev allows `localhost:5173`; blank in production blocks cross-origin browser access |
 | `TRUST_PROXY` | Reverse-proxy hop count (`1` on most hosts) so rate limiting sees real client IPs |
@@ -231,8 +260,11 @@ a case to `server/test/mongoStore.test.mjs`.
 4. **Test timer** - `durationMinutes` is stored and shown but not yet
    enforced with a countdown in the attempt screen.
 5. **Quality upgrades from the report** - distractor gating for the LLM path,
-   TextRank keywords, fuzzy (non-verbatim) excerpt matching, stricter theory
-   grading prompt, calibrated Rasch difficulties once there is response data.
+   fuzzy (non-verbatim) excerpt matching, stricter theory grading prompt,
+   calibrated Rasch difficulties once there is response data. Whole key terms
+   and meaning-based relevance are in (see "What works today"); next for the
+   embedding model: grading theory answers by meaning instead of keyword
+   overlap, and linking notes in the graph with it (item 3).
 6. **Optional proctoring** and splitting the API into independently
    deployable services.
 7. **Deployment** - a single-service Render + MongoDB Atlas setup and a
@@ -255,8 +287,10 @@ server/src/
   services/      ocr, documentText (PDF/DOCX/PPTX/text extraction, with
                  structure), documentStructure (split long documents into
                  subtopics; a note's formatted `content`),
-                 tfidf, graphEngine, llm, testEngine (question
-                 generation + gate), adaptiveEngine (staircase),
+                 tfidf, graphEngine, llm, studyText (which sentences are
+                 subject matter), keyTerms (whole key terms), embeddings
+                 (optional local model), testEngine (question generation +
+                 gate), adaptiveEngine (staircase),
                  gradingEngine (theory answers), feedbackEngine (scoring)
 
 client/src/

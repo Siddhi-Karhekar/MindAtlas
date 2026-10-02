@@ -5,5 +5,8 @@ dist/
 *.log
 # Tesseract OCR language model, downloaded and cached on first use
 *.traineddata
+# the embedding model, downloaded and cached on first use (services/embeddings.js)
+server/.cache/
+server/semantic/package-lock.json
 # local database (server/data/mindatlas-db.json) - personal data, never commit
 server/data/

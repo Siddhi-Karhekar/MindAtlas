@@ -630,6 +630,55 @@ doc, is kept below for reference:
    decision the architecture doc calls out as what keeps the feedback
    auditable — don't invert it.
 
+> **Question quality: relevance, whole terms, exam wording** (2 Oct 2026,
+> branch `test-generation-and-feedback`, which now includes
+> `notes/ingestion-hardening`).
+>
+> Three complaints from testing on real notes, and what changed:
+>
+> | Problem | Cause | Now |
+> | --- | --- | --- |
+> | Questions about the college name, "prepared by", exercises | any sentence containing a keyword could be used | only *study sentences* are used: `services/studyText.js` |
+> | "distributed _____" - half a term blanked | TF-IDF keywords are single words | key terms are phrases: `services/keyTerms.js` |
+> | "explain what your notes say about X" | one template | Define / Explain / List / Differentiate, with marks and length |
+>
+> **How it fits together**
+> - `studyText.js` - a sentence must come from a paragraph or list entry of
+>   the note's `content`, pass the statement rules (`isQuestionWorthy`,
+>   moved here from `testEngine.js` and still exported from it), and be on
+>   topic.
+> - `keyTerms.js` - `studyFor(note)` returns the note's study sentences and
+>   ranked key terms. `note.keywords` (TF-IDF) is untouched and still drives
+>   the graph and the keyword map.
+> - `embeddings.js` - the optional all-MiniLM-L6-v2 model. Free and local.
+>   Everything has a rule-based path for when it is absent, and that path is
+>   what a default install, CI and the live site run.
+> - `testEngine.js` - the rule-based generators now work from terms; the LLM
+>   prompts ask for exam wording and are given study sentences only. The
+>   older keyword path remains for a note too short to have key terms.
+> - Questions gained `guidance` (theory only: "Answer in two or three
+>   sentences."); the build response gained `rankedBy` ("embeddings" |
+>   "rules"); `/api/health` gained `semantic`.
+>
+> **The embedding model is an add-on, not a dependency.** It lives in
+> `server/semantic/` with its own `package.json`, installed by
+> `npm run semantic:install` (about 500 MB on disk; the script skips the ONNX
+> runtime's CUDA download). Measured here: loads in under a second, about
+> 125 MB of memory with the default 8-bit model, 200 sentences per second.
+> Whether to turn it on for the live site is **Member 4's call**: Render's
+> free tier has 512 MB, and OCR and PDF parsing need headroom too. To enable
+> it there, add `npm run semantic:install --prefix server` to the build
+> command and watch memory; `SEMANTIC_MODEL=off` turns it back off without a
+> redeploy of code.
+>
+> **Tests**: `server/test/questionQuality.test.mjs` (82 checks, part of
+> `npm test`; no server, no network - a stand-in embedder exercises the model
+> path, and two more checks run against the real model when it is installed).
+>
+> **Still open**: theory answers are still graded by keyword overlap without
+> an LLM key (the embedding model could grade by meaning); single-word terms
+> are weaker than phrases when the model is off.
+
 > **Status (27 Sep)**
 > - **Steps 1–4: done** (see above).
 > - **BKT → accuracy swap: not done, and now dropped.** BKT stays as the
