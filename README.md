@@ -61,6 +61,19 @@ Team roles and branch conventions are in [`CONTRIBUTING.md`](CONTRIBUTING.md).
   Rule-based throughout - no API key. Notes saved before this get their
   `content` worked out when they are read. Old `.doc` / `.ppt` files are
   refused with a "Save As .docx / .pptx" message.
+- **Notes can be edited and deleted** (`services/noteLifecycle.js`). A note
+  opens for editing as text - `#` headings, `-` bullets, `**key terms**` -
+  whatever it was uploaded as, and saving recomputes its keywords and its
+  links (links the student removed by hand stay removed). Deleting a note
+  removes its links and its mastery record; a split document goes with its
+  subtopics, and a subtopic can be edited or deleted on its own, with the
+  document's full text rebuilt from what remains. Tests are snapshots: a
+  question carries its own text, so editing or deleting a note never changes
+  a test, attempt or feedback report that already exists.
+- **Account controls**: change password (asks for the current one) and
+  delete account, which removes every subject, note, link, test, attempt and
+  progress record the account owns. There is no "forgot password" yet - that
+  needs an email service.
 - Every new note gets a TF-IDF vector and top keywords; cosine similarity
   against the other notes in the *same* subject creates weighted graph edges
   (threshold 0.12), rendered with Cytoscape.js.
@@ -219,7 +232,7 @@ Copy `server/.env.example` to `server/.env` and `client/.env.example` to
 The usual zero-setup MongoDB for dev (`mongodb-memory-server`) downloads a
 real `mongod` binary on first run, which was blocked in the sandbox this
 project started in. `server/src/db/` instead implements a tiny MongoDB-shaped
-interface (`insertOne` / `findOne` / `find` / `findOneAndUpdate`) with two
+interface (`insertOne` / `findOne` / `find` / `findOneAndUpdate` / `deleteMany`) with two
 interchangeable backends - `memoryStore.js` (in memory, saved to a JSON file
 between restarts) and `mongoStore.js`
 (the official driver, for Atlas) - selected in `db/index.js` by whether
@@ -283,7 +296,9 @@ server/src/
   models/        thin repositories (users, subjects, notes, graph_edges,
                  tests, questions, attempts, responses, feedback_reports)
   middleware/    JWT auth, in-memory rate limiter
-  routes/        auth, subjects (+ graph), notes, tests, attempts
+  routes/        auth (+ password, delete account), subjects (+ graph),
+                 notes (create / list), noteItems (read / edit / delete
+                 one note), tests, attempts
   services/      ocr, documentText (PDF/DOCX/PPTX/text extraction, with
                  structure), documentStructure (split long documents into
                  subtopics; a note's formatted `content`),

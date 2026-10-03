@@ -4,7 +4,7 @@ import { generateId } from "./ids.js";
 
 // Zero-setup dev database: a plain in-memory Map per collection, exposing
 // just the handful of MongoDB-shaped operations the app actually uses
-// (insertOne / findOne / find / findOneAndUpdate). This exists because the
+// (insertOne / findOne / find / findOneAndUpdate / deleteMany). This exists because the
 // usual "spin up a throwaway MongoDB for tests" package
 // (mongodb-memory-server) needs to download a real mongod binary from
 // mongodb.org on first run, which this sandbox's network allowlist blocks.
@@ -82,6 +82,24 @@ class MemoryCollection {
     if (update.$set) Object.assign(existing, update.$set);
     this.onChange();
     return { ...existing };
+  }
+
+  /**
+   * Delete every document matching `filter`; returns how many went. An empty
+   * filter is refused: it would empty the collection, and nothing in the app
+   * should ever ask for that by accident.
+   */
+  async deleteMany(filter) {
+    if (!filter || Object.keys(filter).length === 0) throw new Error("deleteMany needs a filter");
+    let deleted = 0;
+    for (const [id, doc] of this.docs) {
+      if (matches(doc, filter)) {
+        this.docs.delete(id);
+        deleted += 1;
+      }
+    }
+    if (deleted) this.onChange();
+    return deleted;
   }
 }
 

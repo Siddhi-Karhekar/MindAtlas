@@ -35,6 +35,7 @@ export default function App() {
             <Route path="/" element={<Home />} />
             <Route path="/subjects/:subjectId" element={<SubjectWorkspace />} />
             <Route path="/subjects/:subjectId/new" element={<NoteEditor />} />
+            <Route path="/subjects/:subjectId/notes/:noteId/edit" element={<NoteEditor />} />
             <Route path="/subjects/:subjectId/graph" element={<KnowledgeGraph />} />
             <Route path="/subjects/:subjectId/tests" element={<Tests />} />
             <Route path="/subjects/:subjectId/progress" element={<Progress />} />

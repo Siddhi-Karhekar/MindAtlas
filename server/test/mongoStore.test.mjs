@@ -46,6 +46,11 @@ class StrictFakeCollection {
     Object.assign(doc, update.$set || {});
     return returnDocument === "after" ? doc : doc;
   }
+  async deleteMany(filter) {
+    const before = this.docs.length;
+    this.docs = this.docs.filter((d) => !docMatches(d, filter));
+    return { deletedCount: before - this.docs.length };
+  }
 }
 
 let failures = 0;
@@ -158,6 +163,30 @@ const before = await runFlow((c) => new OldWrapper(c), "OLD mongoStore.js (befor
 failures = 0;
 const after = await runFlow((c) => new MongoCollectionWrapper(c), "NEW mongoStore.js (after the fix)");
 
+// ---- deleteMany (added with note edit / delete and account deletion) ----
+// Same id rule as everything above: ids are strings, so a delete by id, by
+// owner or by a list of ids has to match the string values that were stored.
+console.log("\n=== deleteMany ===");
+failures = 0;
+{
+  const notes = new MongoCollectionWrapper(new StrictFakeCollection());
+  const a = await notes.insertOne({ ownerId: "u1", subjectId: "s1", title: "A" });
+  const b = await notes.insertOne({ ownerId: "u1", subjectId: "s1", title: "B" });
+  const c = await notes.insertOne({ ownerId: "u2", subjectId: "s2", title: "C" });
+  check("deleteNotesByIds([a]) removes exactly that note", (await notes.deleteMany({ _id: [a._id] })) === 1 && (await notes.findOne({ _id: a._id })) === null);
+  check("...and leaves the others", (await notes.find({})).length === 2);
+  check("deleting by a list of ids matches string ids", (await notes.deleteMany({ _id: [b._id, "000000000000000000000000"] })) === 1);
+  check("deleting by owner only touches that owner", (await notes.deleteMany({ ownerId: "u1" })) === 0 && (await notes.findOne({ _id: c._id })) !== null);
+  let refused = false;
+  try {
+    await notes.deleteMany({});
+  } catch {
+    refused = true;
+  }
+  check("an empty filter is refused, not treated as 'delete everything'", refused && (await notes.find({})).length === 1);
+}
+const deleteFailures = failures;
+
 console.log(`\nOld implementation: ${before} failing check(s)`);
-console.log(`New implementation: ${after} failing check(s)`);
-process.exit(after === 0 ? 0 : 1);
+console.log(`New implementation: ${after + deleteFailures} failing check(s)`);
+process.exit(after + deleteFailures === 0 ? 0 : 1);

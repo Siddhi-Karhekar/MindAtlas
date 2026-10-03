@@ -70,6 +70,21 @@ export async function setChildCount(noteId, childCount) {
   return notes().findOneAndUpdate({ _id: noteId }, { $set: { childCount } });
 }
 
+export async function findNoteById(id) {
+  return notes().findOne({ _id: id });
+}
+
+/** Change fields of one note. Returns the updated note. */
+export async function updateNote(id, fields) {
+  return notes().findOneAndUpdate({ _id: id }, { $set: { ...fields, updatedAt: new Date() } });
+}
+
+/** Delete notes by id. Their links and mastery are the caller's to clean up (see services/noteLifecycle.js). */
+export async function deleteNotesByIds(ids) {
+  if (!ids.length) return 0;
+  return notes().deleteMany({ _id: ids });
+}
+
 export async function findNotesBySubject(subjectId) {
   return notes().find({ subjectId }, { sort: { createdAt: -1 } });
 }

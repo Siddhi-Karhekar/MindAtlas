@@ -84,6 +84,12 @@ export default function SubjectWorkspace() {
   const navigate = useNavigate();
   const location = useLocation();
   const justAdded = location.state?.edgesCreated;
+  const justEdited = Boolean(location.state?.edited);
+  // delete asks once more, in place, before it goes ahead
+  const [confirmDeleteId, setConfirmDeleteId] = useState(null);
+  const [deleting, setDeleting] = useState(false);
+  const notice = location.state?.notice || "";
+  const [reloads, setReloads] = useState(0);
   const [subject, setSubject] = useState(null);
   const [notes, setNotes] = useState(null);
   const [graph, setGraph] = useState({ nodes: [], edges: [] });
@@ -110,7 +116,7 @@ export default function SubjectWorkspace() {
         setError(err.message);
         setNotes([]);
       });
-  }, [subjectId]);
+  }, [subjectId, reloads]);
 
   const tree = useMemo(() => noteTree(notes), [notes]);
   const noteById = useMemo(() => new Map((notes || []).map((n) => [String(n._id), n])), [notes]);
@@ -192,6 +198,30 @@ export default function SubjectWorkspace() {
     return s.size;
   }, [linkEdges]);
 
+  // Delete the open note. A document goes with its subtopics; a document whose
+  // last subtopic is deleted goes too. Tests already built are not affected.
+  async function handleDelete() {
+    if (!selected) return;
+    setDeleting(true);
+    setError("");
+    try {
+      const r = await api.deleteNote(selected._id);
+      const what = selectedChildren.length
+        ? `\u201c${selected.title}\u201d and its ${selectedChildren.length} subtopics were deleted.`
+        : r.parentDeleted
+          ? `\u201c${selected.title}\u201d was deleted. It was the last subtopic, so its document was removed too.`
+          : `\u201c${selected.title}\u201d was deleted.`;
+      const next = selectedParent && !r.parentDeleted ? `?note=${selectedParent._id}` : "";
+      setConfirmDeleteId(null);
+      navigate(`/subjects/${subjectId}${next}`, { replace: true, state: { notice: what } });
+      setReloads((n) => n + 1);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setDeleting(false);
+    }
+  }
+
   const totalWords = useMemo(() => topicNotes.reduce((n, x) => n + wordCount(x.rawText), 0), [topicNotes]);
   const linkedPct = topicNotes.length ? Math.round((linkedCount / topicNotes.length) * 100) : 0;
 
@@ -245,7 +275,22 @@ export default function SubjectWorkspace() {
       </div>
 
       {error && <p className="font-body-sm text-body-sm text-error mb-space-md">{error}</p>}
-      {typeof justAdded === "number" && (
+      {notice && (
+        <div role="status" className="flex items-center gap-space-sm py-space-sm px-space-md mb-space-lg bg-secondary-container/50 text-on-secondary-container rounded-lg font-label-md text-label-md">
+          <Icon name="check_circle" filled className="text-base" />
+          <span>{notice}</span>
+        </div>
+      )}
+      {justEdited && !notice && (
+        <div role="status" className="flex items-center gap-space-sm py-space-sm px-space-md mb-space-lg bg-secondary-container/50 text-on-secondary-container rounded-lg font-label-md text-label-md">
+          <Icon name="check_circle" filled className="text-base" />
+          <span>
+            Note updated — its keywords and links were recalculated
+            {justAdded > 0 ? ` (${justAdded} link${justAdded > 1 ? "s" : ""} to related notes)` : ""}. Tests you already built from it are unchanged.
+          </span>
+        </div>
+      )}
+      {typeof justAdded === "number" && !justEdited && !notice && (
         <div className="flex items-center gap-space-sm py-space-sm px-space-md mb-space-lg bg-secondary-container/50 text-on-secondary-container rounded-lg font-label-md text-label-md">
           <Icon name="check_circle" filled className="text-base" />
           <span>
@@ -395,11 +440,63 @@ export default function SubjectWorkspace() {
                     <Icon name="history_edu" className="text-sm text-secondary" />
                     <span>Added {formatDate(selected.createdAt)}</span>
                   </div>
-                  <div className="flex items-center gap-space-xs">
-                    <Icon name="schedule" className="text-sm" />
-                    <span>{readingMinutes(selected.rawText)} min read · {SOURCE_LABEL[selected.sourceType] || selected.sourceType}</span>
+                  <div className="flex items-center gap-space-md">
+                    <div className="flex items-center gap-space-xs">
+                      <Icon name="schedule" className="text-sm" />
+                      <span>{readingMinutes(selected.rawText)} min read · {SOURCE_LABEL[selected.sourceType] || selected.sourceType}</span>
+                    </div>
+                    <div className="flex items-center gap-space-2xs">
+                      <Link
+                        to={`/subjects/${subjectId}/notes/${selected._id}/edit`}
+                        data-testid="note-edit"
+                        aria-label={`Edit ${selected.title}`}
+                        title={selectedChildren.length ? "Rename this document" : "Edit this note"}
+                        className="w-7 h-7 rounded-full flex items-center justify-center text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface"
+                      >
+                        <Icon name="edit" className="text-base" />
+                      </Link>
+                      <button
+                        type="button"
+                        onClick={() => setConfirmDeleteId(String(selected._id))}
+                        data-testid="note-delete"
+                        aria-label={`Delete ${selected.title}`}
+                        title="Delete"
+                        className="w-7 h-7 rounded-full flex items-center justify-center text-on-surface-variant hover:bg-error-container/50 hover:text-error"
+                      >
+                        <Icon name="delete" className="text-base" />
+                      </button>
+                    </div>
                   </div>
                 </div>
+                {confirmDeleteId === String(selected._id) && (
+                  <div role="alertdialog" aria-label="Confirm delete" data-testid="note-delete-confirm" className="flex items-center justify-between gap-space-md flex-wrap p-space-md rounded-lg bg-error-container/40 text-on-error-container font-ui-body text-ui-body">
+                    <span>
+                      {selectedChildren.length
+                        ? `Delete this document and its ${selectedChildren.length} subtopics?`
+                        : "Delete this note?"}{" "}
+                      Its links and progress go with it. Tests you already built stay. This cannot be undone.
+                    </span>
+                    <span className="flex items-center gap-space-sm shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => setConfirmDeleteId(null)}
+                        disabled={deleting}
+                        className="h-8 px-space-md rounded-lg text-on-surface hover:bg-surface-container-high"
+                      >
+                        Keep it
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleDelete}
+                        disabled={deleting}
+                        data-testid="note-delete-yes"
+                        className="h-8 px-space-md rounded-lg bg-error text-on-error font-semibold hover:opacity-90 disabled:opacity-60"
+                      >
+                        {deleting ? "Deleting…" : "Delete"}
+                      </button>
+                    </span>
+                  </div>
+                )}
                 {selectedParent && (
                   <div className="flex items-center justify-between gap-space-sm flex-wrap font-label-md text-label-md" data-testid="subtopic-breadcrumb">
                     {/* where this subtopic sits: Document › Unit › Chapter */}

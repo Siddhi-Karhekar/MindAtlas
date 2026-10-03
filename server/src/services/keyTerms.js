@@ -326,6 +326,13 @@ function displayForm(c) {
 // ---------------------------------------------------------------------------
 
 const studyCache = new Map();
+// cheap and stable: an edited note must never be served its old study view
+function textFingerprint(text) {
+  const s = String(text || "");
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) >>> 0;
+  return `${s.length}.${h.toString(36)}`;
+}
 const STUDY_CACHE_LIMIT = 400;
 
 /**
@@ -335,7 +342,7 @@ const STUDY_CACHE_LIMIT = 400;
  *     semantic: true when the embedding model was used }
  */
 export async function studyFor(note, { corpus = [], embedder = null } = {}) {
-  const cacheKey = `${note?._id}:${String(note?.rawText || "").length}:${embedder ? embedder.model : "rules"}:${corpus.length}`;
+  const cacheKey = `${note?._id}:${textFingerprint(note?.rawText)}:${embedder ? embedder.model : "rules"}:${corpus.length}`;
   if (note?._id && studyCache.has(cacheKey)) return studyCache.get(cacheKey);
 
   let sentences = await keepRelevant(note, candidateSentences(note), embedder);

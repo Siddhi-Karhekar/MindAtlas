@@ -316,6 +316,49 @@ to show.
 > Formatting is rule-based; an optional LLM tidy-up could sit on top later
 > but must never touch `rawText`.
 
+> **Edit and delete a note: done** (3 Oct 2026, branch
+> `test-generation-and-feedback`). This is next-phase item 3 below, with one
+> change to the rule proposed there.
+>
+> - **The rule.** The proposal was "a note can be edited or deleted only
+>   while no test has used it". That would lock a note for good the first
+>   time a student tests themselves on it, which is exactly when they find
+>   the mistakes worth fixing. Instead, tests are treated as snapshots: a
+>   question already stores its own prompt, options, answer, excerpt and
+>   topic label, so nothing in an existing test, attempt or feedback report
+>   reads the note again. Edits and deletes are always allowed and never
+>   alter a test. Mastery is keyed by note id, so it survives an edit and is
+>   removed with a deleted note.
+> - **API** (new `routes/noteItems.js`, one `app.use` line):
+>   `GET /api/notes/:id` (the note plus `editText`), `PATCH /api/notes/:id`
+>   `{ title?, content? }`, `DELETE /api/notes/:id`. Someone else's note is a
+>   404, same as a missing one.
+> - **Editing** goes through the typed-note path: the note is written out as
+>   text (`services/noteView.js`, `contentToEditText`) and read back with
+>   `blocksFromPlainText`, so `rawText`, `content`, keywords and vector are
+>   all rebuilt together. A split document's own text is not editable -
+>   only its title; its subtopics are.
+> - **Links** (Member 2's next-phase item 3): on an edit the note's links are
+>   deleted and recomputed with `updateGraphForNote`; links the student
+>   removed by hand are kept as removed. On a delete, every link touching
+>   the note goes. New `deleteEdgesForNotes` in `models/GraphEdge.js`.
+> - **Split documents**: deleting a document deletes its subtopics; deleting
+>   the last subtopic deletes the document; after a subtopic is edited or
+>   deleted the parent's full text and content are rebuilt from the remaining
+>   subtopics (`composeDocument`). Parts of the upload that were never
+>   subtopics (contents, references) are dropped from the parent at that
+>   point.
+> - **Database layer**: both stores gained `deleteMany(filter)`, which
+>   refuses an empty filter. Covered in `server/test/mongoStore.test.mjs`.
+> - **Accounts** (not Member 1's, but done in the same change):
+>   `POST /api/auth/password` and `DELETE /api/auth/me`, both asking for the
+>   current password. Deleting an account removes everything it owns
+>   (`deleteUserAndData` in `models/User.js`). Known limit: sign-in tokens are
+>   stateless, so a token issued before a password change keeps working until
+>   it expires.
+> - **Tests**: `server/test/noteLifecycle.test.mjs` (60 checks, part of
+>   `npm test`), on **port 4596**.
+
 What's missing (post-Saturday backlog, not this week):
 1. **Summarization** — a new endpoint that takes a note's raw text (or a
    linked textbook chunk) and returns an LLM-generated summary via the
@@ -848,8 +891,15 @@ Added since the demo prep (26 Sep):
   display only). If you change one when saving a note, keep the other in
   step - both come from the same blocks in `routes/notes.js`. Never generate
   questions from `content`, and never show `rawText` where `content` exists.
-- **Server test ports**: `4597` (note content), `4598` (graph routes) and
-  `4599` (note uploads).
+- **Server test ports**: `4596` (note edit / delete, accounts), `4597` (note
+  content), `4598` (graph routes) and `4599` (note uploads).
+- **Tests are snapshots**: a question stores everything it needs. Never make
+  a test, attempt or feedback report read its note again - notes can now be
+  edited and deleted underneath them.
+- **Deleting**: `deleteMany(filter)` exists on both database backends. If
+  you add a collection that belongs to a user or hangs off a note, add it to
+  `deleteUserAndData` (`models/User.js`) and, for notes, to
+  `services/noteLifecycle.js`.
 - **Local database file**: with no `MONGODB_URI`, data is saved to
   `server/data/mindatlas-db.json` (git-ignored). Tests must set
   `DB_FILE=memory` so they never write to it. Never point a local `.env` at

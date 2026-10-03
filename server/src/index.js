@@ -13,6 +13,7 @@ import noteRoutes from "./routes/notes.js";
 import testRoutes from "./routes/tests.js";
 import attemptRoutes from "./routes/attempts.js";
 import graphRoutes from "./routes/graph.js";
+import noteItemRoutes from "./routes/noteItems.js";
 import { semanticStatus, warmSemanticModel } from "./services/embeddings.js";
 
 assertAuthConfig();
@@ -112,6 +113,7 @@ app.use("/api/subjects", subjectRoutes);
 // notes routes are nested under /api/subjects/:id/notes
 app.use("/api/subjects", noteRoutes);
 app.use("/api/graph", graphRoutes);
+app.use("/api/notes", noteItemRoutes);
 // tests routes cover both /api/subjects/:id/tests and /api/tests/:id
 app.use("/api", testRoutes);
 // attempts routes cover both /api/tests/:id/attempts and /api/attempts/:id/...

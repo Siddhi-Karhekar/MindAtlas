@@ -114,12 +114,20 @@ function prettySize(n) {
 }
 
 export default function NoteEditor() {
-  const { subjectId } = useParams();
+  // With a noteId in the URL this page edits that note; without one it adds a
+  // new note. Editing uses the typed form: the note arrives as editable text
+  // (# headings, - bullets, **key terms**) and is saved back the same way.
+  const { subjectId, noteId } = useParams();
+  const editing = Boolean(noteId);
   const [params] = useSearchParams();
   const navigate = useNavigate();
   const fileRef = useRef(null);
 
-  const [mode, setMode] = useState(["scan", "upload"].includes(params.get("mode")) ? "upload" : "typed");
+  const [mode, setMode] = useState(!noteId && ["scan", "upload"].includes(params.get("mode")) ? "upload" : "typed");
+  // the note being edited, and whether it is a document that is split into
+  // subtopics (its text is edited subtopic by subtopic; only its title here)
+  const [original, setOriginal] = useState(null);
+  const titleOnly = Boolean(original && !original.parentNoteId && (original.childCount || 0) > 0);
   const [subject, setSubject] = useState(null);
   const [graph, setGraph] = useState({ nodes: [], edges: [] });
   const [title, setTitle] = useState("");
@@ -138,10 +146,27 @@ export default function NoteEditor() {
     api.getGraph(subjectId).then(setGraph).catch(() => {});
   }, [subjectId]);
 
+  useEffect(() => {
+    if (!noteId) return;
+    let live = true;
+    api
+      .getNote(noteId)
+      .then((d) => {
+        if (!live) return;
+        setOriginal(d.note);
+        setTitle(d.note.title);
+        setContent(d.editText || "");
+      })
+      .catch((err) => live && setError(err.message));
+    return () => {
+      live = false;
+    };
+  }, [noteId]);
+
   const words = useMemo(() => wordCount(content), [content]);
   const pending = files.filter((f) => f.status !== "done");
   const doneCount = files.length - pending.length;
-  const canSave = mode === "upload" ? pending.length > 0 : title.trim() && content.trim();
+  const canSave = mode === "upload" ? pending.length > 0 : title.trim() && (titleOnly || content.trim()) && (!editing || original);
 
   function addFiles(list) {
     const incoming = Array.from(list || []);
@@ -229,6 +254,16 @@ export default function NoteEditor() {
     setError("");
     setBusy(true);
     if (mode === "upload") return handleUpload();
+    if (editing) {
+      try {
+        const result = await api.updateNote(noteId, titleOnly ? { title: title.trim() } : { title: title.trim(), content });
+        navigate(`/subjects/${subjectId}?note=${noteId}`, { state: { edited: true, edgesCreated: result.edgesCreated } });
+      } catch (err) {
+        setError(err.message);
+        setBusy(false);
+      }
+      return;
+    }
     try {
       const result = await api.createNote(subjectId, { title: title.trim(), content: content.trim() });
       navigate(`/subjects/${subjectId}?note=${result.note._id}`, {
@@ -257,14 +292,18 @@ export default function NoteEditor() {
             <Icon name="arrow_back" className="text-base" />
           </Link>
           <div className="flex items-center gap-space-xs font-label-md text-label-md">
-            <span className="font-semibold text-on-surface">{mode === "upload" ? "Upload notes to" : "New note in"} {subject?.name || "this subject"}</span>
+            <span className="font-semibold text-on-surface">
+              {editing ? "Editing a note in" : mode === "upload" ? "Upload notes to" : "New note in"} {subject?.name || "this subject"}
+            </span>
             <span className="text-outline-variant">•</span>
-            <span className="text-secondary font-medium">{mode === "upload" ? `${files.length} selected` : "Unsaved draft"}</span>
+            <span className="text-secondary font-medium">
+              {editing ? (titleOnly ? "Title only" : "Links are recalculated when you save") : mode === "upload" ? `${files.length} selected` : "Unsaved draft"}
+            </span>
           </div>
         </div>
         <div className="flex items-center gap-space-sm">
           <Link
-            to={`/subjects/${subjectId}`}
+            to={editing ? `/subjects/${subjectId}?note=${noteId}` : `/subjects/${subjectId}`}
             className="px-space-md py-space-xs rounded-lg text-on-surface-variant hover:bg-surface-container-high transition-colors font-ui-body text-ui-body"
           >
             Cancel
@@ -280,11 +319,13 @@ export default function NoteEditor() {
                 ? mode === "upload"
                   ? "Uploading…"
                   : "Saving…"
-                : mode === "upload"
-                  ? pending.length > 1
-                    ? `Add ${pending.length} notes`
-                    : "Add note"
-                  : "Save note"}
+                : editing
+                  ? "Save changes"
+                  : mode === "upload"
+                    ? pending.length > 1
+                      ? `Add ${pending.length} notes`
+                      : "Add note"
+                    : "Save note"}
             </span>
           </button>
         </div>
@@ -294,14 +335,23 @@ export default function NoteEditor() {
         <article className="flex-1 w-full bg-surface-container-lowest rounded-xl shadow-sm p-space-xl lg:p-space-2xl min-w-0 border border-outline-variant/20">
           <div className="flex items-center justify-between gap-space-md mb-space-xl pb-space-sm border-b border-surface-container-high flex-wrap">
             <div className="flex items-center gap-space-sm flex-wrap">
-              <button type="button" className={pill(mode === "typed")} onClick={() => setMode("typed")}>
-                <Icon name="edit_note" className="text-sm" />
-                Type
-              </button>
-              <button type="button" className={pill(mode === "upload")} onClick={() => setMode("upload")}>
-                <Icon name="upload_file" className="text-sm" />
-                Upload files
-              </button>
+              {editing ? (
+                <span className={pill(true)}>
+                  <Icon name="edit" className="text-sm" />
+                  Edit
+                </span>
+              ) : (
+                <>
+                  <button type="button" className={pill(mode === "typed")} onClick={() => setMode("typed")}>
+                    <Icon name="edit_note" className="text-sm" />
+                    Type
+                  </button>
+                  <button type="button" className={pill(mode === "upload")} onClick={() => setMode("upload")}>
+                    <Icon name="upload_file" className="text-sm" />
+                    Upload files
+                  </button>
+                </>
+              )}
               {subject && (
                 <span className="inline-flex items-center gap-space-2xs px-space-sm py-space-2xs rounded-full bg-surface-container font-label-md text-label-md text-secondary">
                   <span className="w-1.5 h-1.5 rounded-full bg-secondary"></span>
@@ -309,7 +359,7 @@ export default function NoteEditor() {
                 </span>
               )}
             </div>
-            {mode === "typed" && (
+            {mode === "typed" && !titleOnly && (
               <span className="font-label-sm text-label-sm text-outline tracking-wider uppercase">
                 {words} {words === 1 ? "word" : "words"} · {readingMinutes(content)} min read
               </span>
@@ -330,11 +380,16 @@ export default function NoteEditor() {
                 : "Untitled Note..."
             }
             type="text"
-            autoFocus={mode === "typed"}
+            autoFocus={mode === "typed" && !editing}
           />
           )}
 
-          {mode === "typed" ? (
+          {titleOnly ? (
+            <p className="font-body-md text-body-md text-on-surface-variant" data-testid="title-only-note">
+              This document is split into {original.childCount} subtopics. You can rename it here; to change its text, open
+              the subtopic you want and edit that.
+            </p>
+          ) : mode === "typed" ? (
             <textarea
               aria-label="Note body"
               value={content}

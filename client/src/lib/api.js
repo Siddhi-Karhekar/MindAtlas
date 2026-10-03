@@ -36,6 +36,10 @@ export const api = {
   register: (email, password) => request("/auth/register", { method: "POST", body: { email, password } }),
   login: (email, password) => request("/auth/login", { method: "POST", body: { email, password } }),
   me: () => request("/auth/me"),
+  changePassword: (currentPassword, newPassword) =>
+    request("/auth/password", { method: "POST", body: { currentPassword, newPassword } }),
+  // removes the account and everything in it; the password is asked for again
+  deleteAccount: (password) => request("/auth/me", { method: "DELETE", body: { password } }),
 
   listSubjects: () => request("/subjects"),
   createSubject: (name) => request("/subjects", { method: "POST", body: { name } }),
@@ -59,6 +63,13 @@ export const api = {
     form.append("file", file);
     return request(`/subjects/${subjectId}/notes/preview`, { method: "POST", body: form, isForm: true });
   },
+
+  // One note. getNote also returns `editText`: the note as editable text.
+  getNote: (noteId) => request(`/notes/${noteId}`),
+  // `content` is the edited text; keywords and links are recomputed from it.
+  updateNote: (noteId, { title, content }) => request(`/notes/${noteId}`, { method: "PATCH", body: { title, content } }),
+  // A split document takes its subtopics with it.
+  deleteNote: (noteId) => request(`/notes/${noteId}`, { method: "DELETE" }),
 
   getGraph: (subjectId) => request(`/subjects/${subjectId}/graph`),
   // action: "remove" (the student says this link is wrong) or "restore"

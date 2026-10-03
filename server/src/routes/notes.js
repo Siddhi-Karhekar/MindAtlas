@@ -8,6 +8,7 @@ import { blocksFromOcrLines, classifyUpload, extractDocument, titleFromFilename 
 import { blocksFromPlainText, countWords, normalizeContent, segmentDocument } from "../services/documentStructure.js";
 import { computeTfidf } from "../services/tfidf.js";
 import { updateGraphForNote } from "../services/graphEngine.js";
+import { withContent } from "../services/noteView.js";
 
 const router = Router();
 router.use(requireAuth);
@@ -21,21 +22,6 @@ const LEGACY_OFFICE = {
   ".ppt": "old PowerPoint files (.ppt) can't be read - open it in PowerPoint and use Save As > PowerPoint Presentation (.pptx), then upload that",
 };
 const NO_SPLIT = { sections: [], method: "none", docTitle: null };
-
-/**
- * A note as the client reads it: always with formatted `content` and a `path`.
- * Notes saved before those fields existed get them worked out here from what
- * they do have, so old notes are formatted the same way as new ones.
- */
-function withContent(note) {
-  if (!note) return note;
-  const content =
-    Array.isArray(note.content) && note.content.length
-      ? note.content
-      : normalizeContent(blocksFromPlainText(note.rawText, { ocr: note.sourceType === "image" }), { title: note.title });
-  const path = Array.isArray(note.path) && note.path.length ? note.path : note.sectionGroup ? [note.sectionGroup] : [];
-  return { ...note, content, path };
-}
 
 /**
  * Read an uploaded file into { content, sourceType, ocrFailed, blocks }.
