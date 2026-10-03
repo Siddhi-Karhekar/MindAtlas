@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../lib/AuthContext.jsx";
+import { api } from "../lib/api.js";
 import { useTheme } from "../lib/theme.jsx";
 import Icon from "../components/Icon.jsx";
 
@@ -26,6 +27,39 @@ export default function Settings() {
     logout();
     navigate("/sign-in");
   }
+
+  // change password
+  const [pw, setPw] = useState({ current: "", next: "", again: "" });
+  const [pwState, setPwState] = useState({ busy: false, error: "", done: false });
+  async function handlePassword(e) {
+    e.preventDefault();
+    if (pw.next !== pw.again) return setPwState({ busy: false, error: "The two new passwords do not match.", done: false });
+    setPwState({ busy: true, error: "", done: false });
+    try {
+      await api.changePassword(pw.current, pw.next);
+      setPw({ current: "", next: "", again: "" });
+      setPwState({ busy: false, error: "", done: true });
+    } catch (err) {
+      setPwState({ busy: false, error: err.message, done: false });
+    }
+  }
+
+  // delete account: opened deliberately, then confirmed with the password
+  const [del, setDel] = useState({ open: false, password: "", busy: false, error: "" });
+  async function handleDeleteAccount(e) {
+    e.preventDefault();
+    setDel((d) => ({ ...d, busy: true, error: "" }));
+    try {
+      await api.deleteAccount(del.password);
+      logout();
+      navigate("/sign-in");
+    } catch (err) {
+      setDel((d) => ({ ...d, busy: false, error: err.message }));
+    }
+  }
+
+  const field =
+    "w-full h-10 px-space-md rounded-lg bg-surface-container-lowest border border-outline-variant text-on-surface font-body-md text-body-md focus:outline-none focus:border-primary";
 
   const tabClass = (active) =>
     `text-left px-space-md py-space-sm rounded-lg font-ui-body text-ui-body whitespace-nowrap ${
@@ -119,6 +153,80 @@ export default function Settings() {
                 >
                   Sign out
                 </button>
+              </div>
+
+              <h2 className="font-label-sm text-label-sm text-on-surface-variant uppercase tracking-wider mt-space-2xl mb-space-md">
+                Change password
+              </h2>
+              <form onSubmit={handlePassword} className="bg-surface-container-lowest border border-outline-variant rounded-xl p-space-lg max-w-2xl flex flex-col gap-space-md" data-testid="password-form">
+                <label className="flex flex-col gap-space-xs font-ui-body text-ui-body text-on-surface">
+                  Current password
+                  <input type="password" autoComplete="current-password" required value={pw.current} onChange={(e) => setPw({ ...pw, current: e.target.value })} className={field} />
+                </label>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-space-md">
+                  <label className="flex flex-col gap-space-xs font-ui-body text-ui-body text-on-surface">
+                    New password
+                    <input type="password" autoComplete="new-password" required minLength={8} value={pw.next} onChange={(e) => setPw({ ...pw, next: e.target.value })} className={field} />
+                  </label>
+                  <label className="flex flex-col gap-space-xs font-ui-body text-ui-body text-on-surface">
+                    New password again
+                    <input type="password" autoComplete="new-password" required minLength={8} value={pw.again} onChange={(e) => setPw({ ...pw, again: e.target.value })} className={field} />
+                  </label>
+                </div>
+                <div className="flex items-center justify-between gap-space-md flex-wrap">
+                  <p className="font-body-sm text-body-sm text-on-surface-variant">At least 8 characters.</p>
+                  <button type="submit" disabled={pwState.busy} className="h-9 px-space-lg rounded-lg bg-primary text-on-primary font-ui-body text-ui-body hover:opacity-90 disabled:opacity-60">
+                    {pwState.busy ? "Saving…" : "Change password"}
+                  </button>
+                </div>
+                {pwState.error && (
+                  <p role="alert" className="font-body-sm text-body-sm text-error">
+                    {pwState.error}
+                  </p>
+                )}
+                {pwState.done && (
+                  <p role="status" className="font-body-sm text-body-sm text-secondary" data-testid="password-changed">
+                    Password changed. Use the new one the next time you sign in.
+                  </p>
+                )}
+              </form>
+
+              <h2 className="font-label-sm text-label-sm text-error uppercase tracking-wider mt-space-2xl mb-space-md">Delete account</h2>
+              <div className="border border-error/40 rounded-xl p-space-lg max-w-2xl flex flex-col gap-space-md">
+                <p className="font-body-md text-body-md text-on-surface">
+                  This permanently deletes your account and everything in it: subjects, notes, the knowledge graph, tests,
+                  attempts and progress. It cannot be undone.
+                </p>
+                {!del.open ? (
+                  <button
+                    type="button"
+                    onClick={() => setDel({ ...del, open: true })}
+                    data-testid="delete-account-open"
+                    className="self-start h-9 px-space-lg rounded-lg border border-error/60 text-error font-ui-body text-ui-body hover:bg-error-container/40"
+                  >
+                    Delete my account…
+                  </button>
+                ) : (
+                  <form onSubmit={handleDeleteAccount} className="flex flex-col gap-space-md" data-testid="delete-account-form">
+                    <label className="flex flex-col gap-space-xs font-ui-body text-ui-body text-on-surface">
+                      Enter your password to confirm
+                      <input type="password" autoComplete="current-password" required value={del.password} onChange={(e) => setDel({ ...del, password: e.target.value })} className={field} />
+                    </label>
+                    <div className="flex items-center gap-space-sm">
+                      <button type="button" onClick={() => setDel({ open: false, password: "", busy: false, error: "" })} disabled={del.busy} className="h-9 px-space-md rounded-lg text-on-surface hover:bg-surface-container-high font-ui-body text-ui-body">
+                        Keep my account
+                      </button>
+                      <button type="submit" disabled={del.busy} className="h-9 px-space-lg rounded-lg bg-error text-on-error font-ui-body text-ui-body font-semibold hover:opacity-90 disabled:opacity-60">
+                        {del.busy ? "Deleting…" : "Delete everything"}
+                      </button>
+                    </div>
+                    {del.error && (
+                      <p role="alert" className="font-body-sm text-body-sm text-error">
+                        {del.error}
+                      </p>
+                    )}
+                  </form>
+                )}
               </div>
             </section>
           )}

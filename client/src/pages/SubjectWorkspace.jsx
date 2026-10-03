@@ -3,31 +3,78 @@ import { Link, useLocation, useNavigate, useParams, useSearchParams } from "reac
 import { api } from "../lib/api.js";
 import { formatDate, readingMinutes, timeAgo, wordCount } from "../lib/format.js";
 import Icon from "../components/Icon.jsx";
-import { isSplitParent, isTopicNote, noteTree } from "../lib/notes.js";
-
-const CHIP_STYLES = [
-  "bg-surface-container text-primary",
-  "bg-secondary-container text-on-secondary-container",
-  "bg-surface-variant text-on-surface-variant",
-  "bg-tertiary-fixed text-on-tertiary-fixed",
-];
+import NoteContent from "../components/NoteContent.jsx";
+import { flattenOutline, isSplitParent, isTopicNote, noteTree, outlineTree } from "../lib/notes.js";
+import { stableColorIndex, topicClass } from "../lib/noteFormat.js";
 
 const SOURCE_LABEL = { typed: "Typed note", image: "Scanned image", file: "Uploaded file" };
 
-// One subtopic row in the shelf, indented under its document.
-function SubtopicButton({ note, index, active, onSelect }) {
+// The note title shrinks as the topic gets deeper in its document's outline:
+// a main topic is the largest, a subtopic of a subtopic the smallest.
+const TITLE_SIZE = [
+  "font-display-lg text-display-lg font-bold",
+  "font-headline-lg text-headline-lg font-semibold",
+  "font-headline-md text-headline-md font-semibold",
+];
+
+// One row of a document's outline in the shelf, with the rows under it.
+// A main topic (depth 0) carries its topic colour and the heaviest type; each
+// level below is lighter and indented. A row is a button when it is a note, a
+// plain heading when it only groups other notes, and both for a chapter that
+// has an introduction of its own.
+function OutlineNode({ node, selectedId, onSelect, collapsed, onToggle }) {
+  const active = node.item && String(node.item._id) === String(selectedId);
+  const hasKids = node.children.length > 0;
+  const closed = collapsed.has(node.key);
+  const main = node.depth === 0;
+  const text = main
+    ? "font-ui-title text-[13px] leading-[18px] font-bold text-topic"
+    : node.depth === 1
+      ? "font-ui-body text-ui-body font-semibold"
+      : "font-ui-body text-[12px] leading-[16px] font-medium";
+  const tone = main ? "" : active ? "text-on-surface" : "text-on-surface-variant";
   return (
-    <button
-      type="button"
-      onClick={onSelect}
-      data-testid="subtopic-item"
-      className={`text-left flex items-baseline gap-space-xs py-space-2xs px-space-sm rounded-lg transition-colors font-ui-body text-ui-body min-w-0 ${
-        active ? "bg-surface-container-lowest shadow-sm text-on-surface font-semibold" : "text-on-surface-variant hover:bg-surface-container hover:text-on-surface"
-      }`}
-    >
-      <span className="font-label-sm text-label-sm text-outline shrink-0 w-5 text-right">{index + 1}.</span>
-      <span className="truncate">{note.title}</span>
-    </button>
+    <div className={`flex flex-col gap-space-2xs min-w-0 ${main ? topicClass(node.colorIndex) : ""}`} data-depth={node.depth}>
+      <div className={`flex items-center gap-space-2xs rounded-lg min-w-0 ${active ? "bg-surface-container-lowest shadow-sm" : ""}`}>
+        {hasKids ? (
+          <button
+            type="button"
+            onClick={() => onToggle(node.key)}
+            aria-label={`${closed ? "Expand" : "Collapse"} ${node.title}`}
+            aria-expanded={!closed}
+            className="shrink-0 w-5 h-6 flex items-center justify-center text-on-surface-variant hover:text-on-surface"
+          >
+            <Icon name={closed ? "chevron_right" : "expand_more"} className="text-sm" />
+          </button>
+        ) : (
+          <span className="shrink-0 w-5 h-6 flex items-center justify-center" aria-hidden="true">
+            <span className={`rounded-full bg-topic ${main ? "w-2 h-2" : "w-1 h-1 opacity-60"}`}></span>
+          </span>
+        )}
+        {node.item ? (
+          <button
+            type="button"
+            onClick={() => onSelect(node.item._id)}
+            data-testid="subtopic-item"
+            title={node.title}
+            className={`flex-1 text-left py-space-2xs pr-space-sm truncate transition-colors hover:text-on-surface ${text} ${tone}`}
+          >
+            {node.title}
+          </button>
+        ) : (
+          <span data-testid="outline-group" title={node.title} className={`flex-1 py-space-2xs pr-space-sm truncate ${text} ${tone}`}>
+            {node.title}
+          </span>
+        )}
+      </div>
+      {hasKids && !closed && (
+        <div className="flex flex-col gap-space-2xs ml-[9px] pl-space-sm border-l border-topic-soft">
+          {node.children.map((c) => (
+            <OutlineNode key={c.key} node={c} selectedId={selectedId} onSelect={onSelect} collapsed={collapsed} onToggle={onToggle} />
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -37,11 +84,24 @@ export default function SubjectWorkspace() {
   const navigate = useNavigate();
   const location = useLocation();
   const justAdded = location.state?.edgesCreated;
+  const justEdited = Boolean(location.state?.edited);
+  // delete asks once more, in place, before it goes ahead
+  const [confirmDeleteId, setConfirmDeleteId] = useState(null);
+  const [deleting, setDeleting] = useState(false);
+  const notice = location.state?.notice || "";
+  const [reloads, setReloads] = useState(0);
   const [subject, setSubject] = useState(null);
   const [notes, setNotes] = useState(null);
   const [graph, setGraph] = useState({ nodes: [], edges: [] });
   const [error, setError] = useState("");
   const [menuOpen, setMenuOpen] = useState(false);
+  const [collapsed, setCollapsed] = useState(() => new Set());
+  const toggleGroup = (key) =>
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      if (!next.delete(key)) next.add(key);
+      return next;
+    });
 
   useEffect(() => {
     setNotes(null);
@@ -56,7 +116,7 @@ export default function SubjectWorkspace() {
         setError(err.message);
         setNotes([]);
       });
-  }, [subjectId]);
+  }, [subjectId, reloads]);
 
   const tree = useMemo(() => noteTree(notes), [notes]);
   const noteById = useMemo(() => new Map((notes || []).map((n) => [String(n._id), n])), [notes]);
@@ -71,7 +131,40 @@ export default function SubjectWorkspace() {
     [selected, tree]
   );
   // the document whose subtopics are open in the shelf
-  const openDocId = String(selectedParent?._id || (selected && isSplitParent(selected) ? selected._id : ""));
+  const openDoc = selectedParent || (selected && isSplitParent(selected) ? selected : null);
+  const openDocId = String(openDoc?._id || "");
+  // That document's subtopics as a nested outline (Unit > Chapter > Topic),
+  // rebuilt from each subtopic's `path`. Each main topic gets a colour, which
+  // everything under it shares - in the shelf and in the reading pane.
+  const outline = useMemo(() => {
+    const doc = openDocId ? noteById.get(openDocId) : null;
+    return doc ? outlineTree(tree.childrenOf(doc)) : [];
+  }, [openDocId, noteById, tree]);
+  const outlineById = useMemo(() => {
+    const flat = flattenOutline(outline);
+    return {
+      byNote: new Map(flat.filter((n) => n.item).map((n) => [String(n.item._id), n])),
+      // main-topic title -> colour, to colour the full document the same way
+      colorByTitle: new Map(outline.map((n) => [n.title.trim().toLowerCase(), n.colorIndex])),
+    };
+  }, [outline]);
+  const selectedNode = selected ? outlineById.byNote.get(String(selected._id)) : null;
+  // A subtopic wears its main topic's colour; a note that stands alone gets a
+  // colour of its own (the same one every time); a whole document has none -
+  // it is a container of topics, coloured section by section.
+  const selectedColor = !selected
+    ? null
+    : selectedNode
+      ? selectedNode.colorIndex
+      : isSplitParent(selected)
+        ? null
+        : stableColorIndex(selected._id);
+  const sectionColorOf = useMemo(
+    () => (heading) => outlineById.colorByTitle.get(String(heading).trim().toLowerCase()) ?? null,
+    [outlineById]
+  );
+  // a note holding several top-level sections is coloured section by section
+  const manySections = (selected?.content || []).filter((b) => b.type === "heading" && b.level === 1).length >= 2;
 
   const titleById = useMemo(() => new Map(graph.nodes.map((n) => [String(n.id), n.title])), [graph]);
   // "contains" edges (document -> subtopic) are structure, not relatedness
@@ -105,10 +198,32 @@ export default function SubjectWorkspace() {
     return s.size;
   }, [linkEdges]);
 
+  // Delete the open note. A document goes with its subtopics; a document whose
+  // last subtopic is deleted goes too. Tests already built are not affected.
+  async function handleDelete() {
+    if (!selected) return;
+    setDeleting(true);
+    setError("");
+    try {
+      const r = await api.deleteNote(selected._id);
+      const what = selectedChildren.length
+        ? `\u201c${selected.title}\u201d and its ${selectedChildren.length} subtopics were deleted.`
+        : r.parentDeleted
+          ? `\u201c${selected.title}\u201d was deleted. It was the last subtopic, so its document was removed too.`
+          : `\u201c${selected.title}\u201d was deleted.`;
+      const next = selectedParent && !r.parentDeleted ? `?note=${selectedParent._id}` : "";
+      setConfirmDeleteId(null);
+      navigate(`/subjects/${subjectId}${next}`, { replace: true, state: { notice: what } });
+      setReloads((n) => n + 1);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setDeleting(false);
+    }
+  }
+
   const totalWords = useMemo(() => topicNotes.reduce((n, x) => n + wordCount(x.rawText), 0), [topicNotes]);
   const linkedPct = topicNotes.length ? Math.round((linkedCount / topicNotes.length) * 100) : 0;
-
-  const paragraphs = selected ? selected.rawText.split(/\n{2,}/).map((p) => p.trim()).filter(Boolean) : [];
 
   return (
     <div className="flex flex-col w-full">
@@ -160,7 +275,22 @@ export default function SubjectWorkspace() {
       </div>
 
       {error && <p className="font-body-sm text-body-sm text-error mb-space-md">{error}</p>}
-      {typeof justAdded === "number" && (
+      {notice && (
+        <div role="status" className="flex items-center gap-space-sm py-space-sm px-space-md mb-space-lg bg-secondary-container/50 text-on-secondary-container rounded-lg font-label-md text-label-md">
+          <Icon name="check_circle" filled className="text-base" />
+          <span>{notice}</span>
+        </div>
+      )}
+      {justEdited && !notice && (
+        <div role="status" className="flex items-center gap-space-sm py-space-sm px-space-md mb-space-lg bg-secondary-container/50 text-on-secondary-container rounded-lg font-label-md text-label-md">
+          <Icon name="check_circle" filled className="text-base" />
+          <span>
+            Note updated — its keywords and links were recalculated
+            {justAdded > 0 ? ` (${justAdded} link${justAdded > 1 ? "s" : ""} to related notes)` : ""}. Tests you already built from it are unchanged.
+          </span>
+        </div>
+      )}
+      {typeof justAdded === "number" && !justEdited && !notice && (
         <div className="flex items-center gap-space-sm py-space-sm px-space-md mb-space-lg bg-secondary-container/50 text-on-secondary-container rounded-lg font-label-md text-label-md">
           <Icon name="check_circle" filled className="text-base" />
           <span>
@@ -260,14 +390,15 @@ export default function SubjectWorkspace() {
                   </div>
                 </button>
                 {open && (
-                  <div className="flex flex-col gap-space-2xs pl-space-md ml-space-sm border-l-2 border-secondary/30" data-testid="subtopic-list">
-                    {kids.map((c, i) => (
-                      <SubtopicButton
-                        key={c._id}
-                        note={c}
-                        index={i}
-                        active={selected && String(c._id) === String(selected._id)}
-                        onSelect={() => setParams({ note: c._id })}
+                  <div className="flex flex-col gap-space-xs pl-space-xs" data-testid="subtopic-list">
+                    {outline.map((node) => (
+                      <OutlineNode
+                        key={node.key}
+                        node={node}
+                        selectedId={selected?._id}
+                        onSelect={(id) => setParams({ note: id })}
+                        collapsed={collapsed}
+                        onToggle={toggleGroup}
                       />
                     ))}
                   </div>
@@ -299,42 +430,109 @@ export default function SubjectWorkspace() {
         {/* Reading pane */}
         <div className="col-span-12 lg:col-span-9 xl:col-span-6 flex justify-center">
           {selected ? (
-            <article className="w-full max-w-[720px] bg-surface-container-lowest p-space-xl lg:p-space-2xl rounded-xl shadow-sm flex flex-col">
+            <article
+              className={`w-full max-w-[720px] bg-surface-container-lowest p-space-xl lg:p-space-2xl rounded-xl shadow-sm flex flex-col ${topicClass(selectedColor)}`}
+              data-testid="note-article"
+            >
               <header className="flex flex-col gap-space-md pb-space-lg mb-space-lg">
                 <div className="flex flex-wrap items-center justify-between gap-space-sm text-on-surface-variant font-label-md text-label-md">
                   <div className="flex items-center gap-space-xs">
                     <Icon name="history_edu" className="text-sm text-secondary" />
                     <span>Added {formatDate(selected.createdAt)}</span>
                   </div>
-                  <div className="flex items-center gap-space-xs">
-                    <Icon name="schedule" className="text-sm" />
-                    <span>{readingMinutes(selected.rawText)} min read · {SOURCE_LABEL[selected.sourceType] || selected.sourceType}</span>
+                  <div className="flex items-center gap-space-md">
+                    <div className="flex items-center gap-space-xs">
+                      <Icon name="schedule" className="text-sm" />
+                      <span>{readingMinutes(selected.rawText)} min read · {SOURCE_LABEL[selected.sourceType] || selected.sourceType}</span>
+                    </div>
+                    <div className="flex items-center gap-space-2xs">
+                      <Link
+                        to={`/subjects/${subjectId}/notes/${selected._id}/edit`}
+                        data-testid="note-edit"
+                        aria-label={`Edit ${selected.title}`}
+                        title={selectedChildren.length ? "Rename this document" : "Edit this note"}
+                        className="w-7 h-7 rounded-full flex items-center justify-center text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface"
+                      >
+                        <Icon name="edit" className="text-base" />
+                      </Link>
+                      <button
+                        type="button"
+                        onClick={() => setConfirmDeleteId(String(selected._id))}
+                        data-testid="note-delete"
+                        aria-label={`Delete ${selected.title}`}
+                        title="Delete"
+                        className="w-7 h-7 rounded-full flex items-center justify-center text-on-surface-variant hover:bg-error-container/50 hover:text-error"
+                      >
+                        <Icon name="delete" className="text-base" />
+                      </button>
+                    </div>
                   </div>
                 </div>
-                {selectedParent && (
-                  <div className="flex items-center justify-between gap-space-sm flex-wrap font-label-md text-label-md" data-testid="subtopic-breadcrumb">
-                    <button
-                      type="button"
-                      onClick={() => setParams({ note: selectedParent._id })}
-                      className="flex items-center gap-space-2xs text-secondary hover:text-primary min-w-0"
-                    >
-                      <Icon name="description" className="text-sm shrink-0" />
-                      <span className="truncate">{selectedParent.title}</span>
-                    </button>
-                    <span className="text-on-surface-variant shrink-0">
-                      Subtopic {(selected.order ?? 0) + 1} of {siblings.length}
-                      {selected.sectionGroup ? ` · ${selected.sectionGroup}` : ""}
+                {confirmDeleteId === String(selected._id) && (
+                  <div role="alertdialog" aria-label="Confirm delete" data-testid="note-delete-confirm" className="flex items-center justify-between gap-space-md flex-wrap p-space-md rounded-lg bg-error-container/40 text-on-error-container font-ui-body text-ui-body">
+                    <span>
+                      {selectedChildren.length
+                        ? `Delete this document and its ${selectedChildren.length} subtopics?`
+                        : "Delete this note?"}{" "}
+                      Its links and progress go with it. Tests you already built stay. This cannot be undone.
+                    </span>
+                    <span className="flex items-center gap-space-sm shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => setConfirmDeleteId(null)}
+                        disabled={deleting}
+                        className="h-8 px-space-md rounded-lg text-on-surface hover:bg-surface-container-high"
+                      >
+                        Keep it
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleDelete}
+                        disabled={deleting}
+                        data-testid="note-delete-yes"
+                        className="h-8 px-space-md rounded-lg bg-error text-on-error font-semibold hover:opacity-90 disabled:opacity-60"
+                      >
+                        {deleting ? "Deleting…" : "Delete"}
+                      </button>
                     </span>
                   </div>
                 )}
-                <h2 className="font-display-lg text-display-lg text-on-surface leading-tight tracking-tight">{selected.title}</h2>
-                {selected.keywords?.length > 0 && (
-                  <div className="flex flex-wrap gap-space-xs items-center pt-space-2xs">
-                    {selected.keywords.slice(0, 8).map((k, i) => (
-                      <span
-                        key={k}
-                        className={`px-space-sm py-space-2xs rounded font-label-md text-label-md font-semibold tracking-wide ${CHIP_STYLES[i % CHIP_STYLES.length]}`}
+                {selectedParent && (
+                  <div className="flex items-center justify-between gap-space-sm flex-wrap font-label-md text-label-md" data-testid="subtopic-breadcrumb">
+                    {/* where this subtopic sits: Document › Unit › Chapter */}
+                    <div className="flex items-center gap-space-2xs min-w-0 flex-wrap">
+                      <button
+                        type="button"
+                        onClick={() => setParams({ note: selectedParent._id })}
+                        className="flex items-center gap-space-2xs text-secondary hover:text-primary min-w-0"
                       >
+                        <Icon name="description" className="text-sm shrink-0" />
+                        <span className="truncate">{selectedParent.title}</span>
+                      </button>
+                      {(selectedNode?.trail || []).map((t, i) => (
+                        <span key={i} className="flex items-center gap-space-2xs min-w-0 text-topic">
+                          <Icon name="chevron_right" className="text-sm shrink-0 text-outline" />
+                          <span className="truncate">{t}</span>
+                        </span>
+                      ))}
+                    </div>
+                    <span className="text-on-surface-variant shrink-0">
+                      Subtopic {(selected.order ?? 0) + 1} of {siblings.length}
+                    </span>
+                  </div>
+                )}
+                <h2
+                  data-testid="note-title"
+                  className={`leading-tight tracking-tight ${TITLE_SIZE[Math.min(selectedNode?.depth || 0, TITLE_SIZE.length - 1)]} ${
+                    selectedColor === null || (!selectedNode && manySections) ? "text-on-surface" : "text-topic"
+                  }`}
+                >
+                  {selected.title}
+                </h2>
+                {selected.keywords?.length > 0 && (
+                  <div className="flex flex-wrap gap-space-xs items-center pt-space-2xs" data-testid="note-keywords">
+                    {selected.keywords.slice(0, 8).map((k) => (
+                      <span key={k} className="px-space-sm py-space-2xs rounded font-label-md text-label-md font-semibold tracking-wide bg-topic-soft text-topic">
                         {k}
                       </span>
                     ))}
@@ -346,23 +544,41 @@ export default function SubjectWorkspace() {
                   <span className="font-label-md text-label-md uppercase tracking-wider text-on-surface-variant font-bold">
                     {selectedChildren.length} subtopics in this document
                   </span>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-space-sm">
-                    {selectedChildren.map((c, i) => (
-                      <button
-                        type="button"
-                        key={c._id}
-                        onClick={() => setParams({ note: c._id })}
-                        className="text-left p-space-md rounded-lg bg-surface-container-low hover:bg-surface-container transition-colors flex flex-col gap-space-2xs min-w-0"
-                      >
-                        <span className="font-label-sm text-label-sm text-on-surface-variant truncate">
-                          {i + 1}. {c.sectionGroup || "Subtopic"} · {wordCount(c.rawText)} words
-                        </span>
-                        <span className="font-ui-title text-ui-title text-on-surface font-semibold truncate">{c.title}</span>
-                        <span className="font-body-sm text-body-sm text-on-surface-variant truncate">
-                          {(c.keywords || []).slice(0, 4).join(" · ")}
-                        </span>
-                      </button>
-                    ))}
+                  {/* one block per main topic, in its colour, listing what sits under it */}
+                  <div className="flex flex-col gap-space-md">
+                    {outline.map((top) => {
+                      const leaves = flattenOutline([top]).filter((n) => n.item);
+                      return (
+                        <div key={top.key} className={`flex flex-col gap-space-xs ${topicClass(top.colorIndex)}`} data-testid="document-topic">
+                          <div className="flex items-center gap-space-xs min-w-0">
+                            <span className="w-2 h-2 rounded-full bg-topic shrink-0"></span>
+                            <span className="font-ui-title text-ui-title font-bold text-topic truncate">{top.title}</span>
+                            <span className="font-label-sm text-label-sm text-on-surface-variant shrink-0">
+                              {leaves.length} {leaves.length === 1 ? "subtopic" : "subtopics"}
+                            </span>
+                          </div>
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-space-sm">
+                            {leaves.map((n) => (
+                              <button
+                                type="button"
+                                key={n.key}
+                                onClick={() => setParams({ note: n.item._id })}
+                                className="text-left p-space-md rounded-lg bg-surface-container-low hover:bg-surface-container transition-colors flex flex-col gap-space-2xs min-w-0 border-l-2 border-topic"
+                              >
+                                <span className="font-label-sm text-label-sm text-on-surface-variant truncate">
+                                  {n.trail.slice(1).length ? `${n.trail.slice(1).join(" › ")} · ` : ""}
+                                  {wordCount(n.item.rawText)} words
+                                </span>
+                                <span className="font-ui-title text-ui-title text-on-surface font-semibold truncate">{n.title}</span>
+                                <span className="font-body-sm text-body-sm text-on-surface-variant truncate">
+                                  {(n.item.keywords || []).slice(0, 4).join(" · ")}
+                                </span>
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      );
+                    })}
                   </div>
                 </section>
               )}
@@ -372,27 +588,23 @@ export default function SubjectWorkspace() {
                     <Icon name="chevron_right" className="text-base group-open:rotate-90 transition-transform" />
                     Read the full document
                   </summary>
-                  <section className="mt-space-lg font-body-lg text-body-lg text-on-surface leading-relaxed flex flex-col gap-space-lg">
-                    {paragraphs.map((p, i) => (
-                      <p key={i} className="whitespace-pre-line">{p}</p>
-                    ))}
-                  </section>
+                  {/* the whole document, each main topic in the same colour as above */}
+                  <NoteContent
+                    className="mt-space-lg"
+                    content={selected.content}
+                    keywords={selected.keywords?.slice(0, 8)}
+                    bySection
+                    colorOf={sectionColorOf}
+                  />
                 </details>
               ) : (
-              <section className="font-body-lg text-body-lg text-on-surface leading-relaxed flex flex-col gap-space-lg">
-                {paragraphs.map((p, i) => (
-                  <p
-                    key={i}
-                    className={`whitespace-pre-line ${
-                      i === 0
-                        ? "first-letter:font-display-lg first-letter:text-display-lg first-letter:float-left first-letter:mr-space-sm first-letter:leading-none first-letter:text-primary"
-                        : ""
-                    }`}
-                  >
-                    {p}
-                  </p>
-                ))}
-              </section>
+                <NoteContent
+                  content={selected.content}
+                  keywords={selected.keywords?.slice(0, 8)}
+                  colorIndex={selectedColor ?? 0}
+                  bySection={!selectedNode}
+                  shrink={Math.min(selectedNode?.depth || 0, 2)}
+                />
               )}
               {selectedParent && siblings.length > 1 && (
                 <nav className="mt-space-xl pt-space-lg border-t border-surface-container-high flex items-center justify-between gap-space-md">

@@ -19,8 +19,9 @@ export default function SignIn() {
     setError("");
     setBusy(true);
     try {
-      if (mode === "login") await login(email, password);
-      else await register(email, password);
+      const cleanEmail = email.trim(); // autofill often adds a trailing space
+      if (mode === "login") await login(cleanEmail, password);
+      else await register(cleanEmail, password);
       navigate("/");
     } catch (err) {
       setError(err.message);

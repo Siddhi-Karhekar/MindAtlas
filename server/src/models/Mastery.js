@@ -42,6 +42,12 @@ export async function upsertMastery({ ownerId, subjectId, topicId, topicLabel, p
   );
 }
 
+/** Forget the mastery recorded against these topics (their notes are being deleted). */
+export async function deleteMasteryForTopics(ownerId, topicIds) {
+  if (!topicIds.length) return 0;
+  return mastery().deleteMany({ ownerId, topicId: topicIds });
+}
+
 /** Convenience: a Map of topicId -> mastery record for quick lookup. */
 export async function masteryMapForSubject(ownerId, subjectId) {
   const rows = await findMasteryBySubject(ownerId, subjectId);

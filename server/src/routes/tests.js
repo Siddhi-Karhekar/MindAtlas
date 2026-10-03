@@ -102,7 +102,7 @@ router.post("/subjects/:id/tests", async (req, res) => {
   // back to an even spread across the selected notes.
   const masteryMap = await masteryMapForSubject(req.user.id, subject._id);
 
-  const { accepted, discarded, mcqGeneratedBy, theoryGeneratedBy } = await generateQuestions(notesInSubject, {
+  const { accepted, discarded, mcqGeneratedBy, theoryGeneratedBy, rankedBy } = await generateQuestions(notesInSubject, {
     mcqCount: poolSizeFor(safeMcqCount),
     theoryCount: poolSizeFor(safeTheoryCount),
     marksPerQuestion,
@@ -116,6 +116,9 @@ router.post("/subjects/:id/tests", async (req, res) => {
     test,
     mcqGeneratedBy,
     theoryGeneratedBy,
+    // "embeddings" when the semantic model judged relevance and key terms,
+    // "rules" when it is off, not installed or still loading
+    rankedBy,
     accepted: acceptedCount,
     discarded: stored.filter((q) => q.status === "discarded").length,
     targetQuestionCount,

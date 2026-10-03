@@ -4,7 +4,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import express from "express";
 import cors from "cors";
-import { connectDB, flushDB } from "./db/index.js";
+import { connectDB, dbInfo, flushDB } from "./db/index.js";
 import { assertAuthConfig } from "./middleware/auth.js";
 import { rateLimit } from "./middleware/rateLimit.js";
 import authRoutes from "./routes/auth.js";
@@ -13,6 +13,8 @@ import noteRoutes from "./routes/notes.js";
 import testRoutes from "./routes/tests.js";
 import attemptRoutes from "./routes/attempts.js";
 import graphRoutes from "./routes/graph.js";
+import noteItemRoutes from "./routes/noteItems.js";
+import { semanticStatus, warmSemanticModel } from "./services/embeddings.js";
 
 assertAuthConfig();
 
@@ -75,7 +77,14 @@ app.use((req, res, next) => {
   next();
 });
 
-app.get("/api/health", (req, res) => res.json({ ok: true }));
+// `db` says where accounts and notes are stored and whether they survive a
+// restart - open /api/health on the live site to check the deployment.
+app.get("/api/health", (req, res) => {
+  const { kind, persistent } = dbInfo();
+  // `semantic.active` says whether questions are being ranked by meaning (the
+  // optional embedding model) or by rules alone, and why not if not
+  res.json({ ok: true, db: { kind, persistent }, semantic: semanticStatus() });
+});
 
 // Rate limits: a generous ceiling for the whole API, a tight one on
 // register/login (credential stuffing / brute force), and a tight one on
@@ -104,6 +113,7 @@ app.use("/api/subjects", subjectRoutes);
 // notes routes are nested under /api/subjects/:id/notes
 app.use("/api/subjects", noteRoutes);
 app.use("/api/graph", graphRoutes);
+app.use("/api/notes", noteItemRoutes);
 // tests routes cover both /api/subjects/:id/tests and /api/tests/:id
 app.use("/api", testRoutes);
 // attempts routes cover both /api/tests/:id/attempts and /api/attempts/:id/...
@@ -136,6 +146,7 @@ const PORT = process.env.PORT || 4000;
 connectDB()
   .then(() => {
     app.listen(PORT, () => console.log(`[server] listening on :${PORT}`));
+    warmSemanticModel(); // background; a no-op unless the add-on is installed
   })
   .catch((err) => {
     console.error("[server] failed to start:", err);

@@ -38,6 +38,42 @@ Team roles and branch conventions are in [`CONTRIBUTING.md`](CONTRIBUTING.md).
   "Paging in Unit 3 needs attention", not just "Unit 3". Logic lives in
   `services/documentStructure.js` (splitting) and `services/documentText.js`
   (extraction); `verify/e2e_document_split_test.py` covers it end to end.
+- **Subtopics keep their place in the document's outline.** Each subtopic
+  records its `path` - every heading above it, outermost first
+  (`["3. Data Link Layer"]`, or `["Unit 3", "Memory", ...]` for a deeper
+  document) - and the notes shelf shows the document as a collapsible tree to
+  any depth. Storage stays two levels (document -> subtopics), so tests,
+  mastery and the graph are untouched. PowerPoint sections and "Section
+  Header" slides count as a level; headings too thin to be notes of their own
+  stay inside their note as sub-headings.
+- **Notes keep their structure and are shown in one style.** Every note is
+  stored twice: `rawText` (plain text - what keywords, links, questions and
+  grading use, word for word) and `content` (the same words as headings,
+  paragraphs, bulleted and numbered lists with their nesting, tables and the
+  terms the author set in bold). All five inputs produce it: Word list and
+  heading styles, slide outline levels, bullets / numbering / bold fonts and
+  indentation in PDFs, markdown or plain typed text (`- `, `1.`, `**term**`,
+  a title-like line of its own), and photos, where OCR's line positions and
+  letter heights give headings and lists back. The reading pane formats it
+  the same way whatever the source (`client/src/components/NoteContent.jsx`):
+  each main topic has a colour that only its headings and key terms wear,
+  heading size and weight follow the level, and lists get real markers.
+  Rule-based throughout - no API key. Notes saved before this get their
+  `content` worked out when they are read. Old `.doc` / `.ppt` files are
+  refused with a "Save As .docx / .pptx" message.
+- **Notes can be edited and deleted** (`services/noteLifecycle.js`). A note
+  opens for editing as text - `#` headings, `-` bullets, `**key terms**` -
+  whatever it was uploaded as, and saving recomputes its keywords and its
+  links (links the student removed by hand stay removed). Deleting a note
+  removes its links and its mastery record; a split document goes with its
+  subtopics, and a subtopic can be edited or deleted on its own, with the
+  document's full text rebuilt from what remains. Tests are snapshots: a
+  question carries its own text, so editing or deleting a note never changes
+  a test, attempt or feedback report that already exists.
+- **Account controls**: change password (asks for the current one) and
+  delete account, which removes every subject, note, link, test, attempt and
+  progress record the account owns. There is no "forgot password" yet - that
+  needs an email service.
 - Every new note gets a TF-IDF vector and top keywords; cosine similarity
   against the other notes in the *same* subject creates weighted graph edges
   (threshold 0.12), rendered with Cytoscape.js.
@@ -64,8 +100,35 @@ Team roles and branch conventions are in [`CONTRIBUTING.md`](CONTRIBUTING.md).
   in any mix. With a `GROQ_API_KEY` an LLM drafts them from the selected
   notes only; every question must quote a supporting excerpt that appears
   verbatim in those notes (the "hallucination gate") or it is discarded.
-  Without a key, a rule-based fallback builds cloze MCQs and
-  explain-the-keyword theory questions from TF-IDF keywords.
+  Without a key, a rule-based generator builds fill-in-the-blank MCQs and
+  exam-style theory questions (see the next three points).
+- **Only subject matter is asked about.** Questions are built from a note's
+  *study sentences* (`services/studyText.js`): text from its paragraphs and
+  list entries that states a fact. The college and department, "prepared by",
+  contents pages, references, and exercises ("Write a program ...",
+  "Calculate ...") never qualify. An LLM, when configured, is given only
+  those sentences too.
+- **Key terms are whole terms.** `services/keyTerms.js` finds a note's terms
+  as phrases - "distributed computing", "two-phase locking", "Remote
+  Procedure Call (RPC)" - from words that recur together, headings, bold
+  type and the term a list entry opens with. A blank hides the whole term,
+  everywhere in the sentence, and the wrong options are other whole terms
+  matched in length, number and capitals. (TF-IDF keywords are single words,
+  which is why blanks used to hide half a term; they are still what the
+  knowledge graph links on.)
+- **Theory questions are worded like a question paper**, with a command
+  word chosen from what the note says about the term - *Define* (it has a
+  defining sentence), *Explain*, *List and briefly explain* (a list under a
+  heading), *Differentiate between* (two terms of the same kind) - plus the
+  marks and how much to write.
+- **Optional: ranking by meaning.** `npm run semantic:install` (in `server/`)
+  adds a small embedding model, all-MiniLM-L6-v2, run locally through
+  `@huggingface/transformers` - free, no key, no API. With it, relevance,
+  term ranking and distractors are judged by meaning rather than rules
+  (`services/embeddings.js`); `/api/health` reports whether it is active.
+  It is an add-on on purpose: it needs about 500 MB on disk and about 125 MB
+  of memory, so a default install, CI and the deploy do not include it, and
+  everything works without it. `SEMANTIC_MODEL=off` switches it off.
 - **Adaptive delivery** - each test builds a pool about 1.5x larger than
   what a student sees; a 1-up-1-down staircase over easy/medium/hard tiers
   picks the next question one at a time, in a timed "focus mode".
@@ -154,6 +217,8 @@ Copy `server/.env.example` to `server/.env` and `client/.env.example` to
 | `DB_FILE` | Where the local database file lives (when `MONGODB_URI` is blank). `DB_FILE=memory` = throwaway in-memory DB, wiped on restart |
 | `JWT_SECRET` | 32+ random characters. **Required in production** (server refuses to start without it); dev falls back to an insecure default with a warning |
 | `GROQ_API_KEY` | Enables LLM question drafting, theory grading and feedback phrasing |
+| `SEMANTIC_MODEL` | `off` disables the optional embedding model even when it is installed (`npm run semantic:install`) |
+| `SEMANTIC_MODEL_PATH` | A local folder holding the model, to skip its one-time download |
 | `NODE_ENV` | Set to `production` when deployed |
 | `CORS_ORIGIN` | Comma-separated allowed browser origins. Blank in dev allows `localhost:5173`; blank in production blocks cross-origin browser access |
 | `TRUST_PROXY` | Reverse-proxy hop count (`1` on most hosts) so rate limiting sees real client IPs |
@@ -167,7 +232,7 @@ Copy `server/.env.example` to `server/.env` and `client/.env.example` to
 The usual zero-setup MongoDB for dev (`mongodb-memory-server`) downloads a
 real `mongod` binary on first run, which was blocked in the sandbox this
 project started in. `server/src/db/` instead implements a tiny MongoDB-shaped
-interface (`insertOne` / `findOne` / `find` / `findOneAndUpdate`) with two
+interface (`insertOne` / `findOne` / `find` / `findOneAndUpdate` / `deleteMany`) with two
 interchangeable backends - `memoryStore.js` (in memory, saved to a JSON file
 between restarts) and `mongoStore.js`
 (the official driver, for Atlas) - selected in `db/index.js` by whether
@@ -208,8 +273,11 @@ a case to `server/test/mongoStore.test.mjs`.
 4. **Test timer** - `durationMinutes` is stored and shown but not yet
    enforced with a countdown in the attempt screen.
 5. **Quality upgrades from the report** - distractor gating for the LLM path,
-   TextRank keywords, fuzzy (non-verbatim) excerpt matching, stricter theory
-   grading prompt, calibrated Rasch difficulties once there is response data.
+   fuzzy (non-verbatim) excerpt matching, stricter theory grading prompt,
+   calibrated Rasch difficulties once there is response data. Whole key terms
+   and meaning-based relevance are in (see "What works today"); next for the
+   embedding model: grading theory answers by meaning instead of keyword
+   overlap, and linking notes in the graph with it (item 3).
 6. **Optional proctoring** and splitting the API into independently
    deployable services.
 7. **Deployment** - a single-service Render + MongoDB Atlas setup and a
@@ -228,16 +296,23 @@ server/src/
   models/        thin repositories (users, subjects, notes, graph_edges,
                  tests, questions, attempts, responses, feedback_reports)
   middleware/    JWT auth, in-memory rate limiter
-  routes/        auth, subjects (+ graph), notes, tests, attempts
-  services/      ocr, documentText (PDF/DOCX/PPTX/text extraction),
-                 documentStructure (split long documents into subtopics),
-                 tfidf, graphEngine, llm, testEngine (question
-                 generation + gate), adaptiveEngine (staircase),
+  routes/        auth (+ password, delete account), subjects (+ graph),
+                 notes (create / list), noteItems (read / edit / delete
+                 one note), tests, attempts
+  services/      ocr, documentText (PDF/DOCX/PPTX/text extraction, with
+                 structure), documentStructure (split long documents into
+                 subtopics; a note's formatted `content`),
+                 tfidf, graphEngine, llm, studyText (which sentences are
+                 subject matter), keyTerms (whole key terms), embeddings
+                 (optional local model), testEngine (question generation +
+                 gate), adaptiveEngine (staircase),
                  gradingEngine (theory answers), feedbackEngine (scoring)
 
 client/src/
-  lib/           API client + auth context
-  components/    shared app shell (nav, sign-out)
+  lib/           API client + auth context; notes (outline tree),
+                 noteFormat (key terms and topic colours)
+  components/    shared app shell (nav, sign-out); NoteContent (the one
+                 place a note's text is formatted)
   pages/         SignIn, Home, SubjectWorkspace, KnowledgeGraph,
                  Tests (builder), TestAttempt (focus mode), Insights
 

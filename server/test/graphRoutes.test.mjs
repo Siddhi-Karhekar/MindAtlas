@@ -4,11 +4,12 @@
 // routing, auth and ownership checks are exercised exactly as the client
 // sees them.
 import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 const PORT = 4598;
 const API = `http://localhost:${PORT}/api`;
 const server = spawn(process.execPath, ["src/index.js"], {
-  cwd: new URL("..", import.meta.url).pathname,
+  cwd: fileURLToPath(new URL("..", import.meta.url)),
   env: { ...process.env, PORT: String(PORT), MONGODB_URI: "", DB_FILE: "memory", GROQ_API_KEY: "", NODE_ENV: "development" },
   stdio: ["ignore", "pipe", "pipe"],
 });
@@ -33,11 +34,24 @@ async function call(path, { method = "GET", body, token } = {}) {
 const correct = (edgeId, action, token) => call(`/graph/edges/${edgeId}/correct`, { method: "POST", token, body: { action } });
 
 try {
+  // Wait up to 60 s: a first start on Windows can be slow while antivirus
+  // scans the PDF/OCR libraries. Stop early if the server process exits.
   let up = false;
-  for (let i = 0; i < 60 && !up; i++) {
-    try { up = (await fetch(`${API}/health`)).ok; } catch { await wait(200); }
+  let lastStatus = "no response";
+  for (let i = 0; i < 300 && !up && server.exitCode === null; i++) {
+    try {
+      const res = await fetch(`${API}/health`);
+      up = res.ok;
+      lastStatus = `HTTP ${res.status}`;
+    } catch (err) {
+      lastStatus = err.cause?.code || err.message;
+    }
+    if (!up) await wait(200);
   }
-  if (!up) throw new Error(`server did not start:\n${serverLog}`);
+  if (!up) {
+    const why = server.exitCode !== null ? `server exited with code ${server.exitCode}` : `no healthy answer on port ${PORT} after 60 s (last: ${lastStatus})`;
+    throw new Error(`server did not start: ${why}\n${serverLog}`);
+  }
 
   const register = async (email) => (await call("/auth/register", { method: "POST", body: { email, password: "password123" } })).data.token;
   const alice = await register("alice@example.com");

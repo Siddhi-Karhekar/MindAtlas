@@ -82,6 +82,13 @@ export class MongoCollectionWrapper {
     const doc = result && "value" in result ? result.value : result;
     return fromMongoDoc(doc);
   }
+
+  /** Delete every document matching `filter`; returns how many went. Same contract as memoryStore.js. */
+  async deleteMany(filter) {
+    if (!filter || Object.keys(filter).length === 0) throw new Error("deleteMany needs a filter");
+    const result = await this.col.deleteMany(toMongoFilter(filter));
+    return result?.deletedCount || 0;
+  }
 }
 
 export async function createMongoDb(uri) {

@@ -21,6 +21,48 @@ function clock(totalSeconds) {
 // question the server hands it and reports progress from {shown, target}.
 // The test's time limit is enforced here: when the countdown reaches zero the
 // attempt is submitted with whatever has been answered so far.
+// The question as a paper would set it.
+// A fill-in-the-blank arrives as: Fill in the blank: "... _____ ..." - shown as
+// the instruction, then the sentence with each blank drawn as a ruled gap. A
+// theory question may carry `guidance` ("Answer in two or three sentences."),
+// shown under it the way a paper prints the instruction beside the question.
+function QuestionText({ question }) {
+  const cloze = String(question.prompt || "").match(/^Fill in the blank:\s*["\u201c]([\s\S]*)["\u201d]\s*$/);
+  const heading = "font-headline-lg text-headline-lg text-on-surface";
+  if (cloze) {
+    const parts = cloze[1].split("_____");
+    return (
+      <div className="mb-space-2xl" data-testid="question-cloze">
+        <p className="font-label-md text-label-md text-on-surface-variant uppercase tracking-wider mb-space-sm">Fill in the blank</p>
+        <h1 className={heading} style={{ textWrap: "balance" }}>
+          {parts.map((part, i) => (
+            <span key={i}>
+              {part}
+              {i < parts.length - 1 && (
+                <span className="inline-block align-baseline w-24 mx-space-xs border-b-2 border-primary" aria-label="blank">
+                  &nbsp;
+                </span>
+              )}
+            </span>
+          ))}
+        </h1>
+      </div>
+    );
+  }
+  return (
+    <div className="mb-space-2xl">
+      <h1 className={heading} style={{ textWrap: "balance" }}>
+        {question.prompt}
+      </h1>
+      {question.guidance && (
+        <p className="mt-space-md font-body-md text-body-md text-on-surface-variant" data-testid="question-guidance">
+          {question.guidance}
+        </p>
+      )}
+    </div>
+  );
+}
+
 export default function TestAttempt() {
   const { testId } = useParams();
   const navigate = useNavigate();
@@ -238,10 +280,13 @@ export default function TestAttempt() {
                   Theory
                 </span>
               )}
+              {question.marks ? (
+                <span className="ml-space-sm normal-case tracking-normal text-on-surface-variant" data-testid="question-marks">
+                  [{question.marks} {Number(question.marks) === 1 ? "mark" : "marks"}]
+                </span>
+              ) : null}
             </p>
-            <h1 className="font-headline-lg text-headline-lg text-on-surface mb-space-2xl" style={{ textWrap: "balance" }}>
-              {question.prompt}
-            </h1>
+            <QuestionText question={question} />
           </div>
 
           {timeUp && (
