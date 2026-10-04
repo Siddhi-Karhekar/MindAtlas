@@ -358,6 +358,38 @@ to show.
 >   it expires.
 > - **Tests**: `server/test/noteLifecycle.test.mjs` (60 checks, part of
 >   `npm test`), on **port 4596**.
+>
+> **Downloading notes as PDF or Word (4 Oct)** - `server/src/services/noteExport/`.
+> - `GET /api/notes/:id/export?format=pdf|docx` (a note; for a split
+>   document, the whole document) and `GET /api/subjects/:id/export` (every
+>   note of the subject). `tz` is the student's time zone, for the date on
+>   the first page. The download button is `components/DownloadMenu.jsx`, in
+>   the reading pane's header.
+> - `model.js` decides what the file says and how it is coloured, once;
+>   `pdf.js` and `docx.js` only draw it. The colouring rules in `format.js`
+>   are a **copy** of `client/src/lib/noteFormat.js` and the outline helpers
+>   of `client/src/lib/notes.js` (the server cannot import client code once
+>   deployed). The test runs both copies on the same notes and fails if they
+>   differ, and checks the colours against `index.css`: change one side,
+>   change the other.
+> - **New server dependencies**: `pdfkit` and `docx` (both MIT, both loaded
+>   only when the first download is asked for). Run `npm install` in
+>   `server/` after pulling. `npm audit --audit-level=high` is still clean.
+> - **Fonts**: `server/assets/fonts/` holds DejaVu Sans regular and bold
+>   (1.5 MB, free licence in `LICENSE.txt` beside them), embedded in the PDF
+>   because they have the Greek letters, arrows and maths signs notes use.
+>   Word files name Calibri and use whatever the reader's machine has.
+> - **Known limits**: the Word contents list has no page numbers (Word only
+>   knows them once the file is open; asking for them makes Word show a
+>   warning on opening) - the PDF has them. Scripts DejaVu lacks (Devanagari,
+>   Chinese, emoji) print as a replacement mark in the PDF; the Word file
+>   keeps them. The key terms that get coloured are the note's TF-IDF
+>   keywords, as on screen, so some are ordinary words. Downloads are limited
+>   to 60 per 15 minutes per address (`RATE_LIMIT_EXPORT_MAX`).
+> - **Tests**: `server/test/noteExport.test.mjs` (76 checks, part of
+>   `npm test`), on **port 4594**. It reads the files back - the Word file
+>   with the app's Word reader, the PDF with its PDF reader - and checks that
+>   each contents line prints the page its topic is really on.
 
 What's missing (post-Saturday backlog, not this week):
 1. **Summarization** — a new endpoint that takes a note's raw text (or a
@@ -845,7 +877,7 @@ other three to finish anything. Start now:
 > Blueprint). Don't apply the Blueprint as-is.
 >
 > **Things everyone should know**
-> - **CI ports**: the server tests start the API on 4595 to 4599 - don't add
+> - **CI ports**: the server tests start the API on 4594 to 4599 - don't add
 >   anything to CI that uses them.
 > - **Free-tier sleep**: the API sleeps after 15 idle minutes; the first
 >   request then takes ~20-50 s. Open `/api/health` a minute before a demo.

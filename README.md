@@ -70,6 +70,16 @@ Team roles and branch conventions are in [`CONTRIBUTING.md`](CONTRIBUTING.md).
   document's full text rebuilt from what remains. Tests are snapshots: a
   question carries its own text, so editing or deleting a note never changes
   a test, attempt or feedback report that already exists.
+- **Notes can be downloaded as a PDF or a Word file**
+  (`services/noteExport/`): one note, a whole document with all its
+  subtopics, or every note of a subject. The file follows the reading pane -
+  each topic's headings and key terms in its colour, body text plain, four
+  heading sizes, real bullets and tables - and opens with a contents list.
+  In the PDF the contents list has page numbers and links, and the topics
+  are bookmarks; in the Word file it links to each topic and the headings
+  are Word's own Heading styles, so the file stays editable. Built on the
+  server with `pdfkit` and `docx`, from the same `content` the screen shows;
+  no outside service.
 - **Account controls**: change password (asks for the current one) and
   delete account, which removes every subject, note, link, test, attempt and
   progress record the account owns. There is no "forgot password" yet - that
@@ -327,13 +337,15 @@ server/src/
                  subject matter), keyTerms (whole key terms), embeddings
                  (optional local model), testEngine (question generation +
                  gate), adaptiveEngine (staircase),
-                 gradingEngine (theory answers), feedbackEngine (scoring)
+                 gradingEngine (theory answers), feedbackEngine (scoring),
+                 noteExport/ (notes as PDF / Word: model, pdf, docx)
+server/assets/   fonts embedded in the PDF download (DejaVu Sans, free licence)
 
 client/src/
   lib/           API client + auth context; notes (outline tree),
                  noteFormat (key terms and topic colours)
   components/    shared app shell (nav, sign-out); NoteContent (the one
-                 place a note's text is formatted)
+                 place a note's text is formatted); DownloadMenu
   pages/         SignIn, Home, SubjectWorkspace, KnowledgeGraph,
                  Tests (builder), TestAttempt (focus mode), Insights
 

@@ -3,8 +3,9 @@ import { findNoteById } from "../models/Note.js";
 import { requireAuth } from "../middleware/auth.js";
 import { deleteNote, editNote } from "../services/noteLifecycle.js";
 import { editTextFor, withContent } from "../services/noteView.js";
+import { exportNote, parseFormat, sendExport } from "../services/noteExport/index.js";
 
-// One note, by id: read it for editing, change it, delete it. (Creating and
+// One note, by id: read it for editing, download it, change it, delete it. (Creating and
 // listing notes belong to a subject and live in routes/notes.js.)
 const router = Router();
 router.use(requireAuth);
@@ -24,6 +25,19 @@ async function loadOwnedNote(req, res, next) {
 // GET /api/notes/:id - the note, plus `editText`: its content as editable text
 router.get("/:id", loadOwnedNote, (req, res) => {
   res.json({ note: withContent(req.note), editText: editTextFor(req.note) });
+});
+
+// GET /api/notes/:id/export?format=pdf|docx&tz=Asia/Kolkata
+// The note as a formatted file to keep or print. For a document that was
+// split into subtopics this is the whole document, with a contents list.
+router.get("/:id/export", loadOwnedNote, async (req, res, next) => {
+  const format = parseFormat(req.query.format);
+  if (!format) return res.status(400).json({ error: "format must be pdf or docx" });
+  try {
+    sendExport(res, await exportNote(req.note, { format, timeZone: req.query.tz }));
+  } catch (err) {
+    next(err);
+  }
 });
 
 // PATCH /api/notes/:id  { title?, content? }

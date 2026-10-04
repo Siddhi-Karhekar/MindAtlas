@@ -32,6 +32,44 @@ async function request(path, { method = "GET", body, isForm = false } = {}) {
   return data;
 }
 
+// The name the server gave a download: the UTF-8 one if present, else the plain one.
+function fileNameFrom(disposition) {
+  const header = String(disposition || "");
+  const utf8 = header.match(/filename\*=UTF-8''([^;]+)/i);
+  if (utf8) {
+    try {
+      return decodeURIComponent(utf8[1]);
+    } catch {
+      // fall through to the plain name
+    }
+  }
+  return header.match(/filename="([^"]+)"/i)?.[1] || "";
+}
+
+// A download: the answer is the file itself, not JSON. Returns { blob, fileName }.
+async function download(path) {
+  const headers = {};
+  const token = getToken();
+  if (token) headers.Authorization = `Bearer ${token}`;
+  const res = await fetch(`${API_BASE}${path}`, { headers });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || `Download failed (${res.status})`);
+  }
+  return { blob: await res.blob(), fileName: fileNameFrom(res.headers.get("Content-Disposition")) };
+}
+
+// format ("pdf" | "docx") and the student's time zone, for the date on the first page
+function exportQuery(format) {
+  let tz = "";
+  try {
+    tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "";
+  } catch {
+    // no time zone: the server uses UTC
+  }
+  return `format=${encodeURIComponent(format)}${tz ? `&tz=${encodeURIComponent(tz)}` : ""}`;
+}
+
 export const api = {
   register: (email, password) => request("/auth/register", { method: "POST", body: { email, password } }),
   login: (email, password) => request("/auth/login", { method: "POST", body: { email, password } }),
@@ -70,6 +108,11 @@ export const api = {
   updateNote: (noteId, { title, content }) => request(`/notes/${noteId}`, { method: "PATCH", body: { title, content } }),
   // A split document takes its subtopics with it.
   deleteNote: (noteId) => request(`/notes/${noteId}`, { method: "DELETE" }),
+
+  // A formatted file to keep or print. For a document that was split into
+  // subtopics, exportNote gives the whole document.
+  exportNote: (noteId, format) => download(`/notes/${noteId}/export?${exportQuery(format)}`),
+  exportSubject: (subjectId, format) => download(`/subjects/${subjectId}/export?${exportQuery(format)}`),
 
   getGraph: (subjectId) => request(`/subjects/${subjectId}/graph`),
   // action: "remove" (the student says this link is wrong) or "restore"

@@ -4,6 +4,7 @@ import { findNotesByIds, findNotesBySubject } from "../models/Note.js";
 import { findCrossSubjectEdges, findEdgesBySubject, isRemoved, toApiEdge } from "../models/GraphEdge.js";
 import { requireAuth } from "../middleware/auth.js";
 import { clusterNotes } from "../services/graphEngine.js";
+import { exportSubject, parseFormat, sendExport } from "../services/noteExport/index.js";
 
 const router = Router();
 router.use(requireAuth);
@@ -107,6 +108,19 @@ router.get("/:id/graph", loadOwnedSubject, async (req, res) => {
       subjectName: subjectName.get(String(n.subjectId)) || "Another subject",
     })),
   });
+});
+
+// GET /api/subjects/:id/export?format=pdf|docx&tz=Asia/Kolkata
+// Every note of the subject in one formatted file, with a contents list.
+router.get("/:id/export", loadOwnedSubject, async (req, res, next) => {
+  const format = parseFormat(req.query.format);
+  if (!format) return res.status(400).json({ error: "format must be pdf or docx" });
+  try {
+    sendExport(res, await exportSubject(req.subject, { format, timeZone: req.query.tz }));
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ error: err.message });
+    next(err);
+  }
 });
 
 export default router;

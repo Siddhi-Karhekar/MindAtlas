@@ -48,6 +48,8 @@ app.use(
       if (!origin || allowedOrigins.includes(origin)) return callback(null, true);
       return callback(null, false);
     },
+    // lets the web client read the file name of a download (notes as PDF / Word)
+    exposedHeaders: ["Content-Disposition"],
   })
 );
 
@@ -107,6 +109,16 @@ app.post(
     message: "too many test builds, please try again later",
   })
 );
+
+// Building a PDF or Word file is the heaviest thing a single request can ask
+// of this server, so downloads get their own ceiling.
+const exportLimit = rateLimit({
+  windowMs: 15 * 60_000,
+  max: num(process.env.RATE_LIMIT_EXPORT_MAX, 60),
+  message: "too many downloads, please try again in a few minutes",
+});
+app.get("/api/notes/:id/export", exportLimit);
+app.get("/api/subjects/:id/export", exportLimit);
 
 app.use("/api/auth", authRoutes);
 app.use("/api/subjects", subjectRoutes);
