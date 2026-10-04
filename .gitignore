@@ -10,3 +10,5 @@ server/.cache/
 server/semantic/package-lock.json
 # local database (server/data/mindatlas-db.json) - personal data, never commit
 server/data/
+# question-quality evaluation runs (server/evaluation/): may contain your own notes and raters' names
+evaluation-output/

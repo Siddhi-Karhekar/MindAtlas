@@ -721,6 +721,33 @@ doc, is kept below for reference:
 > **Still open**: theory answers are still graded by keyword overlap without
 > an LLM key (the embedding model could grade by meaning); single-word terms
 > are weaker than phrases when the model is off.
+>
+> **Evaluating question quality (4 Oct)** - `server/evaluation/`, protocol in
+> `docs/EVALUATION.md`. `npm run eval:generate -- <notes folder>` builds
+> questions from the same notes with the earlier TF-IDF generator (frozen in
+> `evaluation/baseline/`, from `d202772`), the current rules, and the
+> embedding model if installed, and writes a shuffled, blinded
+> `rating_sheet.csv`, its `key.csv`, and automatic measures (`metrics.md`).
+> Raters save their copies as `ratings_<name>.csv`; `npm run eval:score --
+> <folder>` reports per-strategy scores with Wilson intervals, each strategy
+> against the baseline (Fisher / Mann-Whitney, Holm-corrected) and
+> inter-rater kappa.
+> - **No results exist yet.** They need real notes that the generator was not
+>   developed on, and at least two raters. The two files in
+>   `evaluation/samples/` are for trying the tool only - the rules were
+>   written while looking at them.
+> - `evaluation/lib/ingest.js` repeats what the upload route does, without a
+>   database. If you change how `routes/notes.js` builds notes, change it
+>   there too; the test below fails if the two disagree.
+> - Found while building it: with the model off, a notice such as "The
+>   examination for this course will be held ..." got through. `studyText.js`
+>   now drops notices to the class and exam/lecture arrangements.
+> - **Tests**: `server/test/evaluation.test.mjs` (75 checks, part of
+>   `npm test`): the statistics against values from scipy, the measures, a
+>   whole generate-rate-score run on the samples, and the app-vs-evaluation
+>   check, which starts the real API on **port 4595**.
+> - Evaluation output (`evaluation-output/`) is git-ignored: it holds notes'
+>   text and raters' names.
 
 > **Status (27 Sep)**
 > - **Steps 1–4: done** (see above).
@@ -818,7 +845,7 @@ other three to finish anything. Start now:
 > Blueprint). Don't apply the Blueprint as-is.
 >
 > **Things everyone should know**
-> - **CI ports**: the server tests start the API on 4598 and 4599 - don't add
+> - **CI ports**: the server tests start the API on 4595 to 4599 - don't add
 >   anything to CI that uses them.
 > - **Free-tier sleep**: the API sleeps after 15 idle minutes; the first
 >   request then takes ~20-50 s. Open `/api/health` a minute before a demo.

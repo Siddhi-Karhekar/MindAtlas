@@ -254,6 +254,27 @@ shows up locally. Keeping a single id type removes the whole class of bug.
 If you add a field holding an id, store it and query it as a string, and add
 a case to `server/test/mongoStore.test.mjs`.
 
+## Evaluating question quality
+
+`server/evaluation/` measures how good the generated questions are, for a
+report: it builds questions from the same notes with the earlier TF-IDF
+generator, the current rule-based one, and (if installed) the embedding
+model, writes a shuffled rating sheet that hides which wrote which, and
+turns the raters' sheets into scores with intervals, significance tests and
+inter-rater agreement. It also computes automatic measures such as how often
+a blank hides only part of a term.
+
+```bash
+cd server
+npm run eval:generate -- evaluation/samples --out evaluation-output/try
+# raters fill in copies of rating_sheet.csv, saved as ratings_<name>.csv
+npm run eval:score -- evaluation-output/try
+```
+
+[`docs/EVALUATION.md`](docs/EVALUATION.md) has the protocol, the rating
+rubric and the limits to state. No results exist yet: they need real notes
+and at least two raters.
+
 ## What's next
 
 1. **Bayesian Knowledge Tracing** - per-topic mastery that accumulates across
@@ -316,7 +337,13 @@ client/src/
   pages/         SignIn, Home, SubjectWorkspace, KnowledgeGraph,
                  Tests (builder), TestAttempt (focus mode), Insights
 
+server/evaluation/
+                 question-quality evaluation: generate.mjs (rating sheet +
+                 automatic measures), score.mjs (results from the raters'
+                 sheets), baseline/ (the earlier TF-IDF generator, frozen),
+                 samples/ (notes for trying it)
+
 verify/          Playwright end-to-end scripts + their screenshots;
                  fixtures/ holds sample multi-section PDF/DOCX/PPTX files
-docs/            feasibility report
+docs/            feasibility report; EVALUATION.md (evaluation protocol)
 ```

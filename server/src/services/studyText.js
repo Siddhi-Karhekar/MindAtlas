@@ -37,6 +37,10 @@ const BOILERPLATE = new RegExp(
     "\\bacademic\\s+year\\b", "\\b(?:19|20)\\d\\d\\s*[-–/]\\s*(?:19|20)?\\d\\d\\b", "\\bcourse\\s+(?:code|outcomes?|objectives?)\\b",
     "\\b(?:assignment|experiment|practical|tutorial)\\s+(?:no\\.?|number|\\d)", "\\b\\d+\\s*marks?\\b", "\\bdue\\s+(?:on|by|date)\\b",
     "[\\w.+-]+@[\\w-]+\\.[a-z]{2,}",
+    // how the course is run, not what it teaches: notices to the class and
+    // when or where an exam, lecture or lab takes place
+    "^students?\\s+(?:should|must|shall|are|will|need|have\\s+to)\\b", "\\bthis\\s+course\\b",
+    "\\b(?:exam(?:ination)?s?|quiz(?:zes)?|viva|lectures?|lab(?:oratory)?\\s+sessions?)\\b[^.]{0,60}\\bwill\\s+be\\s+(?:held|conducted|scheduled)\\b",
   ].join("|"),
   "i"
 );
