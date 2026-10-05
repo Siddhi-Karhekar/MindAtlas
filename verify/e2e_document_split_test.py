@@ -24,7 +24,7 @@ with sync_playwright() as p:
     page.goto(f"{BASE}/sign-in")
     page.click("text=Create a personal library")
     page.fill('input[type="email"]', f"split-{int(time.time())}@example.com")
-    page.fill('input[type="password"]', "password123")
+    page.fill('input[type="password"]', "river-Kettle-42x")
     page.click('button:has-text("Create your account")')
     page.wait_for_url(f"{BASE}/", timeout=10000)
     page.fill('input[placeholder="e.g. Neuroscience"]', "Operating Systems")

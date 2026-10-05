@@ -7,7 +7,13 @@ the first attempt's medium start - which can only happen if the first
 attempt's results were carried forward.
 
 Runs against the API directly (no browser) so the difficulty tier of each
-served question can be inspected. Start the server first:  cd server && npm run dev
+served question can be inspected. To answer "correctly" it needs the answer
+keys, which the API no longer sends to anyone by default. Start the server
+with them switched on for this script (a development-only setting, ignored in
+production):
+
+    cd server && TEST_REVEAL_KEYS=1 npm run dev          (macOS / Linux)
+    cd server; $env:TEST_REVEAL_KEYS=1; npm run dev      (Windows PowerShell)
 """
 import json
 import os
@@ -58,7 +64,7 @@ def call(method, path, body=None, token=None):
 def setup_student(tag):
     """Register a student, add the notes, build one test. Returns (token, subjectId, testId)."""
     email = f"{tag}-{int(time.time() * 1000)}@example.com"
-    status, d = call("POST", "/auth/register", {"email": email, "password": "password123"})
+    status, d = call("POST", "/auth/register", {"email": email, "password": "river-Kettle-42x"})
     assert status == 201, d
     token = d["token"]
     subject_id = call("POST", "/subjects", {"name": "Chemistry"}, token)[1]["subject"]["_id"]
@@ -83,11 +89,13 @@ def take_attempt(token, test_id, answer_correctly):
     question = d["question"]
     tiers = []
 
-    # Answer keys are never sent to the client mid-attempt, so to answer
-    # "correctly" we read the test's builder view, which only the owner can see.
+    # Answer keys are never sent to the client, so to answer "correctly" this
+    # asks for them with ?keys=1 - honoured only by a development server
+    # started with TEST_REVEAL_KEYS=1 (see the top of this file).
     keys = {}
-    for q in call("GET", f"/tests/{test_id}", token=token)[1]["questions"]:
+    for q in call("GET", f"/tests/{test_id}?keys=1", token=token)[1]["questions"]:
         keys[str(q["_id"])] = q.get("answerKey")
+    assert any(keys.values()), "start the server with TEST_REVEAL_KEYS=1 to run this script"
 
     while question:
         tiers.append(question.get("difficulty"))

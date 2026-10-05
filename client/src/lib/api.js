@@ -4,30 +4,69 @@
 const API_BASE =
   import.meta.env.VITE_API_BASE || (import.meta.env.DEV ? "http://localhost:4000/api" : "/api");
 
-function getToken() {
-  return localStorage.getItem("mindatlas_token");
+// THE SESSION. Signing in puts the session in a cookie the browser keeps and
+// sends by itself, and that page scripts cannot read (HttpOnly) - so a script
+// injected into the page cannot steal it. Nothing about the session is kept
+// in localStorage.
+//
+// Some browsers refuse a cookie from an API on a different address than the
+// page (the web client and the API hosted separately). There the token from
+// the sign-in answer is used instead, held in this variable only: it lasts
+// until the page is reloaded, and the student signs in again after that.
+// lib/AuthContext.jsx decides which of the two is in use.
+let memoryToken = null;
+export const setMemoryToken = (token) => {
+  memoryToken = token || null;
+};
+export const hasMemoryToken = () => Boolean(memoryToken);
+
+// The token of a session started before this change, when it was kept in
+// localStorage. Returned once and removed for good.
+export function takeLegacyToken() {
+  try {
+    const token = localStorage.getItem("mindatlas_token");
+    localStorage.removeItem("mindatlas_token");
+    return token;
+  } catch {
+    return null;
+  }
 }
 
-export function setToken(token) {
-  if (token) localStorage.setItem("mindatlas_token", token);
-  else localStorage.removeItem("mindatlas_token");
+// Told when the server says the session is over (expired, password changed,
+// account gone), so the app can go back to the sign-in page from wherever it is.
+let onSignedOut = () => {};
+export const setSignedOutHandler = (fn) => {
+  onSignedOut = fn;
+};
+
+/** An error from the API: `status` is the HTTP status, `code` a short machine name when the server gave one. */
+class ApiError extends Error {
+  constructor(message, status, code) {
+    super(message);
+    this.status = status;
+    this.code = code;
+  }
 }
 
-async function request(path, { method = "GET", body, isForm = false } = {}) {
-  const headers = {};
-  const token = getToken();
-  if (token) headers.Authorization = `Bearer ${token}`;
+function authHeaders(cookieOnly) {
+  return memoryToken && !cookieOnly ? { Authorization: `Bearer ${memoryToken}` } : {};
+}
+
+async function request(path, { method = "GET", body, isForm = false, cookieOnly = false, quiet = false } = {}) {
+  const headers = authHeaders(cookieOnly);
   if (body && !isForm) headers["Content-Type"] = "application/json";
 
   const res = await fetch(`${API_BASE}${path}`, {
     method,
     headers,
+    credentials: "include", // send the session cookie, also to an API on another address
     body: body ? (isForm ? body : JSON.stringify(body)) : undefined,
   });
 
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error(data.error || `Request failed (${res.status})`);
+    if (res.status === 401 && !quiet && !path.startsWith("/auth/")) onSignedOut();
+    throw new ApiError(data.error || `Request failed (${res.status})`, res.status, data.code);
   }
   return data;
 }
@@ -48,13 +87,11 @@ function fileNameFrom(disposition) {
 
 // A download: the answer is the file itself, not JSON. Returns { blob, fileName }.
 async function download(path) {
-  const headers = {};
-  const token = getToken();
-  if (token) headers.Authorization = `Bearer ${token}`;
-  const res = await fetch(`${API_BASE}${path}`, { headers });
+  const res = await fetch(`${API_BASE}${path}`, { headers: authHeaders(false), credentials: "include" });
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
-    throw new Error(data.error || `Download failed (${res.status})`);
+    if (res.status === 401) onSignedOut();
+    throw new ApiError(data.error || `Download failed (${res.status})`, res.status, data.code);
   }
   return { blob: await res.blob(), fileName: fileNameFrom(res.headers.get("Content-Disposition")) };
 }
@@ -71,9 +108,22 @@ function exportQuery(format) {
 }
 
 export const api = {
-  register: (email, password) => request("/auth/register", { method: "POST", body: { email, password } }),
+  // What the sign-in pages need first: a challenge for the sign-up form,
+  // whether this server sends email, the password length rule.
+  authConfig: () => request("/auth/config"),
+  // `challenge` comes from authConfig; `website` is the hidden field people leave empty
+  register: (email, password, { challenge, website = "" } = {}) =>
+    request("/auth/register", { method: "POST", body: { email, password, challenge, website } }),
   login: (email, password) => request("/auth/login", { method: "POST", body: { email, password } }),
-  me: () => request("/auth/me"),
+  logout: () => request("/auth/logout", { method: "POST" }),
+  // `cookieOnly`: ask without the in-memory token, to learn whether the cookie alone signs us in
+  me: ({ cookieOnly = false } = {}) => request("/auth/me", { cookieOnly, quiet: true }),
+  // moves a session held as a token into the cookie
+  adoptSession: () => request("/auth/session", { method: "POST" }),
+  verifyEmail: (token) => request("/auth/verify-email", { method: "POST", body: { token } }),
+  resendVerification: () => request("/auth/resend-verification", { method: "POST" }),
+  forgotPassword: (email) => request("/auth/forgot", { method: "POST", body: { email } }),
+  resetPassword: (token, password) => request("/auth/reset", { method: "POST", body: { token, password } }),
   changePassword: (currentPassword, newPassword) =>
     request("/auth/password", { method: "POST", body: { currentPassword, newPassword } }),
   // removes the account and everything in it; the password is asked for again

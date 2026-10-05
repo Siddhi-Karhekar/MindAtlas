@@ -2,8 +2,25 @@ import { getCollection } from "../db/index.js";
 
 const users = () => getCollection("users");
 
-export async function createUser({ email, passwordHash }) {
-  return users().insertOne({ email, passwordHash, createdAt: new Date() });
+// `emailVerified`: false until the address is confirmed, when the server has
+// email set up at sign-up time; true otherwise. Accounts made before this
+// existed have no such field and count as confirmed.
+export async function createUser({ email, passwordHash, emailVerified = true }) {
+  return users().insertOne({ email, passwordHash, emailVerified, createdAt: new Date() });
+}
+
+/** What the API says about an account: never the password hash. */
+export function publicUser(user) {
+  return { id: user._id, email: user.email, createdAt: user.createdAt, emailVerified: user.emailVerified !== false };
+}
+
+export async function markEmailVerified(id) {
+  return users().findOneAndUpdate({ _id: id }, { $set: { emailVerified: true } });
+}
+
+/** Store a stronger hash of the same password (the cost setting went up). Does not end sessions. */
+export async function upgradePasswordHash(id, passwordHash) {
+  return users().findOneAndUpdate({ _id: id }, { $set: { passwordHash } });
 }
 
 export async function findUserByEmail(email) {
@@ -14,8 +31,16 @@ export async function findUserById(id) {
   return users().findOne({ _id: id });
 }
 
+// Raising `sessionVersion` ends every session of the account: a session token
+// carries the version it was issued under (middleware/auth.js).
 export async function updateUserPassword(id, passwordHash) {
-  return users().findOneAndUpdate({ _id: id }, { $set: { passwordHash, passwordChangedAt: new Date() } });
+  const user = await users().findOne({ _id: id });
+  // a reset link asked for before the change must not work after it
+  await getCollection("email_tokens").deleteMany({ userId: String(id), purpose: "reset" });
+  return users().findOneAndUpdate(
+    { _id: id },
+    { $set: { passwordHash, passwordChangedAt: new Date(), sessionVersion: (user?.sessionVersion || 0) + 1 } }
+  );
 }
 
 /**
@@ -43,6 +68,7 @@ export async function deleteUserAndData(userId) {
   for (const name of ["feedback_reports", "attempts", "tests", "mastery", "notes", "subjects"]) {
     removed[name] = await col(name).deleteMany({ ownerId: userId });
   }
+  await col("email_tokens").deleteMany({ userId: String(userId) });
   removed.users = await users().deleteMany({ _id: userId });
   return removed;
 }

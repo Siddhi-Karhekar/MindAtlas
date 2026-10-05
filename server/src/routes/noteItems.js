@@ -1,13 +1,14 @@
-import { Router } from "express";
 import { findNoteById } from "../models/Note.js";
 import { requireAuth } from "../middleware/auth.js";
+import { safeRouter } from "../middleware/safeRouter.js";
+import { LIMITS, text } from "../middleware/validate.js";
 import { deleteNote, editNote } from "../services/noteLifecycle.js";
-import { editTextFor, withContent } from "../services/noteView.js";
+import { editTextFor, publicNote } from "../services/noteView.js";
 import { exportNote, parseFormat, sendExport } from "../services/noteExport/index.js";
 
 // One note, by id: read it for editing, download it, change it, delete it. (Creating and
 // listing notes belong to a subject and live in routes/notes.js.)
-const router = Router();
+const router = safeRouter();
 router.use(requireAuth);
 
 // Someone else's note is reported exactly like one that does not exist.
@@ -24,7 +25,7 @@ async function loadOwnedNote(req, res, next) {
 
 // GET /api/notes/:id - the note, plus `editText`: its content as editable text
 router.get("/:id", loadOwnedNote, (req, res) => {
-  res.json({ note: withContent(req.note), editText: editTextFor(req.note) });
+  res.json({ note: publicNote(req.note), editText: editTextFor(req.note) });
 });
 
 // GET /api/notes/:id/export?format=pdf|docx&tz=Asia/Kolkata
@@ -44,13 +45,15 @@ router.get("/:id/export", loadOwnedNote, async (req, res, next) => {
 // `content` is the edited text. Keywords and links are recomputed from it;
 // tests already built from the note are snapshots and do not change.
 router.patch("/:id", loadOwnedNote, async (req, res, next) => {
-  const { title, content } = req.body || {};
-  if (title === undefined && content === undefined) return res.status(400).json({ error: "send a title, content, or both" });
+  const body = req.body || {};
+  if (body.title === undefined && body.content === undefined) return res.status(400).json({ error: "send a title, content, or both" });
+  const title = body.title === undefined ? undefined : text(body.title, "title", { max: LIMITS.title });
+  const content = body.content === undefined ? undefined : text(body.content, "content", { max: LIMITS.noteText, trim: false });
   try {
     const result = await editNote(req.note, { title, text: content });
     res.json({
-      note: withContent(result.note),
-      parent: result.parent ? withContent(result.parent) : null,
+      note: publicNote(result.note),
+      parent: result.parent ? publicNote(result.parent) : null,
       edgesCreated: result.edgesCreated,
       crossSubjectEdgesCreated: result.crossSubjectEdgesCreated,
     });
@@ -65,7 +68,7 @@ router.patch("/:id", loadOwnedNote, async (req, res, next) => {
 router.delete("/:id", loadOwnedNote, async (req, res, next) => {
   try {
     const result = await deleteNote(req.note);
-    res.json({ ...result, parent: result.parent ? withContent(result.parent) : null });
+    res.json({ ...result, parent: result.parent ? publicNote(result.parent) : null });
   } catch (err) {
     next(err);
   }

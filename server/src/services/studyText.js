@@ -131,9 +131,15 @@ export function blocksOf(note) {
   return normalizeContent(blocksFromPlainText(note?.rawText || "", { ocr: note?.sourceType === "image" }), { title: note?.title });
 }
 
+// Line breaks are joined line by line (split, trim, join) and not with a
+// pattern such as /\s*\n\s*/, which on a long run of spaces retries from every
+// one of them.
 const splitSentences = (text) =>
   String(text || "")
-    .replace(/\s*\n\s*/g, " ")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join(" ")
     .split(/(?<=[.!?])\s+(?=["'(]?[A-Z0-9])/)
     .map((x) => x.trim())
     .filter(Boolean);

@@ -210,7 +210,7 @@ try {
     const res = await fetch(API + route, { method: "POST", headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify(body) });
     return res.json();
   };
-  const { token } = await post("/auth/register", { email: `eval${Date.now()}@example.com`, password: "password123" });
+  const { token } = await post("/auth/register", { email: `eval${Date.now()}@example.com`, password: "river-Kettle-42x" });
 
   console.log("\n=== The evaluation reads files the way the app does ===");
   const shape = (n) => JSON.stringify({ title: n.title, rawText: n.rawText, path: n.path || [], content: n.content, keywords: (n.keywords || []).map((k) => k.term ?? k) });

@@ -1,13 +1,16 @@
-import { Router } from "express";
 import { findOwnedSubject } from "../models/Subject.js";
 import { findChildNotes, findNotesByIds, isSplitParent, topicLabelFor } from "../models/Note.js";
 import { createTest, findTestsBySubject, findOwnedTest } from "../models/Test.js";
 import { createQuestions, findQuestionsByTest } from "../models/Question.js";
 import { requireAuth } from "../middleware/auth.js";
+import { safeRouter } from "../middleware/safeRouter.js";
+import { idList, integer, text } from "../middleware/validate.js";
+import { publicDoc } from "../services/noteView.js";
+import { isProduction } from "../config.js";
 import { generateQuestions } from "../services/testEngine.js";
 import { masteryMapForSubject } from "../models/Mastery.js";
 
-const router = Router();
+const router = safeRouter();
 router.use(requireAuth);
 
 // The adaptive controller (adaptiveEngine.js) needs a pool of accepted
@@ -59,14 +62,16 @@ router.post("/subjects/:id/tests", async (req, res) => {
   const subject = await findOwnedSubject(req.params.id, req.user.id);
   if (!subject) return res.status(404).json({ error: "subject not found" });
 
-  const { title, noteIds, mcqCount = 5, theoryCount = 0, marksPerQuestion = 1, durationMinutes = 15 } = req.body || {};
-  if (!title?.trim()) return res.status(400).json({ error: "title is required" });
-  if (!Array.isArray(noteIds) || noteIds.length === 0) {
-    return res.status(400).json({ error: "noteIds must be a non-empty array of note ids from this subject" });
-  }
-
-  const safeMcqCount = Math.max(0, Math.min(Number(mcqCount) || 0, 20));
-  const safeTheoryCount = Math.max(0, Math.min(Number(theoryCount) || 0, 20));
+  // Every field is read through a check: only these six are taken from the
+  // request, each of a known type and within a range. Nothing else a client
+  // sends reaches the stored test.
+  const body = req.body || {};
+  const title = text(body.title, "title");
+  const noteIds = idList(body.noteIds, "noteIds");
+  const safeMcqCount = integer(body.mcqCount, "mcqCount", { min: 0, max: 20, fallback: 5 });
+  const safeTheoryCount = integer(body.theoryCount, "theoryCount", { min: 0, max: 20, fallback: 0 });
+  const marksPerQuestion = integer(body.marksPerQuestion, "marksPerQuestion", { min: 1, max: 100, fallback: 1 });
+  const durationMinutes = integer(body.durationMinutes, "durationMinutes", { min: 1, max: 600, fallback: 15 });
   if (safeMcqCount + safeTheoryCount < 1) {
     return res.status(400).json({ error: "mcqCount + theoryCount must add up to at least 1" });
   }
@@ -89,7 +94,7 @@ router.post("/subjects/:id/tests", async (req, res) => {
   const test = await createTest({
     ownerId: req.user.id,
     subjectId: subject._id,
-    title: title.trim(),
+    title,
     noteIds: notesInSubject.map((n) => n._id),
     marksPerQuestion,
     durationMinutes,
@@ -113,7 +118,7 @@ router.post("/subjects/:id/tests", async (req, res) => {
   const acceptedCount = stored.filter((q) => q.status === "accepted").length;
 
   res.status(201).json({
-    test,
+    test: publicDoc(test),
     mcqGeneratedBy,
     theoryGeneratedBy,
     // "embeddings" when the semantic model judged relevance and key terms,
@@ -131,18 +136,27 @@ router.get("/subjects/:id/tests", async (req, res) => {
   if (!subject) return res.status(404).json({ error: "subject not found" });
 
   const tests = await findTestsBySubject(subject._id);
-  res.json({ tests });
+  res.json({ tests: tests.map(publicDoc) });
 });
 
-// GET /api/tests/:id - builder/review view: includes answer keys and
-// discarded items, so only the owner should ever call this (never expose
-// it to a student mid-attempt).
+// GET /api/tests/:id - a test and its questions, WITHOUT answer keys, the
+// sentences they were drawn from or the grading rubric. The owner of a test
+// is the student who will sit it, so sending those here would hand over the
+// answers before the attempt; they are shown after submission, in the
+// feedback report.
+//
+// For checking the generator while developing, a server started with
+// TEST_REVEAL_KEYS=1 sends them when asked with ?keys=1. Ignored in
+// production whatever the setting says.
 router.get("/tests/:id", async (req, res) => {
   const test = await findOwnedTest(req.params.id, req.user.id);
   if (!test) return res.status(404).json({ error: "test not found" });
 
   const questions = await findQuestionsByTest(test._id);
-  res.json({ test, questions });
+  const withKeys = req.query.keys === "1" && process.env.TEST_REVEAL_KEYS === "1" && !isProduction();
+  // eslint-disable-next-line no-unused-vars
+  const withoutKeys = ({ answerKey, supportingExcerpt, keyPoints, ...q }) => q;
+  res.json({ test: publicDoc(test), questions: withKeys ? questions : questions.map(withoutKeys) });
 });
 
 export default router;

@@ -270,8 +270,8 @@ try {
     const res = await fetch(API + route, { headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...headers } });
     return { status: res.status, type: res.headers.get("content-type"), disposition: res.headers.get("content-disposition"), exposed: res.headers.get("access-control-expose-headers"), cache: res.headers.get("cache-control"), body: Buffer.from(await res.arrayBuffer()) };
   };
-  const { token } = await json("/auth/register", { method: "POST", body: { email: `export${Date.now()}@example.com`, password: "password123" } });
-  const other = await json("/auth/register", { method: "POST", body: { email: `export-other${Date.now()}@example.com`, password: "password123" } });
+  const { token } = await json("/auth/register", { method: "POST", body: { email: `export${Date.now()}@example.com`, password: "river-Kettle-42x" } });
+  const other = await json("/auth/register", { method: "POST", body: { email: `export-other${Date.now()}@example.com`, password: "river-Kettle-42x" } });
   const { subject: subj } = await json("/subjects", { method: "POST", body: { name: "Databases" }, token });
   const form = new FormData();
   form.append("file", new Blob([fs.readFileSync(SAMPLE)]), "dbms_unit4.md");

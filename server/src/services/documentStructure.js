@@ -23,7 +23,7 @@
 // Everything here is deterministic and rule-based - no ML, no LLM - so the same
 // file always splits the same way and the split can be explained in a demo.
 
-import { computeTfidf } from "./tfidf.js";
+import { computeTfidf, tokenSet } from "./tfidf.js";
 
 // A section shorter than this is merged into its neighbour rather than kept as
 // its own subtopic: too little text to generate a grounded question from.
@@ -105,6 +105,15 @@ const MAX_LIST_DEPTH = 3;
  * depths are tidied the same way, so a list never starts indented and never
  * jumps two levels at once.
  */
+// Runs of spaces and tabs inside a block are one space: a page shows them as
+// one anyway, and a very long run (a file padded with spaces) makes several
+// of the patterns that later read this text take time that grows with the
+// square of its length. Likewise no real paragraph has more than a few dozen
+// bold terms; a line of thousands of "**a**" would make everything that
+// handles them one by one crawl.
+const squeeze = (text) => String(text).replace(/[ \t\u00a0]{2,}/g, " ");
+const MAX_STRONG_PER_BLOCK = 40;
+
 export function normalizeContent(blocks, { title = null } = {}) {
   let list = (blocks || []).filter((b) => b && b.type !== "title" && String(b.text || "").trim());
   // a leading heading that only repeats the note's own title is dropped
@@ -121,8 +130,8 @@ export function normalizeContent(blocks, { title = null } = {}) {
   let prevDepth = -1; // depth of the previous item in the current run, -1 = no run
   let base = 0;
   for (const b of list) {
-    const text = String(b.text).trim();
-    const strong = (b.strong || []).filter((t) => t && text.includes(t));
+    const text = squeeze(String(b.text).trim());
+    const strong = (b.strong || []).slice(0, MAX_STRONG_PER_BLOCK).map(squeeze).filter((t) => t && text.includes(t));
     if (b.type === "item") {
       const raw = Math.max(0, b.depth || 0);
       if (prevDepth < 0) base = raw;
@@ -347,6 +356,9 @@ function splitIntoParts(blocks) {
   const total = countWords(body.map((b) => b.text).join(" "));
   if (total < FALLBACK_MIN_DOC_WORDS) return [];
 
+  // parts of about FALLBACK_CHUNK_WORDS words, but never more than
+  // MAX_SECTIONS of them: a very long document gets longer parts, not hundreds
+  const chunkWords = Math.max(FALLBACK_CHUNK_WORDS, Math.ceil(total / MAX_SECTIONS));
   const chunks = [];
   let cur = [];
   let words = 0;
@@ -354,21 +366,22 @@ function splitIntoParts(blocks) {
     cur.push(b);
     words += countWords(b.text);
     // never cut in the middle of a list
-    if (words >= FALLBACK_CHUNK_WORDS && b.type !== "item") {
+    if (words >= chunkWords && b.type !== "item") {
       chunks.push(cur);
       cur = [];
       words = 0;
     }
   }
   if (cur.length) {
-    if (chunks.length && words < FALLBACK_CHUNK_WORDS / 3) chunks[chunks.length - 1].push(...cur);
+    if (chunks.length && (words < chunkWords / 3 || chunks.length >= MAX_SECTIONS)) chunks[chunks.length - 1].push(...cur);
     else chunks.push(cur);
   }
   if (chunks.length < 2) return [];
 
   const texts = chunks.map((c) => blocksToText(c));
+  const sets = texts.map(tokenSet); // each part tokenised once, not once per other part
   return texts.map((text, i) => {
-    const others = texts.filter((_, j) => j !== i);
+    const others = sets.filter((_, j) => j !== i);
     const { keywords } = computeTfidf(text, others);
     const label = keywords.slice(0, 3).join(", ");
     return {

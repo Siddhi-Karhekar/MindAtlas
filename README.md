@@ -70,6 +70,14 @@ Team roles and branch conventions are in [`CONTRIBUTING.md`](CONTRIBUTING.md).
   document's full text rebuilt from what remains. Tests are snapshots: a
   question carries its own text, so editing or deleting a note never changes
   a test, attempt or feedback report that already exists.
+- **Accounts**: sign-in is a session cookie that page scripts cannot read
+  (nothing is kept in localStorage); passwords must be at least 10 characters
+  and not a common one; wrong passwords are throttled per account; signing
+  out, changing or resetting the password ends sessions. With an email
+  account configured (`SMTP_*`), new addresses have to be confirmed and
+  "Forgot password?" sends a reset link; without one, neither is offered.
+  [`docs/SECURITY.md`](docs/SECURITY.md) lists every protection, how it was
+  checked, and what is not covered.
 - **Notes can be downloaded as a PDF or a Word file**
   (`services/noteExport/`): one note, a whole document with all its
   subtopics, or every note of a subject. The file follows the reading pane -
@@ -314,10 +322,12 @@ and at least two raters.
 7. **Deployment** - a single-service Render + MongoDB Atlas setup and a
    Dockerfile are in place (see [`DEPLOY.md`](DEPLOY.md)); still open: CI
    (lint, build, tests, `npm audit`, secret scan).
-8. **Production hardening still open** - the API now has a CORS allowlist,
-   per-IP rate limiting, a hard failure on a missing production
-   `JWT_SECRET`, and basic security headers; consider `helmet`, a shared
-   rate-limit store for multi-instance deploys, and secret rotation.
+8. **Production hardening** - done in the security pass (see
+   [`docs/SECURITY.md`](docs/SECURITY.md)): validated input, cookie sessions,
+   cross-site request checks, security headers, HTTPS only, upload checks,
+   email confirmation and password reset. Still open there: turning email on
+   (needs an SMTP account), putting the client and API on one address, a
+   CAPTCHA, a shared rate-limit store for multi-instance deploys.
 
 ## Project layout
 
@@ -326,7 +336,9 @@ server/src/
   db/            in-memory + real-MongoDB backends behind one interface
   models/        thin repositories (users, subjects, notes, graph_edges,
                  tests, questions, attempts, responses, feedback_reports)
-  middleware/    JWT auth, in-memory rate limiter
+  middleware/    auth (sessions: cookie or bearer), origin (cross-site
+                 request check), validate (input checks), safeRouter (async
+                 errors, id checks), securityHeaders, rateLimit, upload
   routes/        auth (+ password, delete account), subjects (+ graph),
                  notes (create / list), noteItems (read / edit / delete
                  one note), tests, attempts
@@ -338,7 +350,11 @@ server/src/
                  (optional local model), testEngine (question generation +
                  gate), adaptiveEngine (staircase),
                  gradingEngine (theory answers), feedbackEngine (scoring),
-                 noteExport/ (notes as PDF / Word: model, pdf, docx)
+                 noteExport/ (notes as PDF / Word: model, pdf, docx),
+                 uploadCheck + extractInWorker (is a file what it claims;
+                 read it on its own thread, under a time limit),
+                 passwordPolicy, loginThrottle, signupChallenge, mailer,
+                 emailTokens (confirmation and reset links)
 server/assets/   fonts embedded in the PDF download (DejaVu Sans, free licence)
 
 client/src/
@@ -357,5 +373,6 @@ server/evaluation/
 
 verify/          Playwright end-to-end scripts + their screenshots;
                  fixtures/ holds sample multi-section PDF/DOCX/PPTX files
-docs/            feasibility report; EVALUATION.md (evaluation protocol)
+docs/            feasibility report; EVALUATION.md (evaluation protocol);
+                 SECURITY.md (what is protected, how it was checked, limits)
 ```

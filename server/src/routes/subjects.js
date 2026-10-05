@@ -1,25 +1,25 @@
-import { Router } from "express";
 import { createSubject, findSubjectsByOwner, findOwnedSubject } from "../models/Subject.js";
 import { findNotesByIds, findNotesBySubject } from "../models/Note.js";
 import { findCrossSubjectEdges, findEdgesBySubject, isRemoved, toApiEdge } from "../models/GraphEdge.js";
 import { requireAuth } from "../middleware/auth.js";
+import { safeRouter } from "../middleware/safeRouter.js";
+import { LIMITS, text } from "../middleware/validate.js";
+import { publicDoc } from "../services/noteView.js";
 import { clusterNotes } from "../services/graphEngine.js";
 import { exportSubject, parseFormat, sendExport } from "../services/noteExport/index.js";
 
-const router = Router();
+const router = safeRouter();
 router.use(requireAuth);
 
 router.post("/", async (req, res) => {
-  const { name } = req.body || {};
-  if (!name || !name.trim()) return res.status(400).json({ error: "name is required" });
-
-  const subject = await createSubject({ ownerId: req.user.id, name: name.trim() });
-  res.status(201).json({ subject });
+  const name = text(req.body?.name, "name", { max: LIMITS.subjectName });
+  const subject = await createSubject({ ownerId: req.user.id, name });
+  res.status(201).json({ subject: publicDoc(subject) });
 });
 
 router.get("/", async (req, res) => {
   const subjects = await findSubjectsByOwner(req.user.id);
-  res.json({ subjects });
+  res.json({ subjects: subjects.map(publicDoc) });
 });
 
 export async function loadOwnedSubject(req, res, next) {

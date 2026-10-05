@@ -876,8 +876,43 @@ other three to finish anything. Start now:
 > move to the single service (delete the static site first, then deploy the
 > Blueprint). Don't apply the Blueprint as-is.
 >
+> **Security pass (5 Oct)** - full list in `docs/SECURITY.md`. What changes
+> for everyone writing server code:
+> - **Make routers with `safeRouter()`** (`middleware/safeRouter.js`), never
+>   `Router()`. It passes an `async` handler's error to the error handler.
+>   Before this, one request with a password sent as an object crashed the
+>   whole server (Express 4 does not catch async errors, and Node ends the
+>   process on an unhandled rejection).
+> - **Read every request field through `middleware/validate.js`**
+>   (`text`, `integer`, `id`, `idList`, `email`, `oneOf`). They throw an
+>   `InputError`, which is answered as a 400. Never spread `req.body` into a
+>   record: take named fields.
+> - **Send records through `publicNote` / `publicDoc`** (`services/noteView.js`)
+>   so internal fields (`ownerId`, `vector`) stay on the server. `GET
+>   /api/tests/:id` no longer includes answer keys; for scripts that need them
+>   in development, start the server with `TEST_REVEAL_KEYS=1` and ask with
+>   `?keys=1` (`verify/e2e_cross_attempt.py` does).
+> - **Database filters take plain values or lists of them only**
+>   (`db/filter.js`). An object or `undefined` as a filter value throws.
+> - **Sessions**: `requireAuth` now accepts the session cookie or a bearer
+>   token and looks the account up on every request; `req.user` is unchanged,
+>   `req.account` is the full record. A request that changes data from a
+>   browser needs an allowed `Origin`. Tokens of the test password
+>   `password123` no longer work: the password rules refuse it, tests use
+>   `river-Kettle-42x`.
+> - **Uploads are read in a worker thread** (`services/extractInWorker.js`)
+>   after `services/uploadCheck.js` has checked what the file really is.
+> - **Member 4**: the four deploy items at the top of `docs/SECURITY.md`
+>   (email settings, one address for client and API, static-site headers,
+>   Atlas user). None is needed for the app to keep working. `docker-compose.yml`
+>   now sets `TRUST_PROXY` empty, because the compose stack has no proxy in
+>   front and would otherwise believe any `X-Forwarded-For`.
+> - **Tests**: `server/test/security.test.mjs` (part of `npm test`), on
+>   **ports 4591 to 4593** (a stand-in mail server, and the API in production
+>   and development setups).
+>
 > **Things everyone should know**
-> - **CI ports**: the server tests start the API on 4594 to 4599 - don't add
+> - **CI ports**: the server tests start the API on 4591 to 4599 - don't add
 >   anything to CI that uses them.
 > - **Free-tier sleep**: the API sleeps after 15 idle minutes; the first
 >   request then takes ~20-50 s. Open `/api/health` a minute before a demo.
