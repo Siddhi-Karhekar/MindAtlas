@@ -12,3 +12,4 @@ server/semantic/package-lock.json
 server/data/
 # question-quality evaluation runs (server/evaluation/): may contain your own notes and raters' names
 evaluation-output/
+Claude outputs/
