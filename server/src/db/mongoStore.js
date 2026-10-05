@@ -1,5 +1,6 @@
 import { MongoClient } from "mongodb";
 import { generateId } from "./ids.js";
+import { assertSafeFilter, candidatesOf } from "./filter.js";
 
 // Real MongoDB backend (e.g. Atlas), implementing the same tiny interface
 // as memoryStore.js so route/service code never has to know or care which
@@ -25,10 +26,16 @@ import { generateId } from "./ids.js";
 // An array filter value (or an explicit {$in: [...]}) matches if the field
 // equals any element - the same shorthand memoryStore.js supports. No type
 // conversion happens here by design (see above).
+//
+// This is also where a query is "parameterised": the only operator that ever
+// reaches MongoDB is the $in written on the line below. A filter value that
+// is itself an object - how an operator such as {$ne: null} would be injected
+// - is refused by candidatesOf (filter.js) before the query is built.
 function toMongoFilter(filter) {
+  assertSafeFilter(filter);
   const out = {};
   for (const [k, v] of Object.entries(filter)) {
-    const candidates = Array.isArray(v) ? v : v && typeof v === "object" && "$in" in v ? v.$in : null;
+    const candidates = candidatesOf(k, v);
     out[k] = candidates ? { $in: candidates } : v;
   }
   return out;
@@ -95,6 +102,14 @@ export async function createMongoDb(uri) {
   const client = new MongoClient(uri);
   await client.connect();
   const db = client.db("mindatlas");
+  // One account per email address, enforced by the database itself: two
+  // sign-ups for the same address arriving together cannot both be stored.
+  // (If the collection already holds duplicates the index cannot be built;
+  // the server still starts, and says so.)
+  await db
+    .collection("users")
+    .createIndex({ email: 1 }, { unique: true })
+    .catch((err) => console.warn("[db] could not create the unique index on users.email:", err.message));
   return {
     kind: "mongo",
     collection(name) {

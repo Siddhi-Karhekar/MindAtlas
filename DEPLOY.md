@@ -80,6 +80,24 @@ From now on, every `git push` to `main` redeploys automatically.
 - **Groq limits:** the Groq free tier is rate-limited. If it is exceeded, the app
   falls back to rule-based questions and grading on its own.
 
+## Email (optional)
+
+With an email account configured the app asks new users to confirm their
+address and offers "Forgot password?". Without one, neither is offered and
+everything else works. Set on the API service:
+
+| Variable | Example |
+| --- | --- |
+| `SMTP_HOST` | `smtp.gmail.com` (use an "app password") or `smtp-relay.brevo.com` |
+| `SMTP_PORT` | `465` for Gmail, `587` for Brevo |
+| `SMTP_USER`, `SMTP_PASS` | the mail account's sign-in |
+| `MAIL_FROM` | `Mind Atlas <you@example.com>` |
+| `APP_URL` | the address students open, e.g. `https://mindatlas.onrender.com` |
+
+`/api/health` shows `"email":{"enabled":true}` once it is on. The security
+settings and the remaining deploy steps are in
+[`docs/SECURITY.md`](docs/SECURITY.md).
+
 ## Other hosts
 
 The included `Dockerfile` builds the same single container. It runs on

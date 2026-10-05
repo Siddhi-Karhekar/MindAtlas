@@ -119,7 +119,7 @@ try {
     throw new Error(`server did not start: ${why}\n${serverLog}`);
   }
 
-  const token = (await call("/auth/register", { method: "POST", body: { email: "uploader@example.com", password: "password123" } })).data.token;
+  const token = (await call("/auth/register", { method: "POST", body: { email: "uploader@example.com", password: "river-Kettle-42x" } })).data.token;
   const subjectId = (await call("/subjects", { method: "POST", token, body: { name: "Science" } })).data.subject._id;
   let expectedNotes = 0;
 

@@ -1,16 +1,19 @@
-import { Router } from "express";
 import { findOwnedSubject } from "../models/Subject.js";
 import { createNote, findNotesByOwner, findNotesBySubject, isSplitParent, setChildCount } from "../models/Note.js";
 import { requireAuth } from "../middleware/auth.js";
+import { safeRouter } from "../middleware/safeRouter.js";
+import { LIMITS, text } from "../middleware/validate.js";
 import { uploadSingle } from "../middleware/upload.js";
 import { extractTextFromImage } from "../services/ocr.js";
-import { blocksFromOcrLines, classifyUpload, extractDocument, titleFromFilename } from "../services/documentText.js";
+import { blocksFromOcrLines, classifyUpload, titleFromFilename } from "../services/documentText.js";
+import { extractInWorker } from "../services/extractInWorker.js";
 import { blocksFromPlainText, countWords, normalizeContent, segmentDocument } from "../services/documentStructure.js";
-import { computeTfidf } from "../services/tfidf.js";
+import { computeTfidf, tokenSet } from "../services/tfidf.js";
 import { updateGraphForNote } from "../services/graphEngine.js";
-import { withContent } from "../services/noteView.js";
+import { publicNote } from "../services/noteView.js";
+import { checkUploadContent } from "../services/uploadCheck.js";
 
-const router = Router();
+const router = safeRouter();
 router.use(requireAuth);
 
 const UNSUPPORTED =
@@ -33,7 +36,21 @@ async function readUpload(file) {
     const ext = (String(file.originalname || "").match(/\.[a-z0-9]+$/i)?.[0] || "").toLowerCase();
     throw new Error(LEGACY_OFFICE[ext] || UNSUPPORTED);
   }
+  const read = await readUploadOfKind(file, kind);
+  if (read.content.length > MAX_UPLOAD_TEXT) {
+    throw new Error(`this file has too much text for one note (about ${countWords(read.content).toLocaleString("en-GB")} words) - upload it in parts`);
+  }
+  return read;
+}
+
+// About 250,000 words. Past this, splitting, keyword extraction and linking
+// take long enough to hold up every other student's requests.
+const MAX_UPLOAD_TEXT = 1_500_000;
+
+async function readUploadOfKind(file, kind) {
   if (kind === "image") {
+    // the file has to BE a picture, and of a size that is safe to decode
+    await checkUploadContent(file, kind);
     // scanned / photographed notes: read with OCR.
     const { text, ocrFailed, lines } = await extractTextFromImage(file.buffer);
     if (!text) {
@@ -50,7 +67,9 @@ async function readUpload(file) {
     if (page?.text) return { kind, content: page.text, sourceType: "image", ocrFailed, blocks: page.blocks };
     return { kind, content: text, sourceType: "image", ocrFailed, blocks: blocksFromPlainText(text, { ocr: true }) };
   }
-  const { text, blocks } = await extractDocument(file, kind);
+  // Checked (is it what its name says, is it safe to open) and read on a
+  // thread of its own, under a time limit: see services/extractInWorker.js.
+  const { text, blocks } = await extractInWorker(file, kind);
   if (!text) {
     throw new Error(
       kind === "pdf"
@@ -107,8 +126,10 @@ router.post("/:id/notes", uploadSingle("file", 10), async (req, res) => {
   const subject = await findOwnedSubject(req.params.id, req.user.id);
   if (!subject) return res.status(404).json({ error: "subject not found" });
 
-  let { title, content } = req.body || {};
-  const userTitle = Boolean(title && String(title).trim());
+  const body = req.body || {};
+  let title = text(body.title, "title", { required: false, max: LIMITS.title });
+  let content = req.file ? "" : text(body.content, "content", { required: false, max: LIMITS.noteText, trim: false });
+  const userTitle = Boolean(title);
   let sourceType = "typed";
   let ocrFailed = false;
   let blocks = null;
@@ -120,7 +141,7 @@ router.post("/:id/notes", uploadSingle("file", 10), async (req, res) => {
     } catch (err) {
       return res.status(400).json({ error: err.message });
     }
-    title = title || titleFromFilename(req.file.originalname) || req.file.originalname;
+    title = (title || titleFromFilename(req.file.originalname) || req.file.originalname).slice(0, LIMITS.title);
   }
 
   if (!title || !title.trim()) return res.status(400).json({ error: "title is required" });
@@ -143,7 +164,7 @@ router.post("/:id/notes", uploadSingle("file", 10), async (req, res) => {
   if (sourceType !== "file" && seg.method === "chunks") seg = NO_SPLIT;
   // A file name like "unit3_final_v2" makes a worse title than the heading the
   // document gives itself, so an untitled upload uses its own title if found.
-  if (req.file && !userTitle && seg.docTitle && seg.sections.length >= 2) title = seg.docTitle;
+  if (req.file && !userTitle && seg.docTitle && seg.sections.length >= 2) title = seg.docTitle.slice(0, LIMITS.title);
 
   // Split parents are containers whose text duplicates their children's, so
   // they are left out of both the TF-IDF corpus (it would double-count every
@@ -175,7 +196,7 @@ router.post("/:id/notes", uploadSingle("file", 10), async (req, res) => {
       content: normalizeContent(blocks, { title: title.trim() }),
     });
     const edges = await updateGraphForNote(note, ownerNotes);
-    return res.status(201).json({ note: withContent(note), children: [], ...countLinks(edges) });
+    return res.status(201).json({ note: publicNote(note), children: [], ...countLinks(edges) });
   }
 
   // Parent: keeps the whole text for reading, and document-level keywords for
@@ -200,14 +221,16 @@ router.post("/:id/notes", uploadSingle("file", 10), async (req, res) => {
   // AND its sibling sections, so its keywords are what make it distinct from
   // the other parts of the same document - "tlb, frames, offset" for Paging
   // rather than "memory, process" shared by every section.
-  const sectionTexts = seg.sections.map((s) => s.text);
+  // tokenised once each; every section is then compared against all of them
+  const corpusSets = corpus.map(tokenSet);
+  const sectionSets = seg.sections.map((s) => tokenSet(s.text));
   const children = [];
   const allEdges = [];
   const linkable = [...ownerNotes];
   for (let i = 0; i < seg.sections.length; i++) {
     const s = seg.sections[i];
-    const siblings = sectionTexts.filter((_, j) => j !== i);
-    const { vector, keywords } = computeTfidf(s.text, [...corpus, ...siblings]);
+    const siblings = sectionSets.filter((_, j) => j !== i);
+    const { vector, keywords } = computeTfidf(s.text, [...corpusSets, ...siblings]);
     const child = await createNote({
       ownerId: req.user.id,
       subjectId: subject._id,
@@ -232,8 +255,8 @@ router.post("/:id/notes", uploadSingle("file", 10), async (req, res) => {
   await setChildCount(parent._id, children.length);
 
   res.status(201).json({
-    note: withContent({ ...parent, childCount: children.length }),
-    children: children.map(withContent),
+    note: publicNote({ ...parent, childCount: children.length }),
+    children: children.map(publicNote),
     ...countLinks(allEdges),
   });
 });
@@ -243,7 +266,7 @@ router.get("/:id/notes", async (req, res) => {
   if (!subject) return res.status(404).json({ error: "subject not found" });
 
   const notes = await findNotesBySubject(subject._id);
-  res.json({ notes: notes.map(withContent) });
+  res.json({ notes: notes.map(publicNote) });
 });
 
 export default router;

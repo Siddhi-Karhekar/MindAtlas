@@ -33,16 +33,24 @@ function termFrequencies(tokens) {
 }
 
 /**
+ * The distinct terms of a document. A caller that compares many texts against
+ * the same documents (every section of an upload against its siblings) calls
+ * this once per document and passes the sets as the corpus, instead of having
+ * every document tokenised again for every section.
+ */
+export const tokenSet = (doc) => (doc instanceof Set ? doc : new Set(tokenize(doc)));
+
+/**
  * Compute a TF-IDF vector and top keywords for `text`, using `corpusDocs`
- * (an array of raw text strings - the subject's other notes) to derive
- * document frequency / idf.
+ * (the subject's other notes: raw text strings, or their tokenSet()s) to
+ * derive document frequency / idf.
  */
 export function computeTfidf(text, corpusDocs = []) {
   const tokens = tokenize(text);
   const tf = termFrequencies(tokens);
   const totalTerms = tokens.length || 1;
 
-  const corpusTokenSets = corpusDocs.map((doc) => new Set(tokenize(doc)));
+  const corpusTokenSets = corpusDocs.map(tokenSet);
   const numDocs = corpusTokenSets.length + 1; // include this doc itself
 
   const vector = {};

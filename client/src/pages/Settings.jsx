@@ -18,14 +18,20 @@ const THEMES = [
 ];
 
 export default function Settings() {
-  const { user, logout } = useAuth();
+  const { user, logout, adopt } = useAuth();
   const { theme, setTheme } = useTheme();
   const navigate = useNavigate();
   const [tab, setTab] = useState("appearance");
 
-  function handleSignOut() {
-    logout();
-    navigate("/sign-in");
+  const [signOutError, setSignOutError] = useState("");
+  async function handleSignOut() {
+    setSignOutError("");
+    try {
+      await logout();
+      navigate("/sign-in");
+    } catch (err) {
+      setSignOutError(err.message);
+    }
   }
 
   // change password
@@ -36,7 +42,9 @@ export default function Settings() {
     if (pw.next !== pw.again) return setPwState({ busy: false, error: "The two new passwords do not match.", done: false });
     setPwState({ busy: true, error: "", done: false });
     try {
-      await api.changePassword(pw.current, pw.next);
+      const data = await api.changePassword(pw.current, pw.next);
+      // every other session of the account has ended; this one carries on with a new one
+      await adopt(data.token);
       setPw({ current: "", next: "", again: "" });
       setPwState({ busy: false, error: "", done: true });
     } catch (err) {
@@ -51,7 +59,7 @@ export default function Settings() {
     setDel((d) => ({ ...d, busy: true, error: "" }));
     try {
       await api.deleteAccount(del.password);
-      logout();
+      await logout().catch(() => {}); // the account is gone; the server has already ended the session
       navigate("/sign-in");
     } catch (err) {
       setDel((d) => ({ ...d, busy: false, error: err.message }));
@@ -79,6 +87,11 @@ export default function Settings() {
         </div>
       </div>
 
+      {signOutError && (
+        <p role="alert" className="mb-space-md font-body-sm text-body-sm text-error" data-testid="sign-out-error">
+          {signOutError}
+        </p>
+      )}
       <div className="grid grid-cols-1 md:grid-cols-[180px_1fr] gap-space-2xl">
         <nav className="flex md:flex-col gap-space-2xs overflow-x-auto" aria-label="Settings sections">
           <button type="button" className={tabClass(tab === "appearance")} onClick={() => setTab("appearance")}>
@@ -166,15 +179,17 @@ export default function Settings() {
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-space-md">
                   <label className="flex flex-col gap-space-xs font-ui-body text-ui-body text-on-surface">
                     New password
-                    <input type="password" autoComplete="new-password" required minLength={8} value={pw.next} onChange={(e) => setPw({ ...pw, next: e.target.value })} className={field} />
+                    <input type="password" autoComplete="new-password" required minLength={10} value={pw.next} onChange={(e) => setPw({ ...pw, next: e.target.value })} className={field} />
                   </label>
                   <label className="flex flex-col gap-space-xs font-ui-body text-ui-body text-on-surface">
                     New password again
-                    <input type="password" autoComplete="new-password" required minLength={8} value={pw.again} onChange={(e) => setPw({ ...pw, again: e.target.value })} className={field} />
+                    <input type="password" autoComplete="new-password" required minLength={10} value={pw.again} onChange={(e) => setPw({ ...pw, again: e.target.value })} className={field} />
                   </label>
                 </div>
                 <div className="flex items-center justify-between gap-space-md flex-wrap">
-                  <p className="font-body-sm text-body-sm text-on-surface-variant">At least 8 characters.</p>
+                  <p className="font-body-sm text-body-sm text-on-surface-variant">
+                    At least 10 characters. Not a common password, not your email name, not only digits. Changing it signs you out everywhere else.
+                  </p>
                   <button type="submit" disabled={pwState.busy} className="h-9 px-space-lg rounded-lg bg-primary text-on-primary font-ui-body text-ui-body hover:opacity-90 disabled:opacity-60">
                     {pwState.busy ? "Saving…" : "Change password"}
                   </button>
@@ -186,7 +201,7 @@ export default function Settings() {
                 )}
                 {pwState.done && (
                   <p role="status" className="font-body-sm text-body-sm text-secondary" data-testid="password-changed">
-                    Password changed. Use the new one the next time you sign in.
+                    Password changed. Other devices have been signed out; use the new password there.
                   </p>
                 )}
               </form>

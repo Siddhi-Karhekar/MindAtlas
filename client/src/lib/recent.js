@@ -40,3 +40,14 @@ export function getSubjectVisits() {
     return {};
   }
 }
+
+/** Forget where the last student was: called on sign-out, for shared computers. */
+export function clearRecent() {
+  for (const key of [SUBJECT, ATTEMPT, VISITS]) {
+    try {
+      localStorage.removeItem(key);
+    } catch {
+      /* ignore */
+    }
+  }
+}

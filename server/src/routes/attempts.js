@@ -1,10 +1,12 @@
-import { Router } from "express";
 import { findOwnedTest } from "../models/Test.js";
 import { findQuestionsByTest, findQuestionsByIds } from "../models/Question.js";
 import { createAttempt, findAttemptsBySubject, findOwnedAttempt, markAttemptSubmitted, recordQuestionShown } from "../models/Attempt.js";
 import { upsertResponse, findResponsesByAttempt, updateResponseGrade } from "../models/Response.js";
 import { createFeedbackReport, findFeedbackByAttempt, findFeedbackBySubject } from "../models/FeedbackReport.js";
 import { requireAuth } from "../middleware/auth.js";
+import { safeRouter } from "../middleware/safeRouter.js";
+import { LIMITS, id, text } from "../middleware/validate.js";
+import { publicDoc } from "../services/noteView.js";
 import { computeDocumentRollup, computeTopicScores, computeMarksSummary, phraseFeedback } from "../services/feedbackEngine.js";
 import { gradeAttemptResponses, quickTheoryScore } from "../services/gradingEngine.js";
 import { nextDifficulty, pickNextQuestion, startingDifficulty } from "../services/adaptiveEngine.js";
@@ -15,7 +17,7 @@ import { difficultyForMastery } from "../services/masteryEngine.js";
 import { findTestsBySubject } from "../models/Test.js";
 import { findNotesBySubject } from "../models/Note.js";
 
-const router = Router();
+const router = safeRouter();
 router.use(requireAuth);
 
 function forAttemptTaking(question) {
@@ -64,7 +66,7 @@ router.post("/tests/:id/attempts", async (req, res) => {
   });
 
   res.status(201).json({
-    attempt,
+    attempt: publicDoc(attempt),
     // Lets the focus-mode screen show the test's name and enforce its time limit.
     test: { _id: test._id, title: test.title, subjectId: test.subjectId, durationMinutes: test.durationMinutes },
     question: forAttemptTaking(firstQuestion),
@@ -95,8 +97,14 @@ router.post("/attempts/:id/responses", loadOwnedAttempt, async (req, res) => {
     return res.status(400).json({ error: "this attempt has already been submitted" });
   }
 
-  const { questionId, answer, timeMs = 0 } = req.body || {};
-  if (!questionId) return res.status(400).json({ error: "questionId is required" });
+  // Three fields are taken from the request, each checked. Whether the answer
+  // is right, and its score, are worked out here from the stored question -
+  // a client cannot send them.
+  const body = req.body || {};
+  const questionId = id(body.questionId, "questionId");
+  const answer = text(body.answer, "answer", { required: false, max: LIMITS.answer, trim: false });
+  // time on the question, in ms: a number between 0 and four hours, else 0
+  const timeMs = typeof body.timeMs === "number" && Number.isFinite(body.timeMs) ? Math.min(4 * 3600_000, Math.max(0, Math.round(body.timeMs))) : 0;
 
   // Only the question the attempt is currently waiting on can be answered:
   // the most recently shown one. This stops a client from answering
@@ -169,7 +177,7 @@ router.post("/attempts/:id/responses", loadOwnedAttempt, async (req, res) => {
 router.post("/attempts/:id/submit", loadOwnedAttempt, async (req, res) => {
   if (req.attempt.status !== "in_progress") {
     const existing = await findFeedbackByAttempt(req.attempt._id);
-    return res.json({ attempt: req.attempt, feedback: existing });
+    return res.json({ attempt: publicDoc(req.attempt), feedback: publicDoc(existing) });
   }
 
   const [responses, allQuestions] = await Promise.all([
@@ -233,7 +241,7 @@ router.post("/attempts/:id/submit", loadOwnedAttempt, async (req, res) => {
     marksPossible,
   });
 
-  res.json({ attempt, feedback });
+  res.json({ attempt: publicDoc(attempt), feedback: publicDoc(feedback) });
 });
 
 router.get("/attempts/:id/feedback", loadOwnedAttempt, async (req, res) => {
@@ -242,7 +250,7 @@ router.get("/attempts/:id/feedback", loadOwnedAttempt, async (req, res) => {
   // Extra context for the results screen (test name, subject, timing). Purely additive.
   const test = await findOwnedTest(req.attempt.testId, req.user.id);
   res.json({
-    feedback,
+    feedback: publicDoc(feedback),
     attempt: {
       _id: req.attempt._id,
       startedAt: req.attempt.startedAt,

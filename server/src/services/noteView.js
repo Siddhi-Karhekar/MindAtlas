@@ -24,13 +24,34 @@ export function withContent(note) {
   return { ...note, content, path };
 }
 
+/**
+ * A note as the API sends it: with content and path, without what only the
+ * server uses - the TF-IDF vector (large, and of no use to a client) and the
+ * owner's id (always the caller's own).
+ */
+export function publicNote(note) {
+  if (!note) return note;
+  // eslint-disable-next-line no-unused-vars
+  const { vector, ownerId, ...rest } = withContent(note);
+  return rest;
+}
+
+/** Any other record as the API sends it: without the owner's id. */
+export function publicDoc(doc) {
+  if (!doc) return doc;
+  // eslint-disable-next-line no-unused-vars
+  const { ownerId, ...rest } = doc;
+  return rest;
+}
+
 const escapeRe = (w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 // Put the author's bold back: the first use of each term, longest term first
 // so "exclusive lock" is not split by "lock".
 function withBold(text, strong = []) {
   let out = String(text);
-  for (const term of [...strong].sort((a, b) => b.length - a.length)) {
+  // capped: each term is a pass over the text (content written before the cap in normalizeContent)
+  for (const term of [...strong].slice(0, 40).sort((a, b) => b.length - a.length)) {
     const re = new RegExp(`(?<![\\w*])${escapeRe(term)}(?![\\w*])`);
     out = out.replace(re, (m) => `**${m}**`);
   }

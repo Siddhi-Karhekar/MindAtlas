@@ -358,6 +358,38 @@ to show.
 >   it expires.
 > - **Tests**: `server/test/noteLifecycle.test.mjs` (60 checks, part of
 >   `npm test`), on **port 4596**.
+>
+> **Downloading notes as PDF or Word (4 Oct)** - `server/src/services/noteExport/`.
+> - `GET /api/notes/:id/export?format=pdf|docx` (a note; for a split
+>   document, the whole document) and `GET /api/subjects/:id/export` (every
+>   note of the subject). `tz` is the student's time zone, for the date on
+>   the first page. The download button is `components/DownloadMenu.jsx`, in
+>   the reading pane's header.
+> - `model.js` decides what the file says and how it is coloured, once;
+>   `pdf.js` and `docx.js` only draw it. The colouring rules in `format.js`
+>   are a **copy** of `client/src/lib/noteFormat.js` and the outline helpers
+>   of `client/src/lib/notes.js` (the server cannot import client code once
+>   deployed). The test runs both copies on the same notes and fails if they
+>   differ, and checks the colours against `index.css`: change one side,
+>   change the other.
+> - **New server dependencies**: `pdfkit` and `docx` (both MIT, both loaded
+>   only when the first download is asked for). Run `npm install` in
+>   `server/` after pulling. `npm audit --audit-level=high` is still clean.
+> - **Fonts**: `server/assets/fonts/` holds DejaVu Sans regular and bold
+>   (1.5 MB, free licence in `LICENSE.txt` beside them), embedded in the PDF
+>   because they have the Greek letters, arrows and maths signs notes use.
+>   Word files name Calibri and use whatever the reader's machine has.
+> - **Known limits**: the Word contents list has no page numbers (Word only
+>   knows them once the file is open; asking for them makes Word show a
+>   warning on opening) - the PDF has them. Scripts DejaVu lacks (Devanagari,
+>   Chinese, emoji) print as a replacement mark in the PDF; the Word file
+>   keeps them. The key terms that get coloured are the note's TF-IDF
+>   keywords, as on screen, so some are ordinary words. Downloads are limited
+>   to 60 per 15 minutes per address (`RATE_LIMIT_EXPORT_MAX`).
+> - **Tests**: `server/test/noteExport.test.mjs` (76 checks, part of
+>   `npm test`), on **port 4594**. It reads the files back - the Word file
+>   with the app's Word reader, the PDF with its PDF reader - and checks that
+>   each contents line prints the page its topic is really on.
 
 What's missing (post-Saturday backlog, not this week):
 1. **Summarization** — a new endpoint that takes a note's raw text (or a
@@ -721,6 +753,33 @@ doc, is kept below for reference:
 > **Still open**: theory answers are still graded by keyword overlap without
 > an LLM key (the embedding model could grade by meaning); single-word terms
 > are weaker than phrases when the model is off.
+>
+> **Evaluating question quality (4 Oct)** - `server/evaluation/`, protocol in
+> `docs/EVALUATION.md`. `npm run eval:generate -- <notes folder>` builds
+> questions from the same notes with the earlier TF-IDF generator (frozen in
+> `evaluation/baseline/`, from `d202772`), the current rules, and the
+> embedding model if installed, and writes a shuffled, blinded
+> `rating_sheet.csv`, its `key.csv`, and automatic measures (`metrics.md`).
+> Raters save their copies as `ratings_<name>.csv`; `npm run eval:score --
+> <folder>` reports per-strategy scores with Wilson intervals, each strategy
+> against the baseline (Fisher / Mann-Whitney, Holm-corrected) and
+> inter-rater kappa.
+> - **No results exist yet.** They need real notes that the generator was not
+>   developed on, and at least two raters. The two files in
+>   `evaluation/samples/` are for trying the tool only - the rules were
+>   written while looking at them.
+> - `evaluation/lib/ingest.js` repeats what the upload route does, without a
+>   database. If you change how `routes/notes.js` builds notes, change it
+>   there too; the test below fails if the two disagree.
+> - Found while building it: with the model off, a notice such as "The
+>   examination for this course will be held ..." got through. `studyText.js`
+>   now drops notices to the class and exam/lecture arrangements.
+> - **Tests**: `server/test/evaluation.test.mjs` (75 checks, part of
+>   `npm test`): the statistics against values from scipy, the measures, a
+>   whole generate-rate-score run on the samples, and the app-vs-evaluation
+>   check, which starts the real API on **port 4595**.
+> - Evaluation output (`evaluation-output/`) is git-ignored: it holds notes'
+>   text and raters' names.
 
 > **Status (27 Sep)**
 > - **Steps 1–4: done** (see above).
@@ -817,8 +876,43 @@ other three to finish anything. Start now:
 > move to the single service (delete the static site first, then deploy the
 > Blueprint). Don't apply the Blueprint as-is.
 >
+> **Security pass (5 Oct)** - full list in `docs/SECURITY.md`. What changes
+> for everyone writing server code:
+> - **Make routers with `safeRouter()`** (`middleware/safeRouter.js`), never
+>   `Router()`. It passes an `async` handler's error to the error handler.
+>   Before this, one request with a password sent as an object crashed the
+>   whole server (Express 4 does not catch async errors, and Node ends the
+>   process on an unhandled rejection).
+> - **Read every request field through `middleware/validate.js`**
+>   (`text`, `integer`, `id`, `idList`, `email`, `oneOf`). They throw an
+>   `InputError`, which is answered as a 400. Never spread `req.body` into a
+>   record: take named fields.
+> - **Send records through `publicNote` / `publicDoc`** (`services/noteView.js`)
+>   so internal fields (`ownerId`, `vector`) stay on the server. `GET
+>   /api/tests/:id` no longer includes answer keys; for scripts that need them
+>   in development, start the server with `TEST_REVEAL_KEYS=1` and ask with
+>   `?keys=1` (`verify/e2e_cross_attempt.py` does).
+> - **Database filters take plain values or lists of them only**
+>   (`db/filter.js`). An object or `undefined` as a filter value throws.
+> - **Sessions**: `requireAuth` now accepts the session cookie or a bearer
+>   token and looks the account up on every request; `req.user` is unchanged,
+>   `req.account` is the full record. A request that changes data from a
+>   browser needs an allowed `Origin`. Tokens of the test password
+>   `password123` no longer work: the password rules refuse it, tests use
+>   `river-Kettle-42x`.
+> - **Uploads are read in a worker thread** (`services/extractInWorker.js`)
+>   after `services/uploadCheck.js` has checked what the file really is.
+> - **Member 4**: the four deploy items at the top of `docs/SECURITY.md`
+>   (email settings, one address for client and API, static-site headers,
+>   Atlas user). None is needed for the app to keep working. `docker-compose.yml`
+>   now sets `TRUST_PROXY` empty, because the compose stack has no proxy in
+>   front and would otherwise believe any `X-Forwarded-For`.
+> - **Tests**: `server/test/security.test.mjs` (part of `npm test`), on
+>   **ports 4591 to 4593** (a stand-in mail server, and the API in production
+>   and development setups).
+>
 > **Things everyone should know**
-> - **CI ports**: the server tests start the API on 4598 and 4599 - don't add
+> - **CI ports**: the server tests start the API on 4591 to 4599 - don't add
 >   anything to CI that uses them.
 > - **Free-tier sleep**: the API sleeps after 15 idle minutes; the first
 >   request then takes ~20-50 s. Open `/api/health` a minute before a demo.

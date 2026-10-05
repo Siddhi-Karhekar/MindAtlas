@@ -70,6 +70,24 @@ Team roles and branch conventions are in [`CONTRIBUTING.md`](CONTRIBUTING.md).
   document's full text rebuilt from what remains. Tests are snapshots: a
   question carries its own text, so editing or deleting a note never changes
   a test, attempt or feedback report that already exists.
+- **Accounts**: sign-in is a session cookie that page scripts cannot read
+  (nothing is kept in localStorage); passwords must be at least 10 characters
+  and not a common one; wrong passwords are throttled per account; signing
+  out, changing or resetting the password ends sessions. With an email
+  account configured (`SMTP_*`), new addresses have to be confirmed and
+  "Forgot password?" sends a reset link; without one, neither is offered.
+  [`docs/SECURITY.md`](docs/SECURITY.md) lists every protection, how it was
+  checked, and what is not covered.
+- **Notes can be downloaded as a PDF or a Word file**
+  (`services/noteExport/`): one note, a whole document with all its
+  subtopics, or every note of a subject. The file follows the reading pane -
+  each topic's headings and key terms in its colour, body text plain, four
+  heading sizes, real bullets and tables - and opens with a contents list.
+  In the PDF the contents list has page numbers and links, and the topics
+  are bookmarks; in the Word file it links to each topic and the headings
+  are Word's own Heading styles, so the file stays editable. Built on the
+  server with `pdfkit` and `docx`, from the same `content` the screen shows;
+  no outside service.
 - **Account controls**: change password (asks for the current one) and
   delete account, which removes every subject, note, link, test, attempt and
   progress record the account owns. There is no "forgot password" yet - that
@@ -254,6 +272,27 @@ shows up locally. Keeping a single id type removes the whole class of bug.
 If you add a field holding an id, store it and query it as a string, and add
 a case to `server/test/mongoStore.test.mjs`.
 
+## Evaluating question quality
+
+`server/evaluation/` measures how good the generated questions are, for a
+report: it builds questions from the same notes with the earlier TF-IDF
+generator, the current rule-based one, and (if installed) the embedding
+model, writes a shuffled rating sheet that hides which wrote which, and
+turns the raters' sheets into scores with intervals, significance tests and
+inter-rater agreement. It also computes automatic measures such as how often
+a blank hides only part of a term.
+
+```bash
+cd server
+npm run eval:generate -- evaluation/samples --out evaluation-output/try
+# raters fill in copies of rating_sheet.csv, saved as ratings_<name>.csv
+npm run eval:score -- evaluation-output/try
+```
+
+[`docs/EVALUATION.md`](docs/EVALUATION.md) has the protocol, the rating
+rubric and the limits to state. No results exist yet: they need real notes
+and at least two raters.
+
 ## What's next
 
 1. **Bayesian Knowledge Tracing** - per-topic mastery that accumulates across
@@ -283,10 +322,12 @@ a case to `server/test/mongoStore.test.mjs`.
 7. **Deployment** - a single-service Render + MongoDB Atlas setup and a
    Dockerfile are in place (see [`DEPLOY.md`](DEPLOY.md)); still open: CI
    (lint, build, tests, `npm audit`, secret scan).
-8. **Production hardening still open** - the API now has a CORS allowlist,
-   per-IP rate limiting, a hard failure on a missing production
-   `JWT_SECRET`, and basic security headers; consider `helmet`, a shared
-   rate-limit store for multi-instance deploys, and secret rotation.
+8. **Production hardening** - done in the security pass (see
+   [`docs/SECURITY.md`](docs/SECURITY.md)): validated input, cookie sessions,
+   cross-site request checks, security headers, HTTPS only, upload checks,
+   email confirmation and password reset. Still open there: turning email on
+   (needs an SMTP account), putting the client and API on one address, a
+   CAPTCHA, a shared rate-limit store for multi-instance deploys.
 
 ## Project layout
 
@@ -295,7 +336,9 @@ server/src/
   db/            in-memory + real-MongoDB backends behind one interface
   models/        thin repositories (users, subjects, notes, graph_edges,
                  tests, questions, attempts, responses, feedback_reports)
-  middleware/    JWT auth, in-memory rate limiter
+  middleware/    auth (sessions: cookie or bearer), origin (cross-site
+                 request check), validate (input checks), safeRouter (async
+                 errors, id checks), securityHeaders, rateLimit, upload
   routes/        auth (+ password, delete account), subjects (+ graph),
                  notes (create / list), noteItems (read / edit / delete
                  one note), tests, attempts
@@ -306,17 +349,30 @@ server/src/
                  subject matter), keyTerms (whole key terms), embeddings
                  (optional local model), testEngine (question generation +
                  gate), adaptiveEngine (staircase),
-                 gradingEngine (theory answers), feedbackEngine (scoring)
+                 gradingEngine (theory answers), feedbackEngine (scoring),
+                 noteExport/ (notes as PDF / Word: model, pdf, docx),
+                 uploadCheck + extractInWorker (is a file what it claims;
+                 read it on its own thread, under a time limit),
+                 passwordPolicy, loginThrottle, signupChallenge, mailer,
+                 emailTokens (confirmation and reset links)
+server/assets/   fonts embedded in the PDF download (DejaVu Sans, free licence)
 
 client/src/
   lib/           API client + auth context; notes (outline tree),
                  noteFormat (key terms and topic colours)
   components/    shared app shell (nav, sign-out); NoteContent (the one
-                 place a note's text is formatted)
+                 place a note's text is formatted); DownloadMenu
   pages/         SignIn, Home, SubjectWorkspace, KnowledgeGraph,
                  Tests (builder), TestAttempt (focus mode), Insights
 
+server/evaluation/
+                 question-quality evaluation: generate.mjs (rating sheet +
+                 automatic measures), score.mjs (results from the raters'
+                 sheets), baseline/ (the earlier TF-IDF generator, frozen),
+                 samples/ (notes for trying it)
+
 verify/          Playwright end-to-end scripts + their screenshots;
                  fixtures/ holds sample multi-section PDF/DOCX/PPTX files
-docs/            feasibility report
+docs/            feasibility report; EVALUATION.md (evaluation protocol);
+                 SECURITY.md (what is protected, how it was checked, limits)
 ```

@@ -53,7 +53,7 @@ try {
     throw new Error(`server did not start: ${why}\n${serverLog}`);
   }
 
-  const register = async (email) => (await call("/auth/register", { method: "POST", body: { email, password: "password123" } })).data.token;
+  const register = async (email) => (await call("/auth/register", { method: "POST", body: { email, password: "river-Kettle-42x" } })).data.token;
   const alice = await register("alice@example.com");
   const bob = await register("bob@example.com");
   const subject = async (name) => (await call("/subjects", { method: "POST", token: alice, body: { name } })).data.subject._id;

@@ -1,10 +1,10 @@
-import { Router } from "express";
 import { requireAuth } from "../middleware/auth.js";
+import { safeRouter } from "../middleware/safeRouter.js";
 import { findEdgeById, isRemoved, setEdgeCorrection, toApiEdge } from "../models/GraphEdge.js";
 import { findNotesByIds } from "../models/Note.js";
 import { buildKeywordMap } from "../services/keywordMap.js";
 
-const router = Router();
+const router = safeRouter();
 router.use(requireAuth);
 
 // POST /api/graph/edges/:id/correct   body: { action: "remove" | "restore" }

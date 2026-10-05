@@ -4,6 +4,7 @@ import { api } from "../lib/api.js";
 import { formatDate, readingMinutes, timeAgo, wordCount } from "../lib/format.js";
 import Icon from "../components/Icon.jsx";
 import NoteContent from "../components/NoteContent.jsx";
+import DownloadMenu from "../components/DownloadMenu.jsx";
 import { flattenOutline, isSplitParent, isTopicNote, noteTree, outlineTree } from "../lib/notes.js";
 import { stableColorIndex, topicClass } from "../lib/noteFormat.js";
 
@@ -163,6 +164,39 @@ export default function SubjectWorkspace() {
     () => (heading) => outlineById.colorByTitle.get(String(heading).trim().toLowerCase()) ?? null,
     [outlineById]
   );
+  // What can be downloaded from here: what is open, the document it belongs
+  // to, and the whole subject.
+  const downloadChoices = [];
+  if (selected) {
+    const isDoc = selectedChildren.length > 0;
+    const count = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+    downloadChoices.push({
+      key: "note",
+      label: isDoc ? "This document" : selectedParent ? "This topic" : "This note",
+      hint: isDoc ? `${selected.title} · ${count(selectedChildren.length, "topic")}` : selected.title,
+      fallbackName: selected.title,
+      fetch: (format) => api.exportNote(selected._id, format),
+    });
+    if (selectedParent) {
+      downloadChoices.push({
+        key: "document",
+        label: "Whole document",
+        hint: `${selectedParent.title} · ${count(siblings.length, "topic")}`,
+        fallbackName: selectedParent.title,
+        fetch: (format) => api.exportNote(selectedParent._id, format),
+      });
+    }
+    if (tree.top.length > 1) {
+      downloadChoices.push({
+        key: "subject",
+        label: "Whole subject",
+        hint: `${subject?.name || "Subject"} · ${count(tree.top.length, "note")}`,
+        fallbackName: subject?.name || "notes",
+        fetch: (format) => api.exportSubject(subjectId, format),
+      });
+    }
+  }
+
   // a note holding several top-level sections is coloured section by section
   const manySections = (selected?.content || []).filter((b) => b.type === "heading" && b.level === 1).length >= 2;
 
@@ -446,6 +480,7 @@ export default function SubjectWorkspace() {
                       <span>{readingMinutes(selected.rawText)} min read · {SOURCE_LABEL[selected.sourceType] || selected.sourceType}</span>
                     </div>
                     <div className="flex items-center gap-space-2xs">
+                      <DownloadMenu choices={downloadChoices} />
                       <Link
                         to={`/subjects/${subjectId}/notes/${selected._id}/edit`}
                         data-testid="note-edit"

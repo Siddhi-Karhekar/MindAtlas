@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
 import { generateId } from "./ids.js";
+import { assertSafeFilter, candidatesOf } from "./filter.js";
 
 // Zero-setup dev database: a plain in-memory Map per collection, exposing
 // just the handful of MongoDB-shaped operations the app actually uses
@@ -22,9 +23,10 @@ import { generateId } from "./ids.js";
 // A filter value that's an array (or an explicit {$in: [...]}) matches if
 // the doc's field equals any element - the same shorthand real MongoDB
 // filters use, kept minimal since this store only ever needs equality/$in.
+// Anything other than a plain value or a list of them is refused (filter.js).
 function matches(doc, filter) {
   return Object.entries(filter).every(([k, v]) => {
-    const candidates = Array.isArray(v) ? v : v && typeof v === "object" && "$in" in v ? v.$in : null;
+    const candidates = candidatesOf(k, v);
     if (candidates) return candidates.some((c) => String(doc[k]) === String(c));
     return String(doc[k]) === String(v);
   });
@@ -45,6 +47,7 @@ class MemoryCollection {
   }
 
   async findOne(filter) {
+    assertSafeFilter(filter);
     for (const doc of this.docs.values()) {
       if (matches(doc, filter)) return { ...doc };
     }
@@ -52,6 +55,7 @@ class MemoryCollection {
   }
 
   async find(filter = {}, { sort } = {}) {
+    assertSafeFilter(filter);
     let results = [...this.docs.values()]
       .filter((d) => matches(d, filter))
       .map((d) => ({ ...d }));
@@ -67,6 +71,7 @@ class MemoryCollection {
   }
 
   async findOneAndUpdate(filter, update, { upsert = false } = {}) {
+    assertSafeFilter(filter);
     let existing = null;
     for (const doc of this.docs.values()) {
       if (matches(doc, filter)) {
@@ -91,6 +96,7 @@ class MemoryCollection {
    */
   async deleteMany(filter) {
     if (!filter || Object.keys(filter).length === 0) throw new Error("deleteMany needs a filter");
+    assertSafeFilter(filter);
     let deleted = 0;
     for (const [id, doc] of this.docs) {
       if (matches(doc, filter)) {

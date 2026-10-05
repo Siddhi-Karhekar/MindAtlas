@@ -69,10 +69,21 @@ export function titleFromFilename(name = "") {
   return (i > 0 ? base.slice(0, i) : base).replace(/[_]+/g, " ").trim();
 }
 
+// Trailing spaces are cut line by line with trimEnd, not with a pattern such
+// as /[ \t]+\n/: on a long run of spaces that is not followed by a line break
+// a pattern like that retries from every space, and a 200 KB file of spaces
+// held the server for half a minute.
+const trimLineEnd = (line) => {
+  let end = line.length;
+  while (end > 0 && (line.charCodeAt(end - 1) === 32 || line.charCodeAt(end - 1) === 9)) end -= 1;
+  return end === line.length ? line : line.slice(0, end);
+};
 function tidy(text) {
   return String(text || "")
     .replace(/\r\n?/g, "\n")
-    .replace(/[ \t]+\n/g, "\n")
+    .split("\n")
+    .map(trimLineEnd)
+    .join("\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
@@ -504,6 +515,16 @@ async function boldFontsOf(page, content) {
   return bold;
 }
 
+// Parsing is done page by page on the one thread every request shares, so a
+// very long PDF would hold everyone else up.
+const MAX_PDF_PAGES = 400;
+class TooLong extends Error {
+  constructor(pages) {
+    super("too many pages");
+    this.pages = pages;
+  }
+}
+
 async function extractPdf(buffer) {
   let pdf;
   try {
@@ -513,6 +534,7 @@ async function extractPdf(buffer) {
       isEvalSupported: false,
       verbosity: 0,
     }).promise;
+    if (pdf.numPages > MAX_PDF_PAGES) throw new TooLong(pdf.numPages);
     const pages = [];
     for (let n = 1; n <= pdf.numPages; n++) {
       const page = await pdf.getPage(n);
@@ -522,6 +544,9 @@ async function extractPdf(buffer) {
     }
     return buildPdfBlocks(pages);
   } catch (err) {
+    if (err instanceof TooLong) {
+      throw new Error(`this PDF has ${err.pages} pages - the limit is ${MAX_PDF_PAGES}. Upload it in parts`);
+    }
     console.error("[pdf] extraction failed:", err.message);
     throw new Error("could not read this PDF - it may be damaged or password-protected");
   } finally {

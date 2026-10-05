@@ -244,7 +244,7 @@ try {
     });
     return { status: res.status, ...(await res.json().catch(() => ({}))) };
   };
-  const { token } = await json("/auth/register", { method: "POST", body: { email: `content${Date.now()}@example.com`, password: "password123" } });
+  const { token } = await json("/auth/register", { method: "POST", body: { email: `content${Date.now()}@example.com`, password: "river-Kettle-42x" } });
   const { subject } = await json("/subjects", { method: "POST", body: { name: "Networks" }, token });
   const upload = async (name, buffer, fields = {}) => {
     const form = new FormData();

@@ -82,7 +82,7 @@ try {
   };
   const signUp = async (name) => {
     const email = `${name}${Date.now()}@example.com`;
-    const r = await call("/auth/register", { method: "POST", body: { email, password: "password123" } });
+    const r = await call("/auth/register", { method: "POST", body: { email, password: "river-Kettle-42x" } });
     return { email, token: r.token };
   };
   const me = await signUp("owner");
@@ -212,10 +212,15 @@ try {
   console.log("\n=== Changing the password ===");
   const pw = (body, token = me.token) => call("/auth/password", { method: "POST", token, body });
   check("the current password must be right", (await pw({ currentPassword: "wrong", newPassword: "another-pass-1" })).status === 401);
-  check("the new one must be at least 8 characters", (await pw({ currentPassword: "password123", newPassword: "short" })).status === 400);
-  check("...and different from the current one", (await pw({ currentPassword: "password123", newPassword: "password123" })).status === 400);
-  check("a valid change is accepted", (await pw({ currentPassword: "password123", newPassword: "another-pass-1" })).ok === true);
-  check("the old password no longer signs in", (await call("/auth/login", { method: "POST", body: { email: me.email, password: "password123" } })).status === 401);
+  check("the new one must be at least 8 characters", (await pw({ currentPassword: "river-Kettle-42x", newPassword: "short" })).status === 400);
+  check("...and different from the current one", (await pw({ currentPassword: "river-Kettle-42x", newPassword: "river-Kettle-42x" })).status === 400);
+  const oldToken = me.token;
+  const changed = await pw({ currentPassword: "river-Kettle-42x", newPassword: "another-pass-1" });
+  check("a valid change is accepted", changed.ok === true && typeof changed.token === "string");
+  check("every session from before the change stops working", (await call("/subjects", { token: oldToken })).status === 401);
+  me.token = changed.token; // the session that made the change carries on
+  check("...and the one that made it carries on", (await call("/subjects", { token: me.token })).status === 200);
+  check("the old password no longer signs in", (await call("/auth/login", { method: "POST", body: { email: me.email, password: "river-Kettle-42x" } })).status === 401);
   check("the new one does", Boolean((await call("/auth/login", { method: "POST", body: { email: me.email, password: "another-pass-1" } })).token));
   check("it needs a signed-in user", (await call("/auth/password", { method: "POST", body: { currentPassword: "a", newPassword: "bbbbbbbbb" } })).status === 401);
 
@@ -227,8 +232,8 @@ try {
   check("with it, the account and its data are removed", r.ok === true && r.removed.users === 1 && r.removed.notes >= 4 && r.removed.subjects === 1 && r.removed.tests >= 2, JSON.stringify(r.removed));
   check("...including questions, attempts, responses and feedback", r.removed.questions > 0 && r.removed.attempts === 1 && r.removed.responses > 0 && r.removed.feedback_reports === 1, JSON.stringify(r.removed));
   check("signing in no longer works", (await call("/auth/login", { method: "POST", body: { email: me.email, password: "another-pass-1" } })).status === 401);
-  check("the old session sees none of the data", ((await call("/subjects", { token: me.token })).subjects || []).length === 0 && (await call("/auth/me", { token: me.token })).status === 404);
-  check("the same email can sign up afresh", (await call("/auth/register", { method: "POST", body: { email: me.email, password: "password123" } })).status === 201);
+  check("the old session sees none of the data", ((await call("/subjects", { token: me.token })).subjects || []).length === 0 && (await call("/auth/me", { token: me.token })).status === 401);
+  check("the same email can sign up afresh", (await call("/auth/register", { method: "POST", body: { email: me.email, password: "river-Kettle-42x" } })).status === 201);
   const theirs = await call(`/subjects/${theirSubject._id}/notes`, { token: other.token });
   check("nobody else's data was touched", theirs.notes?.length === 1 && theirs.notes[0]._id === theirNote._id);
 } catch (err) {
