@@ -1,8 +1,9 @@
-import { createSubject, findSubjectsByOwner, findOwnedSubject } from "../models/Subject.js";
+import { createSubject, deleteSubjectAndData, findSubjectsByOwner, findOwnedSubject, updateSubject } from "../models/Subject.js";
 import { findNotesByIds, findNotesBySubject } from "../models/Note.js";
 import { findCrossSubjectEdges, findEdgesBySubject, isRemoved, toApiEdge } from "../models/GraphEdge.js";
 import { requireAuth } from "../middleware/auth.js";
 import { safeRouter } from "../middleware/safeRouter.js";
+import { once } from "../middleware/once.js";
 import { LIMITS, text } from "../middleware/validate.js";
 import { publicDoc } from "../services/noteView.js";
 import { clusterNotes } from "../services/graphEngine.js";
@@ -11,10 +12,32 @@ import { exportSubject, parseFormat, sendExport } from "../services/noteExport/i
 const router = safeRouter();
 router.use(requireAuth);
 
-router.post("/", async (req, res) => {
+// a folder name: free text, or nothing (an empty string clears it)
+const groupField = (value) => text(value, "group", { required: false, max: 60 }) || null;
+
+router.post("/", once(), async (req, res) => {
   const name = text(req.body?.name, "name", { max: LIMITS.subjectName });
-  const subject = await createSubject({ ownerId: req.user.id, name });
+  const group = groupField(req.body?.group);
+  const subject = await createSubject({ ownerId: req.user.id, name, group });
   res.status(201).json({ subject: publicDoc(subject) });
+});
+
+// DELETE /api/subjects/:id - the subject and everything in it, for good
+router.delete("/:id", async (req, res) => {
+  const removed = await deleteSubjectAndData(req.params.id, req.user.id);
+  if (!removed) return res.status(404).json({ error: "subject not found" });
+  res.json({ ok: true, removed });
+});
+
+// PATCH /api/subjects/:id  { name?, group? } - rename, or move to another folder
+router.patch("/:id", async (req, res) => {
+  const fields = {};
+  if (req.body?.name !== undefined) fields.name = text(req.body.name, "name", { max: LIMITS.subjectName });
+  if (req.body?.group !== undefined) fields.group = groupField(req.body.group);
+  if (Object.keys(fields).length === 0) return res.status(400).json({ error: "nothing to change - send name or group" });
+  const subject = await updateSubject(req.params.id, req.user.id, fields);
+  if (!subject) return res.status(404).json({ error: "subject not found" });
+  res.json({ subject: publicDoc(subject) });
 });
 
 router.get("/", async (req, res) => {

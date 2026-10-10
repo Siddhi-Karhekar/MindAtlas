@@ -82,7 +82,8 @@ member's section of §3.
 **Member 3: tests and feedback**
 1. Merge `test-generation-and-feedback` without its `KnowledgeGraph.jsx`
    change (urgent).
-2. Enforce the time limit on the server as well as in the browser (new).
+2. ~~Enforce the time limit on the server as well as in the browser.~~ Done
+   (`docs/ASSESSMENT.md`).
 3. Make the docs match BKT, and reword "IRT-inspired" (new).
 4. Quality upgrades: distractor gating for LLM-drafted questions, fuzzy
    excerpt matching, a stricter theory-grading prompt (README "What's next"
@@ -787,11 +788,9 @@ doc, is kept below for reference:
 >   mastery model (see §0). `server/test/masteryEngine.test.mjs` already
 >   covers it (32 checks). The "don't ship it running this week" note above
 >   no longer applies.
-> - **Timer: done in the browser, not on the server.** `TestAttempt.jsx`
->   counts down from `durationMinutes` and submits when it reaches zero. The
->   server doesn't check the time, so answers sent after the deadline are
->   still accepted. The README's "What's next" item 4 still says there is no
->   countdown.
+> - **Timer: done on the server.** Each attempt stores its deadline; answers
+>   after it (plus 30 s) are refused, and the page counts down to the
+>   server's deadline. See `docs/ASSESSMENT.md`.
 > - **Webcam proctoring: not started** (stretch goal, unchanged).
 > - **Also on `main`** (`c317224`, 26 Sep): tests, mastery and feedback work
 >   per subtopic, so feedback can name a subtopic ("Paging in Unit 3").
@@ -803,10 +802,8 @@ doc, is kept below for reference:
 > 1. **Merge `test-generation-and-feedback` without its `KnowledgeGraph.jsx`
 >    change** (urgent). Wait for Member 2's dark-mode fix, restore `main`'s
 >    `KnowledgeGraph.jsx` on the branch, then merge.
-> 2. **Enforce the time limit on the server.** Each attempt already stores
->    `startedAt`, so reject answers and submissions that arrive after
->    `startedAt + durationMinutes` plus a short grace period. That way the
->    limit holds even if someone edits the page.
+> 2. ~~**Enforce the time limit on the server.**~~ Done: answers after the
+>    deadline plus 30 s are refused (`routes/attempts.js`).
 > 3. **Make the docs match BKT.** Fix the README's prototype-scope note and
 >    "What's next" items 1 and 4. Reword the "IRT-inspired" comment in
 >    `adaptiveEngine.js` to call it a rule-based staircase.

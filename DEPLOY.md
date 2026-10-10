@@ -80,6 +80,39 @@ From now on, every `git push` to `main` redeploys automatically.
 - **Groq limits:** the Groq free tier is rate-limited. If it is exceeded, the app
   falls back to rule-based questions and grading on its own.
 
+## Rolling back a bad deploy (2 minutes)
+
+A deploy that breaks the site is undone on Render first, and fixed in Git
+afterwards, so students are not left waiting while the fix is written.
+
+1. **Put the last good version back:** Render dashboard → the service →
+   **Deploys** → the last deploy that worked → **Rollback** → **Rollback to
+   this deploy**. Render redeploys that build (with that deploy's environment
+   variables); the site is back within a couple of minutes. A rollback from the
+   dashboard turns off auto-deploy, so the next push does not bring the problem
+   straight back. ([Render: rollbacks](https://render.com/docs/rollbacks))
+2. **Undo the change in Git:** on your computer,
+   `git revert <the bad commit>` then `git push`, or revert the pull request on
+   GitHub (its page has a **Revert** button). Then turn auto-deploy back on in
+   Render (Settings → Build & Deploy).
+3. **The database is not rolled back.** Code changes in this project only add
+   fields, so an older version reads newer data. If a change ever renames or
+   removes a field, restore the data from an Atlas backup as well.
+
+Check after either step: `/api/health` answers `{"ok":true,...}`, you can sign
+in, and a test starts.
+
+## Settings for running it for real
+
+All optional; set them on the Render service (Environment) and redeploy.
+
+| Variable | What it does |
+| --- | --- |
+| `SUPPORT_EMAIL` | The address students write to for help or with a complaint (shown on the sign-in and Settings pages). Name one before real students use the app. |
+| `ADMIN_USER_IDS` | Account ids (comma-separated) that may open `/admin`: reported questions, suspending an account, sign-up numbers. An account's id is on its Settings page. |
+| `LLM_API_URL`, `LLM_MODEL` | Use another AI provider or model (any OpenAI-compatible chat API). The key stays in `GROQ_API_KEY`. |
+| `NOTES_MAX_PER_STUDENT`, `NOTES_MAX_CHARS_PER_STUDENT` | Each student's storage ceiling (default 2,000 notes, 30 million characters). |
+
 ## Email (optional)
 
 With an email account configured the app asks new users to confirm their

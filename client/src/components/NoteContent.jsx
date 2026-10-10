@@ -1,5 +1,7 @@
 import { useMemo } from "react";
 import { colorSections, layoutContent, topicClass } from "../lib/noteFormat.js";
+import MathText from "./MathText.jsx";
+import { hasMath } from "../lib/math.js";
 
 // The one place a note's text is formatted, so every note reads the same way
 // whatever it came from - a PDF, slides, a Word file, a photo or typed text.
@@ -22,13 +24,17 @@ const HEADING = {
 const BODY = "font-body-lg text-body-lg text-on-surface";
 
 function Marked({ segments }) {
+  // a formula can span key-term highlights ("\int" marked inside "$$\int_0^1$$"):
+  // a paragraph with a formula is shown whole, typeset, without the highlights
+  const whole = segments.map((s) => s.text).join("");
+  if (hasMath(whole)) return <MathText text={whole} />;
   return segments.map((s, i) =>
     s.mark ? (
       <span key={i} className="text-topic font-semibold">
         {s.text}
       </span>
     ) : (
-      s.text
+      <MathText key={i} text={s.text} />
     )
   );
 }

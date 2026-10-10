@@ -18,8 +18,10 @@ import testRoutes from "./routes/tests.js";
 import attemptRoutes from "./routes/attempts.js";
 import graphRoutes from "./routes/graph.js";
 import noteItemRoutes from "./routes/noteItems.js";
+import adminRoutes from "./routes/admin.js";
 import { semanticStatus, warmSemanticModel } from "./services/embeddings.js";
 import { mailStatus } from "./services/mailer.js";
+import { logError } from "./services/log.js";
 
 assertAuthConfig();
 
@@ -28,7 +30,7 @@ assertAuthConfig();
 // (middleware/safeRouter.js); this is for anything else, such as background
 // work started after a response was sent.
 process.on("unhandledRejection", (err) => {
-  console.error("[server] unhandled rejection:", err);
+  logError("[server] unhandled rejection:", err);
 });
 
 const app = express();
@@ -157,6 +159,15 @@ const exportLimit = rateLimit({
 });
 app.get("/api/notes/:id/export", exportLimit);
 app.get("/api/subjects/:id/export", exportLimit);
+// Marking an answer again calls the LLM; reports are cheap but stored.
+app.post(
+  "/api/attempts/:id/questions/:questionId/remark",
+  rateLimit({ windowMs: 15 * MINUTES, max: envNumber("RATE_LIMIT_REMARK_MAX", 30), message: "too many re-marking requests, please try again later", key: sessionKey })
+);
+app.post(
+  "/api/questions/:questionId/report",
+  rateLimit({ windowMs: 15 * MINUTES, max: envNumber("RATE_LIMIT_REPORT_MAX", 60), message: "too many reports, please try again later", key: sessionKey })
+);
 // Reading an uploaded file (OCR, PDF parsing) is the next heaviest.
 const uploadLimit = rateLimit({
   windowMs: 15 * MINUTES,
@@ -168,6 +179,7 @@ app.post("/api/subjects/:id/notes", uploadLimit);
 app.post("/api/subjects/:id/notes/preview", uploadLimit);
 
 app.use("/api/auth", authRoutes);
+app.use("/api/admin", adminRoutes);
 app.use("/api/subjects", subjectRoutes);
 // notes routes are nested under /api/subjects/:id/notes
 app.use("/api/subjects", noteRoutes);
@@ -204,10 +216,11 @@ app.use((err, req, res, next) => {
   if (err?.type === "entity.parse.failed") return res.status(400).json({ error: "the request body is not valid JSON" });
   if (err?.type === "entity.too.large") return res.status(413).json({ error: "the request is too large" });
   if (err?.expose === true && err.status >= 400 && err.status < 500 && err.name !== "BadRequestError") {
-    return res.status(err.status).json({ error: err.message });
+    // a short machine-readable code and details, when the route gave them
+    return res.status(err.status).json({ error: err.message, ...(typeof err.code === "string" ? { code: err.code, ...err.details } : {}) });
   }
   if (err?.status >= 400 && err.status < 500) return res.status(err.status).json({ error: "the request could not be understood" });
-  console.error(err);
+  logError(`[server] ${req.method} ${req.baseUrl || ""}${req.route?.path || ""} failed:`, err);
   res.status(500).json({ error: "internal server error" });
 });
 

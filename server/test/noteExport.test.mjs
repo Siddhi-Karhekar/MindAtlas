@@ -114,7 +114,7 @@ check("a subject lists its notes, then each document's topics", subjModel.index.
   subjModel.index.slice(0, 3).map((e) => `${e.level}:${e.text}`).join("|"));
 check("  ...each note after the first starts a new page", subjModel.elements.filter((e) => e.pageBreak).map((e) => e.text).join("|") === "Data Link Layer");
 check("  ...a document's main topics keep their colours one level down", subjModel.index.filter((e) => e.level === 1 && e.strong).map((e) => fmt.TOPIC_HEX.indexOf(e.color)).join("") === "012");
-check("  ...and the summary counts notes", /^2 notes/.test(subjModel.meta), subjModel.meta);
+check("  ...and the summary counts notes", subjModel.meta.startsWith('2 notes'), subjModel.meta);
 
 // ---------------------------------------------------------------------------
 console.log("\n=== Word file ===");
@@ -138,7 +138,7 @@ const reread = await extractDocument({ originalname: "x.docx", buffer: docx }, "
 const rereadHeads = reread.blocks.filter((b) => b.type === "heading").map((b) => b.text);
 check("read back by the app: every topic is still a heading", docModel.index.every((e) => rereadHeads.includes(e.text)), rereadHeads.join("|"));
 check("  ...list entries are still list entries, nested ones still nested", reread.blocks.filter((b) => b.type === "item").length === bulletCount && reread.blocks.some((b) => b.type === "item" && b.depth === 1), `${reread.blocks.filter((b) => b.type === "item").length} of ${bulletCount}`);
-check("  ...numbered entries keep the numbers the author gave them", reread.blocks.some((b) => /^1\. Active: the initial state/.test(b.text)) && reread.blocks.some((b) => /^5\. Committed/.test(b.text)));
+check("  ...numbered entries keep the numbers the author gave them", reread.blocks.some((b) => b.text.startsWith('1. Active: the initial state')) && reread.blocks.some((b) => b.text.startsWith('5. Committed')));
 check("  ...and the table is still a table", reread.blocks.some((b) => b.type === "table" && b.rows.length === 4 && b.rows[0][0] === "State"));
 check("  ...with every word of the notes in it", children.every((c) => c.rawText.split(/\n+/).filter((l) => l.split(" ").length > 6).every((l) => reread.text.replace(/\s+/g, " ").includes(l.replace(/^(\d+[.)]|[-*])\s+/, "").replace(/\s+/g, " ").trim().slice(0, 60)))));
 

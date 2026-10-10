@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useEffect, useState } from "react";
+import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "../lib/AuthContext.jsx";
 import { api } from "../lib/api.js";
 import { useTheme } from "../lib/theme.jsx";
@@ -22,6 +22,11 @@ export default function Settings() {
   const { theme, setTheme } = useTheme();
   const navigate = useNavigate();
   const [tab, setTab] = useState("appearance");
+  // where notes go, and who to write to (from the server's settings)
+  const [config, setConfig] = useState(null);
+  useEffect(() => {
+    api.authConfig().then(setConfig).catch(() => setConfig(null));
+  }, []);
 
   const [signOutError, setSignOutError] = useState("");
   async function handleSignOut() {
@@ -205,6 +210,46 @@ export default function Settings() {
                   </p>
                 )}
               </form>
+
+              <h2 className="font-label-sm text-label-sm text-on-surface-variant uppercase tracking-wider mt-space-2xl mb-space-md">
+                Your data and help
+              </h2>
+              <div className="bg-surface-container-lowest border border-outline-variant rounded-xl p-space-lg max-w-2xl flex flex-col gap-space-sm font-body-sm text-body-sm text-on-surface" data-testid="data-and-help">
+                <p>
+                  <strong>What is kept:</strong> the text of your notes (never the files you upload), your tests, answers and
+                  scores. Delete any note at any time, or the whole account below.
+                </p>
+                <p>
+                  <strong>Where it goes:</strong>{" "}
+                  {config?.ai?.enabled
+                    ? `to write questions and mark written answers, the text of the notes you pick and your written answers are sent to ${config.ai.name}. ${
+                        config.ai.trainsOnInputs === false
+                          ? "Its terms say it does not use them to train its models."
+                          : "What it may do with them is set by its own terms."
+                      } Your email address is never sent.`
+                    : "nowhere: this server writes questions and marks answers itself, without an outside AI service."}
+                </p>
+                <p>
+                  <strong>Uploading:</strong> upload your own notes, or material you are allowed to use. Do not upload a
+                  whole textbook or someone else&apos;s paid course material.
+                </p>
+                {config?.support?.email && (
+                  <p>
+                    <strong>Help, or a complaint:</strong>{" "}
+                    <a className="text-secondary hover:underline" href={`mailto:${config.support.email}`} data-testid="support-email">
+                      {config.support.email}
+                    </a>
+                  </p>
+                )}
+                <p className="text-on-surface-variant">
+                  Account id: <span className="font-mono select-all" data-testid="account-id">{user?.id}</span>
+                </p>
+                {user?.isAdmin && (
+                  <Link to="/admin" className="text-secondary hover:underline font-ui-body text-ui-body" data-testid="admin-link">
+                    Open the admin page
+                  </Link>
+                )}
+              </div>
 
               <h2 className="font-label-sm text-label-sm text-error uppercase tracking-wider mt-space-2xl mb-space-md">Delete account</h2>
               <div className="border border-error/40 rounded-xl p-space-lg max-w-2xl flex flex-col gap-space-md">

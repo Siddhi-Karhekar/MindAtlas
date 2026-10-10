@@ -39,6 +39,9 @@ Nothing here breaks the app if left undone. Each item makes something better.
 | 14 | Validate all input | Done | Type, length and range on every field of every route; ids must be ids; one JSON object per request. Before this, a password sent as an object **crashed the server** for everyone, with no account needed. |
 | 15 | Escape user content | Was already so | React escapes everything it shows; the code has no raw-HTML insertion. New: a content security policy that refuses any injected script. Tested in a browser. |
 | 16 | Restrict file uploads | Done | The file's bytes must match its name; one file; 10 MB; Word/PowerPoint files are unpacked and counted (150 MB limit) before being read; pictures over 50 megapixels or with no readable size are refused; PDFs over 400 pages are refused; reading happens on a separate thread stopped after 25 seconds (`services/uploadCheck.js`, `services/extractInWorker.js`). |
+| 16b | Prompt injection (not on the list) | Done, with a limit | Notes and answers are student text sent to the LLM. Instructions go in the system message and the text goes in as tagged data; an answer written to the marker is not sent to the LLM; an LLM mark is capped by the key points the answer actually mentions; the LLM never decides correctness of an MCQ or the topic ranking. Details and the limit: [`docs/ASSESSMENT.md`](ASSESSMENT.md). |
+| 16c | Admin panel (not on the list) | Done, locked down | `/admin` only for account ids in `ADMIN_USER_IDS` (ids, not email addresses: an address can be signed up by someone else first). Everyone else gets "not found". A reported question is shown with its answer key and the passage of notes it came from, never who reported it; no other notes or answers; suspensions are logged with a reason (`admin_log`); a suspended account's sessions end at once and it cannot sign in. |
+| 16d | Logs (not on the list) | Done | Error logs carry no note text, answers or email addresses (`services/log.js`); a test checks the server's log. |
 | 17 | Trim API responses | Done | No password hash, owner id or internal vector in any answer. A test's questions are sent without their answers; before this, a student could fetch the answer keys of their own test before sitting it. |
 | 18 | Security headers | Done on the API | `Content-Security-Policy`, `Strict-Transport-Security`, `X-Frame-Options`, `X-Content-Type-Options`, `Referrer-Policy`, `Permissions-Policy`, `Cross-Origin-Opener-Policy`, `Cross-Origin-Resource-Policy`, `Cache-Control: no-store` (`middleware/securityHeaders.js`). The static site needs the dashboard step above. |
 | 19 | Force HTTPS | Done | In production a page asked for over HTTP is redirected and anything else is refused; HSTS for a year. Render also redirects at its edge. |
@@ -71,7 +74,7 @@ Nothing here breaks the app if left undone. Each item makes something better.
 
 ## How it was checked
 
-- `npm test`: 743 checks, 180 of them in `security.test.mjs`. That file runs
+- `npm test`: 920 checks, 180 of them in `security.test.mjs`. That file runs
   the real server twice, once as in development and once as in production with
   a stand-in mail server.
 - The tests were confirmed to fail with the protections removed (the origin
@@ -112,4 +115,4 @@ All optional; the defaults are the safe ones. See `server/.env.example`.
 `BCRYPT_ROUNDS` · `SIGNUP_CHALLENGE` · `FORCE_HTTPS` · `LOGIN_MAX_FAILURES`,
 `LOGIN_MAX_FAILURES_ACCOUNT` · `RATE_LIMIT_*` · `EXTRACT_TIMEOUT_SECONDS`,
 `EXTRACT_MAX_HEAP_MB` · `TRUST_PROXY` · `CORS_ORIGIN` · `TEST_REVEAL_KEYS`
-(development).
+(development) · `ATTEMPT_GRACE_SECONDS` · `LLM_TIMEOUT_MS`.

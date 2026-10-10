@@ -41,10 +41,11 @@ export const setSignedOutHandler = (fn) => {
 
 /** An error from the API: `status` is the HTTP status, `code` a short machine name when the server gave one. */
 class ApiError extends Error {
-  constructor(message, status, code) {
+  constructor(message, status, code, data = {}) {
     super(message);
     this.status = status;
     this.code = code;
+    this.data = data; // the whole answer, for errors that carry more (e.g. which attempt)
   }
 }
 
@@ -52,21 +53,41 @@ function authHeaders(cookieOnly) {
   return memoryToken && !cookieOnly ? { Authorization: `Bearer ${memoryToken}` } : {};
 }
 
-async function request(path, { method = "GET", body, isForm = false, cookieOnly = false, quiet = false } = {}) {
+// How long to wait for an answer before giving up, so a request lost on the
+// way (a sleeping server, a dropped mobile connection) never leaves a button
+// stuck on "Saving…". Long jobs pass their own: reading an uploaded file,
+// building a test, and marking a submitted test (theory answers marked by
+// the LLM can take a few minutes; if the wait runs out, the results page
+// carries on waiting for the marks).
+const WAIT_MS = 45_000;
+export const LONG_WAIT_MS = { upload: 120_000, build: 150_000, submit: 300_000 };
+
+async function request(path, { method = "GET", body, isForm = false, cookieOnly = false, quiet = false, timeoutMs = WAIT_MS } = {}) {
   const headers = authHeaders(cookieOnly);
   if (body && !isForm) headers["Content-Type"] = "application/json";
 
-  const res = await fetch(`${API_BASE}${path}`, {
-    method,
-    headers,
-    credentials: "include", // send the session cookie, also to an API on another address
-    body: body ? (isForm ? body : JSON.stringify(body)) : undefined,
-  });
+  let res;
+  try {
+    res = await fetch(`${API_BASE}${path}`, {
+      method,
+      headers,
+      credentials: "include", // send the session cookie, also to an API on another address
+      body: body ? (isForm ? body : JSON.stringify(body)) : undefined,
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch (err) {
+    // no answer at all: no status, so callers treat it as a connection problem
+    throw new ApiError(
+      err?.name === "TimeoutError" ? "The server took too long to answer - please try again." : "Could not reach the server - check your connection.",
+      undefined,
+      err?.name === "TimeoutError" ? "timeout" : "offline"
+    );
+  }
 
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     if (res.status === 401 && !quiet && !path.startsWith("/auth/")) onSignedOut();
-    throw new ApiError(data.error || `Request failed (${res.status})`, res.status, data.code);
+    throw new ApiError(data.error || `Request failed (${res.status})`, res.status, data.code, data);
   }
   return data;
 }
@@ -87,7 +108,7 @@ function fileNameFrom(disposition) {
 
 // A download: the answer is the file itself, not JSON. Returns { blob, fileName }.
 async function download(path) {
-  const res = await fetch(`${API_BASE}${path}`, { headers: authHeaders(false), credentials: "include" });
+  const res = await fetch(`${API_BASE}${path}`, { headers: authHeaders(false), credentials: "include", signal: AbortSignal.timeout(90_000) });
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
     if (res.status === 401) onSignedOut();
@@ -130,7 +151,17 @@ export const api = {
   deleteAccount: (password) => request("/auth/me", { method: "DELETE", body: { password } }),
 
   listSubjects: () => request("/subjects"),
-  createSubject: (name) => request("/subjects", { method: "POST", body: { name } }),
+  createSubject: (name, group) => request("/subjects", { method: "POST", body: group ? { name, group } : { name } }),
+  deleteSubject: (subjectId) => request(`/subjects/${subjectId}`, { method: "DELETE" }),
+  // rename a subject, or move it to a folder (a semester); group "" takes it out
+  updateSubject: (subjectId, fields) => request(`/subjects/${subjectId}`, { method: "PATCH", body: fields }),
+  // the home page's revision card: streak of days with a finished test, topics to revise
+  // the admin page (only for accounts in the server's ADMIN_USER_IDS)
+  adminOverview: () => request("/admin/overview"),
+  adminReports: () => request("/admin/reports"),
+  adminFindUser: (email) => request("/admin/users/find", { method: "POST", body: { email } }),
+  adminSuspend: (userId, suspended, reason) => request(`/admin/users/${userId}/suspend`, { method: "POST", body: { suspended, reason } }),
+  getRevision: () => request(`/revision?tz=${encodeURIComponent(Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC")}`),
 
   listNotes: (subjectId) => request(`/subjects/${subjectId}/notes`),
   createNote: (subjectId, { title, content }) =>
@@ -143,13 +174,13 @@ export const api = {
     form.append("file", file);
     if (title) form.append("title", title);
     form.append("split", split ? "true" : "false");
-    return request(`/subjects/${subjectId}/notes`, { method: "POST", body: form, isForm: true });
+    return request(`/subjects/${subjectId}/notes`, { method: "POST", body: form, isForm: true, timeoutMs: LONG_WAIT_MS.upload });
   },
   // Reads a file and reports the subtopics it would be split into, saving nothing.
   previewUpload: (subjectId, file) => {
     const form = new FormData();
     form.append("file", file);
-    return request(`/subjects/${subjectId}/notes/preview`, { method: "POST", body: form, isForm: true });
+    return request(`/subjects/${subjectId}/notes/preview`, { method: "POST", body: form, isForm: true, timeoutMs: LONG_WAIT_MS.upload });
   },
 
   // One note. getNote also returns `editText`: the note as editable text.
@@ -170,17 +201,29 @@ export const api = {
   getKeywordMap: (noteId) => request(`/graph/notes/${noteId}/keyword-map`),
 
   listTests: (subjectId) => request(`/subjects/${subjectId}/tests`),
-  createTest: (subjectId, { title, noteIds, mcqCount, theoryCount, marksPerQuestion, durationMinutes }) =>
+  createTest: (subjectId, { title, noteIds, mcqCount, theoryCount, marksPerQuestion, theoryMarks, negativeMarks, sectioned, durationMinutes }) =>
     request(`/subjects/${subjectId}/tests`, {
       method: "POST",
-      body: { title, noteIds, mcqCount, theoryCount, marksPerQuestion, durationMinutes },
+      body: { title, noteIds, mcqCount, theoryCount, marksPerQuestion, theoryMarks, negativeMarks, sectioned, durationMinutes },
+      timeoutMs: LONG_WAIT_MS.build,
     }),
 
-  startAttempt: (testId) => request(`/tests/${testId}/attempts`, { method: "POST" }),
-  submitResponse: (attemptId, { questionId, answer, timeMs }) =>
-    request(`/attempts/${attemptId}/responses`, { method: "POST", body: { questionId, answer, timeMs } }),
-  submitAttempt: (attemptId) => request(`/attempts/${attemptId}/submit`, { method: "POST" }),
+  // Starts an attempt, or carries on the one already open on this test
+  // (`resumed`), or says its time ran out (`expired`). startOver: begin
+  // again after an expired attempt.
+  startAttempt: (testId, { startOver = false } = {}) =>
+    request(`/tests/${testId}/attempts`, { method: "POST", body: startOver ? { startOver: true } : undefined }),
+  submitResponse: (attemptId, { questionId, answer }) =>
+    request(`/attempts/${attemptId}/responses`, { method: "POST", body: { questionId, answer } }),
+  // timedOut: the page's countdown reached zero (the server checks the clock itself)
+  submitAttempt: (attemptId, { timedOut = false } = {}) =>
+    request(`/attempts/${attemptId}/submit`, { method: "POST", body: timedOut ? { timedOut: true } : undefined, timeoutMs: LONG_WAIT_MS.submit }),
   getFeedback: (attemptId) => request(`/attempts/${attemptId}/feedback`),
+  getReview: (attemptId) => request(`/attempts/${attemptId}/review`),
+  remarkAnswer: (attemptId, questionId, reason) =>
+    request(`/attempts/${attemptId}/questions/${questionId}/remark`, { method: "POST", body: { reason }, timeoutMs: 90_000 }),
+  reportQuestion: (questionId, { reason, comment, attemptId }) =>
+    request(`/questions/${questionId}/report`, { method: "POST", body: { reason, comment, attemptId } }),
 
   getProgress: (subjectId) => request(`/subjects/${subjectId}/progress`),
 };

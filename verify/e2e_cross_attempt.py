@@ -143,7 +143,12 @@ strong_mean = sum(t["pKnown"] for t in strong_prog["topics"]) / len(strong_prog[
 check("wrong answers produced lower mastery than right ones", weak_mean < strong_mean,
       f"weak {weak_mean:.3f} vs strong {strong_mean:.3f}")
 check("attempt history is recorded", len(weak_prog["history"]) == 1, f"{len(weak_prog['history'])} attempts")
-check("weakest topics are recommended", len(weak_prog["recommendedTopicIds"]) > 0)
+# One short attempt puts fewer than three answers on each topic: too few to
+# call any of them weak, so they are listed as still being tested instead.
+check("after one short attempt, topics are 'still gathering evidence', not called weak",
+      len(weak_prog["undertestedTopicIds"]) > 0
+      and all(t["enoughEvidence"] for t in weak_prog["topics"] if t["topicId"] in weak_prog["recommendedTopicIds"]),
+      f"{len(weak_prog['undertestedTopicIds'])} under-tested, {len(weak_prog['recommendedTopicIds'])} recommended")
 
 print("\n=== Attempt 2 — the same test, now seeded by attempt 1 ===")
 weak_open_2, weak_tiers_2, weak_fb_2 = take_attempt(weak_token, weak_test, answer_correctly=False)

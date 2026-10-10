@@ -12,11 +12,13 @@ import {
 import { endSession, mustVerifyEmail, requireAuth, requireSession, revokeSession, startSession } from "../middleware/auth.js";
 import { safeRouter } from "../middleware/safeRouter.js";
 import { InputError, LIMITS, email as emailField, text } from "../middleware/validate.js";
-import { envNumber } from "../config.js";
+import { envNumber, supportEmail } from "../config.js";
+import { llmAvailable, llmProvider } from "../services/llm.js";
 import { MIN_LENGTH, passwordProblem } from "../services/passwordPolicy.js";
 import { beginAttempt, recordSuccess } from "../services/loginThrottle.js";
 import { challengeProblem, challengeRequired, issueChallenge, spendChallenge } from "../services/signupChallenge.js";
 import { mailStatus } from "../services/mailer.js";
+import { redact } from "../services/log.js";
 import { consumeToken, findToken, lastIssuedAt, sendResetEmail, sendVerificationEmail } from "../services/emailTokens.js";
 
 const router = safeRouter();
@@ -69,6 +71,11 @@ router.get("/config", (req, res) => {
     signup: { challenge: issueChallenge(), challengeRequired: challengeRequired() },
     email: { enabled: mailStatus().enabled },
     password: { minLength: MIN_LENGTH },
+    // where students can write for help or with a complaint (SUPPORT_EMAIL)
+    support: { email: supportEmail() },
+    // whether notes and answers are sent to an AI service, and which: shown
+    // to students on the Settings page
+    ai: llmAvailable() ? { enabled: true, ...llmProvider() } : { enabled: false, name: null, trainsOnInputs: null },
   });
 });
 
@@ -109,7 +116,7 @@ router.post("/register", async (req, res) => {
       await sendVerificationEmail(user);
       verificationSent = true;
     } catch (err) {
-      console.error("[mail] could not send the confirmation email:", err.message);
+      console.error("[mail] could not send the confirmation email:", redact(err.message));
     }
   }
   const token = startSession(req, res, user);
@@ -136,6 +143,7 @@ router.post("/login", async (req, res) => {
   const ok = await bcrypt.compare(password, user ? user.passwordHash : await getDummyHash());
   if (!user || !ok) return res.status(401).json({ error: "invalid email or password" });
   recordSuccess(email, req.ip);
+  if (user.suspended) return res.status(403).json({ error: "this account has been suspended - contact support if you think this is a mistake", code: "suspended" });
   if (bcrypt.getRounds(user.passwordHash) < rounds()) await upgradePasswordHash(user._id, await hash(password));
 
   const token = startSession(req, res, user);
@@ -241,7 +249,7 @@ router.post("/forgot", async (req, res) => {
     const user = await findUserByEmail(email);
     if (user && !(await tooSoon(user, "reset"))) await sendResetEmail(user);
   } catch (err) {
-    console.error("[mail] could not send the reset email:", err.message);
+    console.error("[mail] could not send the reset email:", redact(err.message));
   }
 });
 
@@ -252,6 +260,7 @@ router.post("/reset", async (req, res) => {
   const row = await findToken(token, "reset");
   const user = row ? await findUserById(row.userId) : null;
   if (!user) return res.status(400).json({ error: "this link is no longer valid - ask for a new one" });
+  if (user.suspended) return res.status(403).json({ error: "this account has been suspended - contact support if you think this is a mistake", code: "suspended" });
   // checked before the link is used up, so a refused password does not cost the student the link
   const weak = passwordProblem(password, { email: user.email });
   if (weak) throw new InputError(weak);

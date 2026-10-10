@@ -41,7 +41,7 @@ console.log("\n=== No headings: even parts ===");
 const plain = Array.from({ length: 12 }, (_, i) => para(i < 6 ? "process thread scheduler" : "memory page frame", 90)).join("\n\n");
 const s3 = segmentDocument(blocksFromPlainText(plain));
 check("long unstructured text is chunked into parts", s3.method === "chunks" && s3.sections.length >= 2, `${s3.method} ${s3.sections.length}`);
-check("parts are named after their keywords", /^Part 1 — /.test(s3.sections[0].title), s3.sections[0].title);
+check("parts are named after their keywords", s3.sections[0].title.startsWith('Part 1 — '), s3.sections[0].title);
 
 console.log("\n=== Section cap ===");
 const many = Array.from({ length: 50 }, (_, i) => [{ type: "heading", level: 2, text: `Topic ${i} alpha${i}` }, { type: "para", text: para(`word${i} term${i}`, 30 + i) }]).flat();

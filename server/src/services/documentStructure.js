@@ -480,7 +480,7 @@ const endsLikeSentence = (t) => /[.?!;,]$/.test(t);
 // A short line of its own that reads as a title: "MEMORY MANAGEMENT" or
 // "Types of Networks". Used only for text that has no explicit headings.
 function looksLikeTitleLine(t) {
-  if (t.length > 70 || endsLikeSentence(t) || /:$/.test(t) || /\.{3,}|…/.test(t)) return null;
+  if (t.length > 70 || endsLikeSentence(t) || t.endsWith(':') || /\.{3,}|…/.test(t)) return null;
   const words = t.split(/\s+/);
   if (words.length > 8 || !/[A-Za-z]{3,}/.test(t)) return null;
   const letters = t.replace(/[^A-Za-z]/g, "");
@@ -585,7 +585,7 @@ export function blocksFromPlainText(text, { ocr = false } = {}) {
         const joined = buf.join(" ").trim();
         const { text: t, strong, allBold } = inlineMarkdown(joined);
         // "Advantages:" directly above a list is a label for it, not prose
-        if (buf.length === 1 && /:$/.test(t) && countWords(t) <= 5 && /^[A-Z0-9(]/.test(t)) {
+        if (buf.length === 1 && t.endsWith(':') && countWords(t) <= 5 && /^[A-Z0-9(]/.test(t)) {
           blocks.push({ type: "label", text: t });
         } else {
           const b = { type: "para", text: t };

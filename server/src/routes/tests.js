@@ -1,9 +1,10 @@
 import { findOwnedSubject } from "../models/Subject.js";
 import { findChildNotes, findNotesByIds, isSplitParent, topicLabelFor } from "../models/Note.js";
-import { createTest, findTestsBySubject, findOwnedTest } from "../models/Test.js";
-import { createQuestions, findQuestionsByTest } from "../models/Question.js";
+import { createTest, findTestsBySubject, findOwnedTest, setTestLength } from "../models/Test.js";
+import { createQuestions, findAcceptedQuestionsByTests, findQuestionsByTest } from "../models/Question.js";
 import { requireAuth } from "../middleware/auth.js";
 import { safeRouter } from "../middleware/safeRouter.js";
+import { once } from "../middleware/once.js";
 import { idList, integer, text } from "../middleware/validate.js";
 import { publicDoc } from "../services/noteView.js";
 import { isProduction } from "../config.js";
@@ -58,13 +59,18 @@ async function resolveTopicNotes(selected) {
 // anything else a mixed test. Both counts are how many questions the
 // student will actually see; a larger pool is generated behind the scenes
 // for the adaptive controller to draw from.
-router.post("/subjects/:id/tests", async (req, res) => {
+router.post("/subjects/:id/tests", once(), async (req, res) => {
   const subject = await findOwnedSubject(req.params.id, req.user.id);
   if (!subject) return res.status(404).json({ error: "subject not found" });
 
-  // Every field is read through a check: only these six are taken from the
+  // Every field is read through a check: only these are taken from the
   // request, each of a known type and within a range. Nothing else a client
   // sends reaches the stored test.
+  //
+  // The exam pattern: marks for an MCQ (marksPerQuestion) and for a theory
+  // question (theoryMarks), marks taken off for a wrong MCQ (negativeMarks,
+  // 0 to the MCQ's own marks, in quarter marks), and whether the paper is in
+  // sections - all the MCQs first (Section A), then the theory (Section B).
   const body = req.body || {};
   const title = text(body.title, "title");
   const noteIds = idList(body.noteIds, "noteIds");
@@ -72,6 +78,15 @@ router.post("/subjects/:id/tests", async (req, res) => {
   const safeTheoryCount = integer(body.theoryCount, "theoryCount", { min: 0, max: 20, fallback: 0 });
   const marksPerQuestion = integer(body.marksPerQuestion, "marksPerQuestion", { min: 1, max: 100, fallback: 1 });
   const durationMinutes = integer(body.durationMinutes, "durationMinutes", { min: 1, max: 600, fallback: 15 });
+  const theoryMarks = integer(body.theoryMarks, "theoryMarks", { min: 1, max: 100, fallback: marksPerQuestion });
+  const negativeMarks = body.negativeMarks === undefined || body.negativeMarks === null ? 0 : body.negativeMarks;
+  if (typeof negativeMarks !== "number" || !Number.isFinite(negativeMarks) || negativeMarks < 0 || negativeMarks > marksPerQuestion || Math.round(negativeMarks * 4) !== negativeMarks * 4) {
+    return res.status(400).json({ error: "negativeMarks must be between 0 and the marks for an MCQ, in quarter marks" });
+  }
+  if (body.sectioned !== undefined && typeof body.sectioned !== "boolean") {
+    return res.status(400).json({ error: "sectioned must be true or false" });
+  }
+  const sectioned = body.sectioned === true;
   if (safeMcqCount + safeTheoryCount < 1) {
     return res.status(400).json({ error: "mcqCount + theoryCount must add up to at least 1" });
   }
@@ -97,8 +112,12 @@ router.post("/subjects/:id/tests", async (req, res) => {
     title,
     noteIds: notesInSubject.map((n) => n._id),
     marksPerQuestion,
+    theoryMarks,
+    negativeMarks,
+    sectioned,
     durationMinutes,
     targetQuestionCount,
+    mix: { mcq: safeMcqCount, theory: safeTheoryCount },
   });
 
   // The student's accumulated per-topic mastery steers WHICH notes the pool is
@@ -107,15 +126,39 @@ router.post("/subjects/:id/tests", async (req, res) => {
   // back to an even spread across the selected notes.
   const masteryMap = await masteryMapForSubject(req.user.id, subject._id);
 
-  const { accepted, discarded, mcqGeneratedBy, theoryGeneratedBy, rankedBy } = await generateQuestions(notesInSubject, {
+  // What the student has been asked before on these notes, so a new test
+  // brings new questions (testEngine.pickFresh). Earlier questions are used
+  // again only when the notes cannot supply enough new ones.
+  const topicIds = new Set(notesInSubject.map((n) => String(n._id)));
+  const earlierTests = (await findTestsBySubject(subject._id)).filter(
+    (t) => String(t.ownerId) === String(req.user.id) && String(t._id) !== String(test._id)
+  );
+  const avoid = (await findAcceptedQuestionsByTests(earlierTests.map((t) => t._id)))
+    .filter((q) => topicIds.has(String(q.topicId)))
+    .map((q) => q.prompt)
+    .filter(Boolean);
+
+  const { accepted, discarded, repeatsUsed, mcqGeneratedBy, theoryGeneratedBy, rankedBy } = await generateQuestions(notesInSubject, {
     mcqCount: poolSizeFor(safeMcqCount),
     theoryCount: poolSizeFor(safeTheoryCount),
     marksPerQuestion,
+    theoryMarks,
     masteryMap,
+    avoid,
+    // earlier questions are used again only to reach these, never to fill the larger pool
+    mcqTarget: safeMcqCount,
+    theoryTarget: safeTheoryCount,
   });
 
   const stored = await createQuestions([...accepted, ...discarded].map((q) => ({ ...q, testId: test._id })));
   const acceptedCount = stored.filter((q) => q.status === "accepted").length;
+  const available = (type) => stored.filter((q) => q.status === "accepted" && q.type === type).length;
+  // Fewer good questions than asked for: the test is as long as what could be
+  // made, and the student is told, rather than finding out mid-test.
+  const deliverable = Math.min(targetQuestionCount, acceptedCount);
+  if (deliverable < targetQuestionCount && deliverable > 0) {
+    await setTestLength(test._id, { targetQuestionCount: deliverable, mix: { mcq: safeMcqCount, theory: safeTheoryCount } });    test.targetQuestionCount = deliverable;
+  }
 
   res.status(201).json({
     test: publicDoc(test),
@@ -127,7 +170,20 @@ router.post("/subjects/:id/tests", async (req, res) => {
     accepted: acceptedCount,
     discarded: stored.filter((q) => q.status === "discarded").length,
     targetQuestionCount,
-    deliverable: Math.min(targetQuestionCount, acceptedCount),
+    deliverable,
+    // set when the notes could not supply everything asked for
+    shortfall:
+      deliverable < targetQuestionCount || available("mcq") < safeMcqCount || available("theory") < safeTheoryCount
+        ? {
+            requested: targetQuestionCount,
+            deliverable,
+            mcq: { requested: safeMcqCount, available: available("mcq") },
+            theory: { requested: safeTheoryCount, available: available("theory") },
+          }
+        : null,
+    // questions from the student's earlier tests used again, because these
+    // notes could not supply enough new ones
+    repeatsUsed,
   });
 });
 

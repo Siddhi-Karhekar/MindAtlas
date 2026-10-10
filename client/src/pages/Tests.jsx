@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useParams, useSearchParams } from "react-router-dom";
 import { api } from "../lib/api.js";
 import { timeAgo, wordCount } from "../lib/format.js";
 import Icon from "../components/Icon.jsx";
@@ -99,6 +99,29 @@ function Stepper({ label, icon, value, onChange, min = 0, max = 99, unit, hint, 
   );
 }
 
+// Exam patterns: a starting point the student can still change.
+const PATTERNS = [
+  {
+    key: "quiz",
+    title: "Quick quiz",
+    body: "10 MCQs, 1 mark each, 15 minutes.",
+    set: { mcq: 10, theory: 0, mcqMarks: 1, theoryMarks: 1, negative: 0, sectioned: false, minutes: 15 },
+  },
+  {
+    key: "unit",
+    title: "University unit test",
+    body: "Section A: 10 MCQs (1 mark). Section B: 4 theory questions (5 marks). 60 minutes.",
+    set: { mcq: 10, theory: 4, mcqMarks: 1, theoryMarks: 5, negative: 0, sectioned: true, minutes: 60 },
+  },
+  {
+    key: "entrance",
+    title: "Entrance-exam style",
+    body: "20 MCQs: +4 right, −1 wrong, 0 if left blank. 30 minutes.",
+    set: { mcq: 20, theory: 0, mcqMarks: 4, theoryMarks: 4, negative: 1, sectioned: false, minutes: 30 },
+  },
+];
+const NEGATIVE_STEPS = [0, 0.25, 0.5, 1, 2];
+
 const MIXES = [
   { key: "mcq", title: "Rapid MCQ", body: "Only multiple choice, for quick retrieval practice." },
   { key: "balanced", title: "Balanced Hybrid", body: "About 60% multiple choice, 40% written theory answers." },
@@ -107,6 +130,9 @@ const MIXES = [
 
 export default function Tests() {
   const { subjectId } = useParams();
+  // ?topic=<note id>: arrived from "Worth revising next" - that topic is picked
+  const [params] = useSearchParams();
+  const startTopic = /^[0-9a-f]{24}$/.test(params.get("topic") || "") ? params.get("topic") : null;
   const [subject, setSubject] = useState(null);
   const [notes, setNotes] = useState(null);
   const [tests, setTests] = useState(null);
@@ -114,11 +140,14 @@ export default function Tests() {
   const [title, setTitle] = useState("");
   // Always TOPIC note ids: plain notes and individual subtopics. Selecting a
   // whole document selects all of its subtopics.
-  const [selectedNoteIds, setSelectedNoteIds] = useState([]);
+  const [selectedNoteIds, setSelectedNoteIds] = useState(startTopic ? [startTopic] : []);
   const [expandedDocs, setExpandedDocs] = useState([]);
   const [mcqCount, setMcqCount] = useState(4);
   const [theoryCount, setTheoryCount] = useState(0);
   const [marksPerQuestion, setMarksPerQuestion] = useState(2);
+  const [theoryMarks, setTheoryMarks] = useState(2);
+  const [negativeMarks, setNegativeMarks] = useState(0);
+  const [sectioned, setSectioned] = useState(false);
   const [durationMinutes, setDurationMinutes] = useState(10);
   const [error, setError] = useState("");
   const [result, setResult] = useState(null);
@@ -139,6 +168,17 @@ export default function Tests() {
 
   const total = mcqCount + theoryCount;
   const mix = theoryCount === 0 ? "mcq" : mcqCount === 0 ? "theory" : "balanced";
+
+  function applyPattern(p) {
+    setMcqCount(p.set.mcq);
+    setTheoryCount(p.set.theory);
+    setMarksPerQuestion(p.set.mcqMarks);
+    setTheoryMarks(p.set.theoryMarks);
+    setNegativeMarks(p.set.negative);
+    setSectioned(p.set.sectioned);
+    setDurationMinutes(p.set.minutes);
+  }
+  const totalMarks = mcqCount * marksPerQuestion + theoryCount * theoryMarks;
 
   function applyMix(key) {
     const n = Math.max(1, total);
@@ -189,6 +229,9 @@ export default function Tests() {
         mcqCount,
         theoryCount,
         marksPerQuestion,
+        theoryMarks,
+        negativeMarks: Math.min(negativeMarks, marksPerQuestion),
+        sectioned: sectioned && mcqCount > 0 && theoryCount > 0,
         durationMinutes,
       });
       setResult(data);
@@ -273,7 +316,7 @@ export default function Tests() {
                         className="font-label-md text-label-md text-tertiary hover:underline"
                         onClick={() => setSelectedNoteIds(weakest.map((t) => t.topicId))}
                       >
-                        Select my {weakest.length} weakest {weakest.length === 1 ? "topic" : "topics"}
+                        Practise the {weakest.length} {weakest.length === 1 ? "topic" : "topics"} with most room to grow
                       </button>
                       <span className="text-outline-variant">|</span>
                     </>
@@ -372,7 +415,8 @@ export default function Tests() {
               <div className="grid grid-cols-1 md:grid-cols-2 gap-space-lg">
                 <Stepper id="mcq-count" label="MCQ questions" icon="checklist" value={mcqCount} onChange={setMcqCount} min={0} max={20} unit="items" hint="Scored instantly when you answer" />
                 <Stepper id="theory-count" label="Theory questions" icon="edit_note" value={theoryCount} onChange={setTheoryCount} min={0} max={20} unit="items" hint="Written answers, graded when you submit" />
-                <Stepper id="marks" label="Marks per question" icon="grade" value={marksPerQuestion} onChange={setMarksPerQuestion} min={1} max={20} unit="marks" />
+                <Stepper id="marks" label="Marks per MCQ" icon="grade" value={marksPerQuestion} onChange={setMarksPerQuestion} min={1} max={20} unit="marks" />
+                <Stepper id="theory-marks" label="Marks per theory question" icon="grade" value={theoryMarks} onChange={setTheoryMarks} min={1} max={20} unit="marks" />
                 <Stepper
                   id="duration"
                   label="Duration"
@@ -384,6 +428,57 @@ export default function Tests() {
                   unit="minutes"
                   hint={total > 0 ? `About ${(durationMinutes / total).toFixed(1)} min per question` : undefined}
                 />
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-space-lg">
+                <div className="flex flex-col gap-space-sm p-space-md rounded-lg bg-surface-container-low">
+                  <label htmlFor="negative" className="font-label-lg text-label-lg text-on-surface">Wrong MCQ answer</label>
+                  <select
+                    id="negative"
+                    value={Math.min(negativeMarks, marksPerQuestion)}
+                    onChange={(e) => setNegativeMarks(Number(e.target.value))}
+                    className="h-10 px-space-sm rounded-lg bg-surface-container-lowest text-on-surface font-ui-body text-ui-body"
+                  >
+                    {NEGATIVE_STEPS.filter((n) => n <= marksPerQuestion).map((n) => (
+                      <option key={n} value={n}>
+                        {n === 0 ? "No penalty" : `Lose ${n} ${n === 1 ? "mark" : "marks"} (blank: no penalty)`}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="font-body-sm text-body-sm text-on-surface-variant">With a penalty, questions can be left blank.</p>
+                </div>
+                <label className="flex items-start gap-space-sm p-space-md rounded-lg bg-surface-container-low cursor-pointer">
+                  <input
+                    type="checkbox"
+                    className="mt-1"
+                    checked={sectioned}
+                    disabled={mcqCount === 0 || theoryCount === 0}
+                    onChange={(e) => setSectioned(e.target.checked)}
+                    data-testid="sectioned"
+                  />
+                  <span className="flex flex-col gap-space-2xs">
+                    <span className="font-label-lg text-label-lg text-on-surface">In sections</span>
+                    <span className="font-body-sm text-body-sm text-on-surface-variant">
+                      Section A: all the MCQs first. Section B: then the theory questions. Needs both kinds.
+                    </span>
+                  </span>
+                </label>
+              </div>
+              <div className="flex flex-col gap-space-sm">
+                <span className="font-label-lg text-label-lg text-on-surface">Exam pattern</span>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-space-sm pt-space-2xs">
+                  {PATTERNS.map((p) => (
+                    <button
+                      key={p.key}
+                      type="button"
+                      onClick={() => applyPattern(p)}
+                      data-testid={`pattern-${p.key}`}
+                      className="p-space-md rounded-lg text-left flex flex-col gap-space-2xs bg-surface-container-low hover:bg-surface-container transition-all"
+                    >
+                      <span className="font-ui-title text-ui-title text-on-surface">{p.title}</span>
+                      <span className="font-body-sm text-body-sm text-on-surface-variant">{p.body}</span>
+                    </button>
+                  ))}
+                </div>
               </div>
               <div className="flex flex-col gap-space-sm">
                 <span className="font-label-lg text-label-lg text-on-surface">Composition</span>
@@ -442,7 +537,14 @@ export default function Tests() {
               <div className="flex flex-col gap-space-md py-space-xs">
                 {[
                   { icon: "format_list_numbered", label: "Questions", value: `${total} (${mcqCount} MCQ · ${theoryCount} theory)` },
-                  { icon: "grade", label: "Total marks", value: `${total * marksPerQuestion}` },
+                  {
+                    icon: "grade",
+                    label: "Total marks",
+                    value: `${totalMarks}${negativeMarks > 0 && mcqCount > 0 ? ` · −${Math.min(negativeMarks, marksPerQuestion)} per wrong MCQ` : ""}`,
+                  },
+                  ...(sectioned && mcqCount > 0 && theoryCount > 0
+                    ? [{ icon: "view_agenda", label: "Sections", value: `A: ${mcqCount} MCQ · B: ${theoryCount} theory` }]
+                    : []),
                   { icon: "schedule", label: "Time limit", value: `${durationMinutes} minutes` },
                 ].map((row) => (
                   <div key={row.label} className="flex items-start gap-space-md">
@@ -467,9 +569,28 @@ export default function Tests() {
                   <span className="font-semibold">Test ready.</span>
                   <span>
                     Generated a pool of {result.accepted} question{result.accepted === 1 ? "" : "s"} grounded in your notes
-                    {result.discarded > 0 ? ` (${result.discarded} discarded — not supported by the source text)` : ""}; each
+                    {result.discarded > 0 ? ` (${result.discarded} left out — not supported by the source text, or a repeat of another)` : ""}; each
                     attempt adaptively picks {result.deliverable} of them.
                   </span>
+                  {result.shortfall && (
+                    <span data-testid="test-shortfall">
+                      {result.shortfall.deliverable < result.shortfall.requested
+                        ? `These notes gave only ${result.shortfall.deliverable} good question${result.shortfall.deliverable === 1 ? "" : "s"} of the ${result.shortfall.requested} you asked for, so the test is ${result.shortfall.deliverable} long.`
+                        : "These notes could not supply the full mix you asked for, so another question type makes up the rest."}{" "}
+                      {result.shortfall.theory.available < result.shortfall.theory.requested
+                        ? `Theory: ${result.shortfall.theory.available} of ${result.shortfall.theory.requested}. `
+                        : ""}
+                      {result.shortfall.mcq.available < result.shortfall.mcq.requested
+                        ? `Multiple choice: ${result.shortfall.mcq.available} of ${result.shortfall.mcq.requested}. `
+                        : ""}
+                      Adding more notes on these topics gives more to ask about.
+                    </span>
+                  )}
+                  {result.repeatsUsed > 0 && (
+                    <span data-testid="test-repeats">
+                      {result.repeatsUsed} question{result.repeatsUsed === 1 ? " is" : "s are"} from your earlier tests: these notes had no new ones left to ask.
+                    </span>
+                  )}
                   <span className="opacity-80">
                     {result.mcqGeneratedBy && result.mcqGeneratedBy !== "none"
                       ? `MCQs via ${result.mcqGeneratedBy === "llm" ? "LLM" : "rule-based fallback"}`

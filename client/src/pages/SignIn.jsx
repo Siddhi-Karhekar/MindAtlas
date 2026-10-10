@@ -17,12 +17,19 @@ export default function SignIn() {
   // a field people never see; a form-filling bot fills it in, and the server refuses the sign-up
   const [website, setWebsite] = useState("");
   // from the server: the sign-up challenge, whether it sends email, the password rule
-  const [config, setConfig] = useState({ challenge: "", emailEnabled: false, minLength: 10 });
+  const [config, setConfig] = useState({ challenge: "", emailEnabled: false, minLength: 10, support: null });
 
   const loadConfig = () =>
     api
       .authConfig()
-      .then((c) => setConfig({ challenge: c.signup?.challenge || "", emailEnabled: Boolean(c.email?.enabled), minLength: c.password?.minLength || 10 }))
+      .then((c) =>
+        setConfig({
+          challenge: c.signup?.challenge || "",
+          emailEnabled: Boolean(c.email?.enabled),
+          minLength: c.password?.minLength || 10,
+          support: c.support?.email || null,
+        })
+      )
       .catch(() => {});
   useEffect(() => {
     loadConfig();
@@ -173,6 +180,14 @@ export default function SignIn() {
               <Icon name={mode === "login" ? "auto_stories" : "login"} className="text-sm" />
             </button>
           </div>
+          {config.support && (
+            <p className="mt-space-md text-center font-body-sm text-body-sm text-on-surface-variant">
+              Need help? Write to{" "}
+              <a className="text-secondary hover:underline" href={`mailto:${config.support}`}>
+                {config.support}
+              </a>
+            </p>
+          )}
         </div>
       </div>
     </div>

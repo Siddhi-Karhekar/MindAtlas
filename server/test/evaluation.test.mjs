@@ -13,7 +13,7 @@ import os from "node:os";
 import path from "node:path";
 import { cohenKappa, fisherExact, holm, mannWhitney, parseCsv, seededRandom, toCsv, weightedKappa, wilson } from "../evaluation/lib/stats.js";
 import { collectFiles, notesFromFile, readOffTopicLabels } from "../evaluation/lib/ingest.js";
-import { allSentences, automaticMetrics, gateMetrics, isOffTopic, isPartialTerm } from "../evaluation/lib/metrics.js";
+import { automaticMetrics, gateMetrics, isOffTopic, isPartialTerm } from "../evaluation/lib/metrics.js";
 import { RATING_COLUMNS, runGeneration } from "../evaluation/generate.mjs";
 import { readCell, runScoring } from "../evaluation/score.mjs";
 import { isQuestionWorthy } from "../src/services/studyText.js";

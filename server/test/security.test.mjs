@@ -319,7 +319,7 @@ try {
   check("the account is described without its password hash", !/passwordHash|\$2[aby]\$/.test(JSON.stringify(a.raw)) && !/passwordHash/.test(r.text));
   r = await call("/auth/login", { method: "POST", body: { email: a.email, password: GOOD }, origin: "https://app.example", headers: { "X-Forwarded-Proto": "https" } });
   const cross = r.setCookie[0] || "";
-  check("over https the cookie is Secure and cannot be planted by another site (__Host-)", /^__Host-ma_session=/.test(cross) && /; Secure/.test(cross), cross.replace(/=[^;]+/, "=...").slice(0, 120));
+  check("over https the cookie is Secure and cannot be planted by another site (__Host-)", cross.startsWith('__Host-ma_session=') && /; Secure/.test(cross), cross.replace(/=[^;]+/, "=...").slice(0, 120));
   check("  ...and to a client on another address it is SameSite=None; Partitioned", /SameSite=None/.test(cross) && /Partitioned/.test(cross));
   const second = await call("/auth/login", { method: "POST", body: { email: a.email, password: GOOD } });
   const secondCookie = cookiePair(second.setCookie);
@@ -573,7 +573,7 @@ try {
   });
   await waitUp(PROD, prod);
   const https = { "X-Forwarded-Proto": "https" };
-  const pcall = (route, opts = {}) => requester(PROD)(route, { origin: "https://app.example", ...opts, headers: { ...https, ...(opts.headers || {}) } });
+  const pcall = (route, opts = {}) => requester(PROD)(route, { origin: "https://app.example", ...opts, headers: { ...https, ...opts.headers } });
 
   console.log("\n=== Production: HTTPS only ===");
   r = await requester(PROD)("/health", { headers: { "X-Forwarded-Proto": "http" } });

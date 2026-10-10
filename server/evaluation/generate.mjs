@@ -225,7 +225,7 @@ export async function runGeneration(options) {
     fs.writeFileSync(path.join(outDir, "key.csv"), toCsv(key, ["qid", "strategy", "type", "difficulty", "document"]));
     fs.writeFileSync(path.join(outDir, "metrics.json"), JSON.stringify(metrics, null, 2));
     fs.writeFileSync(path.join(outDir, "metrics.md"), metricsMarkdown(metrics));
-    fs.writeFileSync(path.join(outDir, "questions.json"), JSON.stringify(all.map(({ vector, ...q }) => q), null, 2));
+    fs.writeFileSync(path.join(outDir, "questions.json"), JSON.stringify(all.map(({ vector: _vector, ...q }) => q), null, 2));
 
     log(`\n${sheet.length} questions to rate (${all.length} generated, identical ones merged) -> ${path.join(outDir, "rating_sheet.csv")}`);
     log(metricsMarkdown(metrics));

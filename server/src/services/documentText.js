@@ -110,8 +110,6 @@ function decodeEntities(s) {
     .replace(/&amp;/g, "&");
 }
 
-const stripTags = (html) => decodeEntities(String(html || "").replace(/<[^>]+>/g, " ")).replace(/\s+/g, " ").trim();
-
 // ---------------------------------------------------------------------------
 // DOCX: mammoth maps Word's "Heading 1..6" styles to <h1>..<h6>, which is the
 // author's own structure - the most reliable signal there is. Documents

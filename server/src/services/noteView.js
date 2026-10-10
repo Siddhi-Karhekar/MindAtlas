@@ -76,7 +76,7 @@ export function contentToEditText(content) {
     }
     list = null;
     if (b.type === "heading") chunks.push([`${"#".repeat(Math.min(Math.max(b.level || 1, 1), 6))} ${b.text}`]);
-    else if (b.type === "label") chunks.push([/:$/.test(b.text) ? b.text : `${b.text}:`]);
+    else if (b.type === "label") chunks.push([b.text.endsWith(':') ? b.text : `${b.text}:`]);
     else if (b.type === "table" && Array.isArray(b.rows) && b.rows.length) {
       const row = (cells) => `| ${cells.map((c) => String(c).replace(/\|/g, "/")).join(" | ")} |`;
       const [head, ...body] = b.rows;

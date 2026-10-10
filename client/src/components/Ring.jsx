@@ -3,11 +3,14 @@
 // the graph inspector.
 const PATH = "M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831";
 
-export default function Ring({ value, className = "w-8 h-8", stroke = 3, track = "text-surface-container-high", tone = "text-secondary", children }) {
+// The number is always written inside or beside it, so the colour is never
+// the only way to tell a high value from a low one; `label` names it for
+// screen readers.
+export default function Ring({ value, className = "w-8 h-8", stroke = 3, track = "text-surface-container-high", tone = "text-secondary", label, children }) {
   const v = Math.max(0, Math.min(100, value));
   return (
-    <div className={`relative flex items-center justify-center ${className}`}>
-      <svg className="w-full h-full -rotate-90" viewBox="0 0 36 36">
+    <div className={`relative flex items-center justify-center ${className}`} role={label ? "img" : undefined} aria-label={label}>
+      <svg className="w-full h-full -rotate-90" viewBox="0 0 36 36" aria-hidden="true">
         <path className={track} d={PATH} fill="none" stroke="currentColor" strokeWidth={stroke} />
         {v > 0 && (
         <path

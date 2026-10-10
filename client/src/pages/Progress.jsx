@@ -27,7 +27,14 @@ function Trend({ points }) {
   const step = w / (points.length - 1);
   const path = points.map((p, i) => `${(i * step).toFixed(1)},${(h - p.value * h).toFixed(1)}`).join(" ");
   const rising = points[points.length - 1].value >= points[0].value;
+  const change = Math.round((points[points.length - 1].value - points[0].value) * 100);
+  // the direction is said in words and an arrow too, never by colour alone
+  const words = change === 0 ? "no change" : `${change > 0 ? "up" : "down"} ${Math.abs(change)} points`;
   return (
+    <span className="flex items-center gap-space-xs shrink-0" data-testid="trend">
+      <span className="font-label-sm text-label-sm text-on-surface-variant whitespace-nowrap">
+        {change > 0 ? "↑" : change < 0 ? "↓" : "→"} {words}
+      </span>
     <svg width={w} height={h} className="shrink-0" aria-hidden="true" style={{ overflow: "visible" }}>
       <polyline
         points={path}
@@ -38,6 +45,7 @@ function Trend({ points }) {
         strokeLinecap="round"
       />
     </svg>
+    </span>
   );
 }
 
@@ -76,7 +84,7 @@ export default function Progress() {
           </div>
           <h1 className="font-headline-lg text-headline-lg text-primary tracking-tight">Your progress</h1>
           <p className="font-body-md text-body-md text-on-surface-variant">
-            What you know per topic, built up across every attempt. Your next test draws more questions from the weaker
+            What you know per topic, built up across every attempt. Your next test draws more questions from the less secure
             topics, and starts at a difficulty that matches.
           </p>
         </div>
@@ -100,7 +108,7 @@ export default function Progress() {
           <span className="font-label-sm text-label-sm uppercase tracking-widest text-on-surface-variant font-bold">
             Mastery by topic
           </span>
-          <span className="font-label-md text-label-md text-on-surface-variant">Weakest first</span>
+          <span className="font-label-md text-label-md text-on-surface-variant">Most room to grow first</span>
         </div>
         {topics.length === 0 ? (
           <div className="bg-surface-container-low rounded-xl p-space-xl shadow-sm flex items-start gap-space-md">
@@ -132,7 +140,7 @@ export default function Progress() {
                         {t.observations < 3 ? " · still gathering evidence" : ""}
                       </p>
                     </div>
-                    <Ring className="w-12 h-12 shrink-0" value={pct} tone={pct < 50 ? "text-tertiary" : "text-secondary"}>
+                    <Ring className="w-12 h-12 shrink-0" value={pct} tone={pct < 50 ? "text-tertiary" : "text-secondary"} label={`${pct}% mastery`}>
                       <span className="font-label-sm text-label-sm text-on-surface">{pct}</span>
                     </Ring>
                   </div>

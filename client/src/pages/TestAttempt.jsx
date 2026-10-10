@@ -3,6 +3,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { api } from "../lib/api.js";
 import { getLastSubject, setLastAttempt } from "../lib/recent.js";
 import Icon from "../components/Icon.jsx";
+import ReportQuestion from "../components/ReportQuestion.jsx";
 
 function clock(totalSeconds) {
   const s = Math.max(0, totalSeconds);
@@ -19,8 +20,9 @@ function clock(totalSeconds) {
 // previous one went - see the staircase controller in
 // server/src/services/adaptiveEngine.js. This component renders whatever
 // question the server hands it and reports progress from {shown, target}.
-// The test's time limit is enforced here: when the countdown reaches zero the
-// attempt is submitted with whatever has been answered so far.
+// The test's time limit is kept by the server (it refuses late answers); the
+// countdown here shows the server's deadline, and at zero the attempt is
+// submitted with whatever has been answered so far.
 // The question as a paper would set it.
 // A fill-in-the-blank arrives as: Fill in the blank: "... _____ ..." - shown as
 // the instruction, then the sentence with each blank drawn as a ruled gap. A
@@ -63,6 +65,31 @@ function QuestionText({ question }) {
   );
 }
 
+// A theory answer being written is kept in this browser until it is sent, so
+// a refresh or a dropped connection does not lose it. Per attempt and
+// question; removed once the answer is saved on the server.
+const draftKey = (attemptId, questionId) => `mindatlas_draft_${attemptId}_${questionId}`;
+function readDraft(attemptId, questionId) {
+  try {
+    return localStorage.getItem(draftKey(attemptId, questionId)) || "";
+  } catch {
+    return "";
+  }
+}
+function writeDraft(attemptId, questionId, text) {
+  try {
+    if (text) localStorage.setItem(draftKey(attemptId, questionId), text);
+    else localStorage.removeItem(draftKey(attemptId, questionId));
+  } catch {
+    /* storage unavailable: the draft just isn't kept */
+  }
+}
+
+const pause = (ms) => new Promise((r) => setTimeout(r, ms));
+// No answer from the server at all (offline, a dropped connection), as
+// opposed to the server answering with an error.
+const isNetworkError = (err) => err && err.status === undefined;
+
 export default function TestAttempt() {
   const { testId } = useParams();
   const navigate = useNavigate();
@@ -76,9 +103,11 @@ export default function TestAttempt() {
   const [secondsLeft, setSecondsLeft] = useState(null);
   const [timeUp, setTimeUp] = useState(false);
   const [confirmExit, setConfirmExit] = useState(false);
-  const questionStartedAt = useRef(Date.now());
+  const [resumed, setResumed] = useState(false);
+  const [expired, setExpired] = useState(null);
   const started = useRef(false);
   const finishing = useRef(false);
+  const timeoutFired = useRef(false);
   const deadline = useRef(null);
   const latest = useRef({});
   latest.current = { attempt, question, selected };
@@ -86,61 +115,111 @@ export default function TestAttempt() {
   const backTo = testInfo?.subjectId || getLastSubject();
   const exitPath = backTo ? `/subjects/${backTo}/tests` : "/";
 
-  useEffect(() => {
-    if (started.current) return; // StrictMode runs effects twice in dev; only start one attempt
-    started.current = true;
-    api
-      .startAttempt(testId)
-      .then((d) => {
-        setAttempt(d.attempt);
-        setTestInfo(d.test || null);
-        setQuestion(d.question);
-        setProgress(d.progress);
-        setSelected(d.question?.type === "theory" ? "" : null);
-        questionStartedAt.current = Date.now();
-        if (d.test?.durationMinutes) {
-          deadline.current = Date.now() + d.test.durationMinutes * 60 * 1000;
-          setSecondsLeft(d.test.durationMinutes * 60);
-        }
-      })
-      .catch((err) => setError(err.message));
-  }, [testId]);
+  // The clock is the server's: the deadline it sent, moved by the difference
+  // between its clock and this device's, so a wrong clock here cannot give
+  // more (or less) time.
+  const setClock = useCallback((d) => {
+    if (!d.deadlineAt) return;
+    const skew = d.serverNow ? Date.parse(d.serverNow) - Date.now() : 0;
+    deadline.current = Date.parse(d.deadlineAt) - skew;
+    setSecondsLeft(Math.max(0, Math.round((deadline.current - Date.now()) / 1000)));
+  }, []);
+
+  const showQuestion = useCallback((a, q) => {
+    setQuestion(q);
+    setSelected(q?.type === "theory" ? readDraft(a._id, q._id) : null);
+  }, []);
 
   const finish = useCallback(
     async (opts = {}) => {
       if (finishing.current) return;
       finishing.current = true;
       const { attempt: a, question: q, selected: ans } = latest.current;
-      try {
-        // Record the answer that was in progress when time ran out, if any.
-        if (opts.timedOut && a && q) {
-          const has = q.type === "theory" ? ans?.trim() : ans;
-          if (has) {
-            await api
-              .submitResponse(a._id, { questionId: q._id, answer: ans, timeMs: Date.now() - questionStartedAt.current })
-              .catch(() => {});
-          }
-        }
-        await api.submitAttempt(a._id);
+      const toResults = () => {
+        if (q) writeDraft(a._id, q._id, "");
         setLastAttempt(a._id);
         navigate(`/attempts/${a._id}/feedback`, { replace: true });
-      } catch (err) {
-        finishing.current = false;
-        setBusy(false);
-        setError(err.message);
+      };
+      // Record the answer that was in progress when time ran out, if any.
+      // The server allows a short grace for exactly this.
+      if (opts.timedOut && a && q) {
+        const has = q.type === "theory" ? ans?.trim() : ans;
+        if (has) await api.submitResponse(a._id, { questionId: q._id, answer: ans }).catch(() => {});
+      }
+      // A dropped connection is tried again, waiting longer each time (2, 4,
+      // 8 s); "already submitted / being marked" (409) means the results page
+      // is the place to be.
+      for (let tries = 0; ; tries++) {
+        try {
+          await api.submitAttempt(a._id, { timedOut: Boolean(opts.timedOut) });
+          toResults();
+          return;
+        } catch (err) {
+          if (err.status === 409) {
+            toResults();
+            return;
+          }
+          if (isNetworkError(err) && tries < 3) {
+            await pause(2000 * 2 ** tries);
+            continue;
+          }
+          finishing.current = false;
+          setBusy(false);
+          setError(isNetworkError(err) ? "No connection - your answers are saved. Press Submit test to try again." : err.message);
+          return;
+        }
       }
     },
     [navigate]
   );
 
-  // Countdown. Computed from a fixed deadline so a throttled background tab
-  // doesn't drift.
+  // Open the test: a new attempt, or the one already open (after a refresh,
+  // another tab, or coming back later) - the server decides.
+  const open = useCallback(
+    (opts = {}) =>
+      api.startAttempt(testId, { startOver: opts.startOver }).then((d) => {
+        if (d.expired) {
+          setTestInfo(d.test || null);
+          setExpired(d.expired);
+          return;
+        }
+        setExpired(null);
+        setAttempt(d.attempt);
+        setTestInfo(d.test || null);
+        setProgress(d.progress);
+        if (!opts.quiet) setResumed(Boolean(d.resumed));
+        setClock(d);
+        latest.current = { ...latest.current, attempt: d.attempt };
+        if (d.readyToSubmit) {
+          // every question was answered before the page closed
+          finish();
+          return;
+        }
+        showQuestion(d.attempt, d.question);
+      }),
+    [testId, setClock, showQuestion, finish]
+  );
+
+  useEffect(() => {
+    if (started.current) return; // StrictMode runs effects twice in dev; only open once
+    started.current = true;
+    open().catch((err) => {
+      // the last attempt is still being marked: its results page waits for it
+      if (err.code === "closing" && err.data?.attemptId) navigate(`/attempts/${err.data.attemptId}/feedback`, { replace: true });
+      else setError(err.message);
+    });
+  }, [open, navigate]);
+
+  // Countdown, from the fixed deadline so a throttled background tab doesn't
+  // drift. At zero the attempt is submitted with what has been answered.
   useEffect(() => {
     if (!deadline.current || !attempt) return undefined;
     const tick = () => {
       const left = Math.max(0, Math.round((deadline.current - Date.now()) / 1000));
       setSecondsLeft(left);
-      if (left === 0) {
+      if (left === 0 && !timeoutFired.current) {
+        // once: finish() retries by itself, and shows a button if it gives up
+        timeoutFired.current = true;
         setTimeUp(true);
         finish({ timedOut: true });
       }
@@ -154,39 +233,96 @@ export default function TestAttempt() {
   const canAdvance = isTheory ? selected?.trim() : selected;
   const isLast = progress && progress.shown >= progress.target;
 
-  async function handleNext() {
-    if (!canAdvance || finishing.current) return;
+  function choose(value) {
+    setSelected(value);
+    if (isTheory && attempt && question) writeDraft(attempt._id, question._id, value);
+  }
+
+  // `blank`: leave an MCQ unanswered on purpose (only offered with negative
+  // marking, where a blank costs nothing and a wrong answer costs marks)
+  async function handleNext({ blank = false } = {}) {
+    if ((!canAdvance && !blank) || finishing.current) return;
     setBusy(true);
     setError("");
+    const send = () => api.submitResponse(attempt._id, { questionId: question._id, answer: blank ? "" : selected });
     try {
-      const timeMs = Date.now() - questionStartedAt.current;
-      const { nextQuestion, progress: nextProgress } = await api.submitResponse(attempt._id, {
-        questionId: question._id,
-        answer: selected,
-        timeMs,
-      });
-
+      let out;
+      // a dropped connection is tried again twice before giving up; the
+      // answer stays on screen either way
+      for (let tries = 0; ; tries++) {
+        try {
+          out = await send();
+          break;
+        } catch (err) {
+          if (!isNetworkError(err) || tries >= 2) throw err;
+          await pause(1000 * (tries + 1));
+        }
+      }
+      writeDraft(attempt._id, question._id, "");
+      const { nextQuestion, progress: nextProgress } = out;
+      if (out.deadlineAt) setClock(out);
       if (!nextQuestion) {
-        finishing.current = true;
-        await api.submitAttempt(attempt._id);
-        setLastAttempt(attempt._id);
-        navigate(`/attempts/${attempt._id}/feedback`, { replace: true });
+        await finish();
       } else {
-        setQuestion(nextQuestion);
+        showQuestion(attempt, nextQuestion);
         setProgress(nextProgress);
-        setSelected(nextQuestion.type === "theory" ? "" : null);
-        questionStartedAt.current = Date.now();
         setBusy(false);
       }
-    } catch (err) {
-      finishing.current = false;
-      setError(err.message);
+    } catch (caught) {
+      let err = caught;
+      if (err.code === "time_up") {
+        setTimeUp(true);
+        await finish();
+        return;
+      }
+      if (err.code === "already_answered" || err.code === "not_current") {
+        // the answer reached the server on an earlier try: carry on from
+        // where the server says the attempt is
+        try {
+          writeDraft(attempt._id, question._id, "");
+          await open({ quiet: true });
+          setBusy(false);
+          return;
+        } catch (again) {
+          err = again;
+        }
+      }
+      setError(
+        isNetworkError(err) ? "No connection - your answer is still here. Check your connection and press the button again." : err.message
+      );
       setBusy(false);
     }
   }
 
   const shell = (children) => <div className="min-h-screen bg-surface flex flex-col">{children}</div>;
 
+  if (expired) {
+    return shell(
+      <div className="flex-1 grid place-items-center px-gutter-canvas">
+        <div className="max-w-md text-center flex flex-col items-center gap-space-md" data-testid="attempt-expired">
+          <Icon name="timer_off" className="text-tertiary text-[40px]" />
+          <p className="font-ui-title text-ui-title text-on-surface">
+            {expired.reason === "time" ? "Time ran out on your last attempt at this test." : "Your last attempt at this test has been marked."}
+          </p>
+          <p className="font-body-md text-body-md text-on-surface-variant">It was submitted with the answers you had given.</p>
+          <div className="flex flex-wrap justify-center gap-space-sm">
+            <button
+              onClick={() => navigate(`/attempts/${expired.attemptId}/feedback`)}
+              className="h-10 px-space-lg rounded-lg bg-primary text-on-primary font-ui-body text-ui-body hover:opacity-90"
+            >
+              See the results
+            </button>
+            <button
+              onClick={() => open({ startOver: true }).catch((err) => setError(err.message))}
+              className="h-10 px-space-lg rounded-lg bg-surface-container-high text-on-surface font-ui-body text-ui-body hover:bg-surface-container-highest"
+            >
+              Start the test again
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
   if (error && !question) {
     return shell(
       <div className="flex-1 grid place-items-center px-gutter-canvas">
@@ -238,9 +374,10 @@ export default function TestAttempt() {
                 <button
                   type="button"
                   onClick={() => navigate(exitPath)}
+                  title="Your answers are saved. Open the test again to carry on - the clock keeps running."
                   className="h-9 px-space-md rounded-lg bg-error-container text-on-error-container font-ui-body text-ui-body hover:opacity-90 transition-opacity"
                 >
-                  Leave without submitting
+                  Leave for now
                 </button>
                 <button
                   type="button"
@@ -273,6 +410,7 @@ export default function TestAttempt() {
         <div className="max-w-3xl mx-auto px-gutter-canvas py-space-3xl">
           <div className="text-center">
             <p className="font-label-md text-label-md text-secondary uppercase tracking-wider mb-space-md">
+              {testInfo?.sectioned ? (isTheory ? "Section B · " : "Section A · ") : ""}
               Question {progress.shown} of {progress.target}
               {question.topic ? <span className="text-on-surface-variant"> · {question.topic}</span> : null}
               {isTheory && (
@@ -289,6 +427,12 @@ export default function TestAttempt() {
             <QuestionText question={question} />
           </div>
 
+          {resumed && (
+            <p role="status" className="mb-space-lg text-center font-ui-body text-ui-body text-secondary" data-testid="attempt-resumed">
+              Picked up where you left off - your earlier answers are saved and the clock kept running.
+            </p>
+          )}
+
           {timeUp && (
             <p role="status" className="mb-space-lg text-center font-ui-body text-ui-body text-error">
               Time&apos;s up — submitting your answers…
@@ -299,7 +443,7 @@ export default function TestAttempt() {
             <>
               <textarea
                 value={selected || ""}
-                onChange={(e) => setSelected(e.target.value)}
+                onChange={(e) => choose(e.target.value)}
                 rows={6}
                 disabled={timeUp}
                 placeholder="Write your answer here… use the key terms from your notes."
@@ -315,7 +459,7 @@ export default function TestAttempt() {
                     key={opt}
                     type="button"
                     disabled={timeUp}
-                    onClick={() => setSelected(opt)}
+                    onClick={() => choose(opt)}
                     className={`w-full text-left rounded-xl px-space-lg py-space-md font-body-md text-body-md transition-all flex items-center gap-space-md shadow-sm ${
                       on
                         ? "bg-primary-container text-on-primary-container ring-2 ring-primary font-semibold"
@@ -342,17 +486,37 @@ export default function TestAttempt() {
             </p>
           )}
 
+          <div className="mt-space-lg flex justify-center">
+            <ReportQuestion key={question._id} questionId={question._id} attemptId={attempt?._id} during />
+          </div>
+
           <div className="flex items-center justify-between mt-space-2xl">
             <span className="font-label-sm text-label-sm text-on-surface-variant">
               Answers are final — the next question adapts to this one.
+              {!isTheory && testInfo?.negativeMarks > 0 && (
+                <span className="block text-tertiary" data-testid="negative-note">
+                  A wrong answer loses {testInfo.negativeMarks} {testInfo.negativeMarks === 1 ? "mark" : "marks"}; leaving it blank loses nothing.
+                </span>
+              )}
             </span>
+            {!isTheory && testInfo?.negativeMarks > 0 && !timeUp && (
+              <button
+                type="button"
+                onClick={() => handleNext({ blank: true })}
+                disabled={busy}
+                data-testid="leave-blank"
+                className="h-11 px-space-lg rounded-lg text-on-surface-variant font-ui-body text-ui-body hover:bg-surface-container-high disabled:opacity-50"
+              >
+                Leave blank
+              </button>
+            )}
             <button
               type="button"
-              onClick={handleNext}
-              disabled={!canAdvance || busy || timeUp}
+              onClick={timeUp ? () => finish() : handleNext}
+              disabled={busy || (timeUp ? !error : !canAdvance)}
               className="h-11 px-space-2xl rounded-lg bg-primary text-on-primary font-ui-title text-ui-title shadow-md hover:opacity-90 transition-opacity disabled:opacity-50"
             >
-              {busy ? "Saving…" : isLast ? "Submit test" : "Next question"}
+              {busy ? "Saving…" : isLast || timeUp ? "Submit test" : "Next question"}
             </button>
           </div>
         </div>

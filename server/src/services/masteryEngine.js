@@ -167,6 +167,12 @@ const TIER_CUTS = { easy: 0.4, hard: 0.75 };
 // it moved because of something the student actually did.
 const MIN_OBSERVATIONS_TO_ADAPT = 3;
 
+// How many answers on a topic, across all attempts, before the app calls it
+// weak or strong anywhere a student reads it (the feedback report, the
+// progress view, the test builder's suggestions). Below it, a topic is an
+// early sign that another test will confirm or not. Same three as above.
+export const MIN_OBSERVATIONS_FOR_VERDICT = 3;
+
 export function difficultyForMastery(pKnown) {
   if (typeof pKnown !== "number" || Number.isNaN(pKnown)) return "medium";
   if (pKnown < TIER_CUTS.easy) return "easy";
