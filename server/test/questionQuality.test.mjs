@@ -21,6 +21,10 @@ const check = (label, cond, detail = "") => {
   console.log(`${cond ? "  PASS" : "  FAIL"}  ${label}${detail ? "  -> " + String(detail).replace(/\s+/g, " ").slice(0, 160) : ""}`);
   if (!cond) failures++;
 };
+// Questions the grounding gate refused. (Others are left out as repeats of
+// one already in the test, and carry a discardReason: see testEngine.pickFresh.)
+const gateFailures = (r) => r.discarded.filter((q) => !q.discardReason).length;
+
 const noteFrom = (id, title, text, extra = {}) => ({
   _id: id,
   title,
@@ -96,7 +100,7 @@ check("the cover block is gone", !cands.some((s) => /Institute|Department|Prepar
 check("the exercises are gone", !cands.some((s) => /Bully|speedup|marshalling in a remote/.test(s)));
 check("list entries are kept, with the term they open with",
   candidateSentences(messy).find((s) => s.text.startsWith("Fault tolerance:"))?.lead === "Fault tolerance");
-check("each sentence knows its section", candidateSentences(messy).find((s) => /^Synchronous message/.test(s.text))?.section === "Message Passing");
+check("each sentence knows its section", candidateSentences(messy).find((s) => s.text.startsWith('Synchronous message'))?.section === "Message Passing");
 check("what may be quoted includes the display text", quotableText(noteFrom("t", "T", "Uses **Ethernet** frames to carry data.")).includes("Uses Ethernet frames"));
 
 console.log("\n=== Key terms are whole terms ===");
@@ -197,7 +201,7 @@ for (const mode of ["rules", "embeddings"]) {
   const mcq = r.accepted.filter((q) => q.type === "mcq");
   const theory = r.accepted.filter((q) => q.type === "theory");
   check("reports how it ranked", r.rankedBy === mode, r.rankedBy);
-  check("questions were produced and none failed the grounding gate", mcq.length >= 6 && theory.length >= 4 && r.discarded.length === 0, `${mcq.length} mcq, ${theory.length} theory, ${r.discarded.length} discarded`);
+  check("questions were produced and none failed the grounding gate", mcq.length >= 6 && theory.length >= 4 && gateFailures(r) === 0, `${mcq.length} mcq, ${theory.length} theory, ${gateFailures(r)} failed the gate`);
 
   const offTopic = r.accepted.filter((q) => NOT_SUBJECT.test(`${q.prompt} ${q.answerKey} ${(q.options || []).join(" ")}`));
   check("nothing is asked about the college, admin lines or exercises", offTopic.length === 0, offTopic[0]?.prompt);
@@ -217,14 +221,14 @@ for (const mode of ["rules", "embeddings"]) {
   check("each says how much to write", theory.every((q) => typeof q.guidance === "string" && q.guidance.length > 5), theory.map((q) => q.guidance).join(" | "));
   check("each has a model answer and key points to grade against", theory.every((q) => q.answerKey?.length > 20 && q.keyPoints?.length >= 1));
   check("a 'Define' answer is a sentence that says what the term is",
-    theory.filter((q) => /^Define/.test(q.prompt)).every((q) => /\b(is|are)\s+(an?|the)\b|:\s/.test(q.answerKey)), theory.find((q) => /^Define/.test(q.prompt))?.answerKey);
+    theory.filter((q) => q.prompt.startsWith('Define')).every((q) => /\b(is|are)\s+(an?|the)\b|:\s/.test(q.answerKey)), theory.find((q) => q.prompt.startsWith('Define'))?.answerKey);
   check("the list under 'Characteristics' becomes a list question", theory.some((q) => /^List and briefly explain the characteristics of Distributed Systems\.$/.test(q.prompt)), theory.map((q) => q.prompt).join(" | "));
   check("MCQ guidance stays empty; marks are carried", mcq.every((q) => q.guidance === null && q.marks === 2));
 
   const two = await generateQuestions(dbms, { mcqCount: 6, theoryCount: 8, marksPerQuestion: 5 });
   const prompts = two.accepted.map((q) => q.prompt);
   check("two terms of the same kind give a 'Differentiate' question",
-    prompts.some((p) => /^Differentiate between .(shared|exclusive) lock. and .(shared|exclusive) lock.\.$/.test(p)), prompts.filter((p) => !/^Fill/.test(p)).join(" | "));
+    prompts.some((p) => /^Differentiate between .(shared|exclusive) lock. and .(shared|exclusive) lock.\.$/.test(p)), prompts.filter((p) => !p.startsWith('Fill')).join(" | "));
   check("bold terms from the notes are asked about", two.accepted.some((q) => /two-phase locking|deadlock/i.test(q.answerKey + q.prompt)));
   check("questions name the topic they came from", two.accepted.every((q) => ["Lock-Based Protocols", "Deadlock Handling"].includes(q.topic)));
 }
@@ -235,7 +239,7 @@ process.env.SEMANTIC_MODEL = "off";
 clearStudyCache();
 const tiny = noteFrom("t1", "Osmosis", "Osmosis is the movement of water across a membrane. Water moves toward the region of higher solute concentration.");
 const small = await generateQuestions([tiny], { mcqCount: 2, theoryCount: 1, marksPerQuestion: 1 });
-check("no crash, and whatever is produced is grounded", small.discarded.length === 0 && small.accepted.every((q) => tiny.rawText.includes(q.supportingExcerpt)), `${small.accepted.length} accepted`);
+check("no crash, and whatever is produced is grounded", gateFailures(small) === 0 && small.accepted.every((q) => tiny.rawText.includes(q.supportingExcerpt)), `${small.accepted.length} accepted`);
 const empty = await generateQuestions([noteFrom("e1", "Cover", "Pune Institute of Computer Technology\n\nDepartment of Computer Engineering")], { mcqCount: 2, theoryCount: 2, marksPerQuestion: 1 });
 check("a note that is only a cover page produces no questions", empty.accepted.length === 0, empty.accepted[0]?.prompt);
 

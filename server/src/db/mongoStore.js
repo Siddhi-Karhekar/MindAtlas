@@ -1,5 +1,6 @@
 import { MongoClient } from "mongodb";
 import { generateId } from "./ids.js";
+import { redact } from "../services/log.js";
 import { assertSafeFilter, candidatesOf } from "./filter.js";
 
 // Real MongoDB backend (e.g. Atlas), implementing the same tiny interface
@@ -77,7 +78,7 @@ export class MongoCollectionWrapper {
     // immutable field. This keeps upserted rows (responses, graph edges) on
     // the same string-id shape as inserted ones.
     const effectiveUpdate = upsert
-      ? { ...update, $setOnInsert: { ...(update.$setOnInsert || {}), _id: generateId() } }
+      ? { ...update, $setOnInsert: { ...update.$setOnInsert, _id: generateId() } }
       : update;
 
     const result = await this.col.findOneAndUpdate(toMongoFilter(filter), effectiveUpdate, {
@@ -109,7 +110,40 @@ export async function createMongoDb(uri) {
   await db
     .collection("users")
     .createIndex({ email: 1 }, { unique: true })
-    .catch((err) => console.warn("[db] could not create the unique index on users.email:", err.message));
+    .catch((err) => console.warn("[db] could not create the unique index on users.email:", redact(err.message)));
+  // one feedback report per attempt (routes/attempts.js writes it by upsert)
+  await db
+    .collection("feedback_reports")
+    .createIndex({ attemptId: 1 }, { unique: true })
+    .catch((err) => console.warn("[db] could not create the unique index on feedback_reports.attemptId:", redact(err.message)));
+  // An index for every query the app runs, so each request reads the few
+  // documents it needs rather than a whole collection - the difference
+  // between fine and slow once there are a few thousand students. Creating an
+  // index that exists is a no-op; a failure is reported and the server
+  // carries on (queries still work, just slower).
+  const INDEXES = {
+    subjects: [{ ownerId: 1, createdAt: -1 }],
+    notes: [{ subjectId: 1, createdAt: -1 }, { ownerId: 1, createdAt: -1 }, { parentNoteId: 1 }],
+    tests: [{ subjectId: 1, createdAt: -1 }, { ownerId: 1 }],
+    questions: [{ testId: 1, status: 1, createdAt: 1 }],
+    attempts: [{ ownerId: 1, subjectId: 1, startedAt: -1 }, { testId: 1, ownerId: 1, status: 1 }],
+    responses: [{ attemptId: 1, questionId: 1 }],
+    feedback_reports: [{ ownerId: 1, subjectId: 1, createdAt: 1 }],
+    mastery: [{ ownerId: 1, subjectId: 1, topicId: 1 }],
+    graph_edges: [{ sourceNoteId: 1 }, { targetNoteId: 1 }, { subjectId: 1 }, { sourceSubjectId: 1 }, { targetSubjectId: 1 }],
+    question_reports: [{ ownerId: 1, testId: 1 }, { questionId: 1, ownerId: 1 }],
+    email_tokens: [{ tokenHash: 1, purpose: 1 }, { userId: 1, purpose: 1 }],
+  };
+  await Promise.all(
+    Object.entries(INDEXES).flatMap(([name, keys]) =>
+      keys.map((key) =>
+        db
+          .collection(name)
+          .createIndex(key)
+          .catch((err) => console.warn(`[db] could not create an index on ${name}:`, redact(err.message)))
+      )
+    )
+  );
   return {
     kind: "mongo",
     collection(name) {

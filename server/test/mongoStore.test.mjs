@@ -39,7 +39,7 @@ class StrictFakeCollection {
     let doc = this.docs.find((d) => docMatches(d, filter));
     if (!doc) {
       if (!upsert) return null;
-      doc = { ...filter, ...(update.$setOnInsert || {}) };
+      doc = { ...filter, ...update.$setOnInsert };
       if (doc._id === undefined) doc._id = new ObjectId();
       this.docs.push(doc);
     }

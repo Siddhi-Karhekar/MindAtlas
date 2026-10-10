@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { api } from "../lib/api.js";
 import { useAuth } from "../lib/AuthContext.jsx";
-import { getLastSubject, getSubjectVisits, setLastSubject } from "../lib/recent.js";
+import { forgetSubject, getLastSubject, getSubjectVisits, setLastSubject } from "../lib/recent.js";
 import { timeAgo } from "../lib/format.js";
 import Icon from "../components/Icon.jsx";
 import Ring from "../components/Ring.jsx";
@@ -45,9 +45,14 @@ export default function Home() {
   const [rows, setRows] = useState(null);
   const [error, setError] = useState("");
   const [name, setName] = useState("");
+  const [group, setGroup] = useState("");
   const [busy, setBusy] = useState(false);
+  const [revision, setRevision] = useState(null);
+  const [organising, setOrganising] = useState(false);
+  const [deleting, setDeleting] = useState(null); // subject id awaiting confirmation
 
   async function load() {
+    api.getRevision().then(setRevision).catch(() => setRevision(null));
     try {
       const { subjects } = await api.listSubjects();
       const graphs = await Promise.all(
@@ -70,14 +75,54 @@ export default function Home() {
     setBusy(true);
     setError("");
     try {
-      const { subject } = await api.createSubject(name.trim());
+      const { subject } = await api.createSubject(name.trim(), group.trim() || undefined);
       setName("");
+      setGroup("");
       setLastSubject(subject._id);
       navigate(`/subjects/${subject._id}`);
     } catch (err) {
       setError(err.message);
     } finally {
       setBusy(false);
+    }
+  }
+
+  // A new student's first minute: a ready-made subject from a real set of
+  // lecture notes, split into topics and linked, to try a test on at once.
+  async function handleDemo() {
+    setBusy(true);
+    setError("");
+    try {
+      const { default: content } = await import("../lib/demoNotes.md?raw");
+      const { subject } = await api.createSubject("Sample: Computer Networks", "Sample");
+      await api.createNote(subject._id, { title: "Computer Networks - Unit 2", content });
+      setLastSubject(subject._id);
+      navigate(`/subjects/${subject._id}`);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function removeSubject(subjectId) {
+    try {
+      await api.deleteSubject(subjectId);
+      setDeleting(null);
+      setRows((list) => list.filter((r) => r.subject._id !== subjectId));
+      forgetSubject(subjectId);
+      api.getRevision().then(setRevision).catch(() => setRevision(null));
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function moveTo(subjectId, folder) {
+    try {
+      const { subject } = await api.updateSubject(subjectId, { group: folder });
+      setRows((list) => list.map((r) => (r.subject._id === subjectId ? { ...r, subject } : r)));
+    } catch (err) {
+      setError(err.message);
     }
   }
 
@@ -100,6 +145,17 @@ export default function Home() {
   }, [rows]);
 
   const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+  // subjects by folder (a semester, a year); folders A-Z, unfiled last
+  const folders = useMemo(() => {
+    const byFolder = new Map();
+    for (const r of rows || []) {
+      const key = r.subject.group || "";
+      if (!byFolder.has(key)) byFolder.set(key, []);
+      byFolder.get(key).push(r);
+    }
+    return [...byFolder.entries()].sort(([a], [b]) => (a === "" ? 1 : b === "" ? -1 : a.localeCompare(b, undefined, { numeric: true })));
+  }, [rows]);
+  const folderNames = folders.map(([f]) => f).filter(Boolean);
 
   return (
     <div className="flex flex-col w-full">
@@ -179,6 +235,48 @@ export default function Home() {
         </section>
       )}
 
+      {revision && (revision.streak.days > 0 || revision.due.length > 0) && (
+        <section className="mb-space-2xl bg-surface-container-lowest rounded-xl p-space-lg shadow-sm flex flex-col md:flex-row gap-space-lg" data-testid="revision-card">
+          <div className="flex items-center gap-space-md md:w-64 shrink-0">
+            <Icon name="local_fire_department" className="text-tertiary text-[32px]" />
+            <div>
+              <p className="font-headline-sm text-headline-sm text-on-surface">
+                {revision.streak.days > 0 ? `${plural(revision.streak.days, "day")} in a row` : "Start a streak"}
+              </p>
+              <p className="font-body-sm text-body-sm text-on-surface-variant">
+                {revision.streak.today
+                  ? "You finished a test today - nice work."
+                  : revision.streak.days > 0
+                    ? "Finish a test today to keep it going."
+                    : "Finish a test today to start one."}
+              </p>
+            </div>
+          </div>
+          {revision.due.length > 0 && (
+            <div className="flex-1 flex flex-col gap-space-xs">
+              <p className="font-label-md text-label-md uppercase tracking-wider text-secondary">Worth revising next</p>
+              <ul className="flex flex-col gap-space-2xs">
+                {revision.due.map((d) => (
+                  <li key={d.topicId}>
+                    <Link
+                      to={`/subjects/${d.subjectId}/tests?topic=${d.topicId}`}
+                      className="flex items-center justify-between gap-space-md px-space-md py-space-xs rounded-lg bg-surface-container-low hover:bg-surface-container"
+                    >
+                      <span className="font-ui-body text-ui-body text-on-surface truncate">
+                        {d.topic} <span className="text-on-surface-variant">· {d.subject}</span>
+                      </span>
+                      <span className="font-label-sm text-label-sm text-on-surface-variant shrink-0">
+                        {d.reason === "shaky" ? `${Math.round(d.pKnown * 100)}% so far - practise it` : `last practised ${d.daysSince} days ago`}
+                      </span>
+                    </Link>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </section>
+      )}
+
       {rows && (
         <>
           <section className="flex items-baseline justify-between mb-space-md px-space-xs">
@@ -192,9 +290,40 @@ export default function Home() {
             </div>
           </section>
 
-          {rows.length > 0 && (
-            <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-space-md">
-              {[...rows]
+          {rows.length === 0 && (
+            <section className="mb-space-lg p-space-xl rounded-xl bg-surface-container-lowest shadow-sm flex flex-col sm:flex-row items-start sm:items-center justify-between gap-space-md" data-testid="demo-offer">
+              <div className="flex items-start gap-space-md">
+                <Icon name="school" className="text-secondary text-[32px]" />
+                <div>
+                  <p className="font-ui-title text-ui-title text-on-surface font-semibold">New here? Try a sample subject first.</p>
+                  <p className="font-body-sm text-body-sm text-on-surface-variant max-w-xl">
+                    A set of Computer Networks lecture notes, split into topics and linked for you - build a test from it in a
+                    minute and see how feedback works. Delete it whenever you like (Organise into folders, below).
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={handleDemo}
+                disabled={busy}
+                data-testid="try-demo"
+                className="px-space-lg py-space-sm rounded-lg bg-primary text-on-primary font-ui-title text-ui-title shadow-sm hover:opacity-90 disabled:opacity-50 shrink-0"
+              >
+                {busy ? "Setting it up…" : "Try the sample"}
+              </button>
+            </section>
+          )}
+
+          {folders.map(([folder, list]) => (
+            <section key={folder || "-"} className="mb-space-lg flex flex-col gap-space-sm">
+              {folderNames.length > 0 && (
+                <h3 className="font-label-md text-label-md uppercase tracking-widest text-on-surface-variant font-bold px-space-xs flex items-center gap-space-xs">
+                  <Icon name="folder" className="text-sm" />
+                  {folder || "Not in a folder"}
+                </h3>
+              )}
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-space-md">
+              {[...list]
                 .sort((a, b) => lastActive(b) - lastActive(a))
                 .map((r) => (
                   <Link
@@ -229,8 +358,71 @@ export default function Home() {
                     </div>
                   </Link>
                 ))}
+              </div>
             </section>
+          ))}
+
+          {rows.length > 0 && (
+            <div className="mb-space-md px-space-xs">
+              <button
+                type="button"
+                onClick={() => setOrganising((o) => !o)}
+                className="font-label-md text-label-md text-secondary hover:underline flex items-center gap-space-xs"
+                data-testid="organise"
+              >
+                <Icon name="drive_file_move" className="text-sm" />
+                {organising ? "Done organising" : "Organise into folders (semesters, years…), or delete a subject"}
+              </button>
+              {organising && (
+                <div className="mt-space-sm flex flex-col gap-space-xs p-space-md rounded-xl bg-surface-container-low">
+                  {rows.map((r) => (
+                    <div key={r.subject._id} className="flex flex-col gap-space-2xs">
+                    <label className="flex items-center justify-between gap-space-md font-ui-body text-ui-body text-on-surface">
+                      <span className="truncate flex-1">{r.subject.name}</span>
+                      <input
+                        defaultValue={r.subject.group || ""}
+                        list="folder-names"
+                        maxLength={60}
+                        placeholder="No folder"
+                        aria-label={`Folder for ${r.subject.name}`}
+                        onBlur={(e) => {
+                          if (e.target.value.trim() !== (r.subject.group || "")) moveTo(r.subject._id, e.target.value.trim());
+                        }}
+                        onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
+                        className="w-48 bg-surface-container-lowest px-space-sm py-space-2xs rounded-lg text-on-surface placeholder:text-outline"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setDeleting(r.subject._id)}
+                        aria-label={`Delete ${r.subject.name}`}
+                        data-testid="delete-subject"
+                        className="text-on-surface-variant hover:text-error"
+                      >
+                        <Icon name="delete" className="text-base" />
+                      </button>
+                    </label>
+                    {deleting === r.subject._id && (
+                      <div className="flex items-center justify-end gap-space-sm font-body-sm text-body-sm" role="alert">
+                        <span className="text-error">Delete “{r.subject.name}” with all its notes, tests and results? This cannot be undone.</span>
+                        <button type="button" onClick={() => removeSubject(r.subject._id)} className="px-space-sm py-space-2xs rounded bg-error-container text-on-error-container" data-testid="confirm-delete-subject">
+                          Delete
+                        </button>
+                        <button type="button" onClick={() => setDeleting(null)} className="px-space-sm py-space-2xs rounded hover:bg-surface-container-high">
+                          Cancel
+                        </button>
+                      </div>
+                    )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           )}
+          <datalist id="folder-names">
+            {folderNames.map((f) => (
+              <option key={f} value={f} />
+            ))}
+          </datalist>
 
           <section className="mt-space-xl p-space-md rounded-xl bg-surface-container-low flex flex-col sm:flex-row items-center justify-between gap-space-md">
             <div className="flex items-center gap-space-md">
@@ -242,13 +434,22 @@ export default function Home() {
                 </p>
               </div>
             </div>
-            <form onSubmit={handleCreate} className="flex items-center gap-space-sm w-full sm:w-auto">
+            <form onSubmit={handleCreate} className="flex flex-col sm:flex-row items-stretch sm:items-center gap-space-sm w-full sm:w-auto">
               <input
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 aria-label="New subject name"
-                className="bg-surface-container-lowest px-space-md py-space-xs rounded-lg font-ui-body text-ui-body text-on-surface placeholder:text-outline focus:outline-none focus:ring-2 focus:ring-primary/20 w-full sm:w-64 shadow-inner"
+                className="bg-surface-container-lowest px-space-md py-space-xs rounded-lg font-ui-body text-ui-body text-on-surface placeholder:text-outline focus:outline-none focus:ring-2 focus:ring-primary/20 w-full sm:w-56 shadow-inner"
                 placeholder="e.g. Neuroscience"
+              />
+              <input
+                value={group}
+                onChange={(e) => setGroup(e.target.value)}
+                list="folder-names"
+                maxLength={60}
+                aria-label="Folder (optional)"
+                className="bg-surface-container-lowest px-space-md py-space-xs rounded-lg font-ui-body text-ui-body text-on-surface placeholder:text-outline focus:outline-none focus:ring-2 focus:ring-primary/20 w-full sm:w-40 shadow-inner"
+                placeholder="Folder (optional)"
               />
               <button
                 disabled={busy || !name.trim()}

@@ -181,6 +181,7 @@ async function authenticate(req) {
   if (!user) return { error: "your session has expired - sign in again" };
   // a token from before the last password change no longer counts
   if ((payload.sv || 0) !== (user.sessionVersion || 0)) return { error: "your password was changed - sign in again" };
+  if (user.suspended) return { error: "this account has been suspended - contact support if you think this is a mistake", suspended: true };
   return { user, via: bearer ? "bearer" : "cookie" };
 }
 

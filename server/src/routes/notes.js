@@ -4,6 +4,9 @@ import { requireAuth } from "../middleware/auth.js";
 import { safeRouter } from "../middleware/safeRouter.js";
 import { LIMITS, text } from "../middleware/validate.js";
 import { uploadSingle } from "../middleware/upload.js";
+import { once } from "../middleware/once.js";
+import { envNumber } from "../config.js";
+import { markActivity } from "../models/User.js";
 import { extractTextFromImage } from "../services/ocr.js";
 import { blocksFromOcrLines, classifyUpload, titleFromFilename } from "../services/documentText.js";
 import { extractInWorker } from "../services/extractInWorker.js";
@@ -122,7 +125,9 @@ router.post("/:id/notes/preview", uploadSingle("file", 10), async (req, res) => 
 // A long document with detectable subtopics (headings, slide titles, or - as a
 // fallback - evenly sized parts) is saved as one parent note plus a child note
 // per subtopic. Send the form field split=false to keep it as a single note.
-router.post("/:id/notes", uploadSingle("file", 10), async (req, res) => {
+const storageLimit = (name, fallback) => Math.max(1, envNumber(name, fallback));
+
+router.post("/:id/notes", uploadSingle("file", 10), once(), async (req, res) => {
   const subject = await findOwnedSubject(req.params.id, req.user.id);
   if (!subject) return res.status(404).json({ error: "subject not found" });
 
@@ -145,6 +150,19 @@ router.post("/:id/notes", uploadSingle("file", 10), async (req, res) => {
   }
 
   if (!title || !title.trim()) return res.status(400).json({ error: "title is required" });
+
+  // Storage per student. Only the text of notes is kept (never the uploaded
+  // file), so the cost is small, but it grows every month and must have a
+  // ceiling: a full library refuses new notes, and says how to make room.
+  const owned = (await findNotesByOwner(req.user.id)).filter((n) => !isSplitParent(n));
+  const used = owned.reduce((n, x) => n + (x.rawText?.length || 0), 0);
+  if (owned.length >= storageLimit("NOTES_MAX_PER_STUDENT", 2000) || used + (content?.length || 0) > storageLimit("NOTES_MAX_CHARS_PER_STUDENT", 30_000_000)) {
+    return res.status(413).json({
+      error: "your library is full - delete notes you no longer need to make room for new ones",
+      code: "library_full",
+    });
+  }
+
   if (!content || !content.trim()) {
     return res.status(400).json({
       error: ocrFailed
@@ -196,6 +214,7 @@ router.post("/:id/notes", uploadSingle("file", 10), async (req, res) => {
       content: normalizeContent(blocks, { title: title.trim() }),
     });
     const edges = await updateGraphForNote(note, ownerNotes);
+    markActivity(req.user.id, "note").catch(() => {});
     return res.status(201).json({ note: publicNote(note), children: [], ...countLinks(edges) });
   }
 
@@ -254,6 +273,7 @@ router.post("/:id/notes", uploadSingle("file", 10), async (req, res) => {
   }
   await setChildCount(parent._id, children.length);
 
+  markActivity(req.user.id, "note").catch(() => {});
   res.status(201).json({
     note: publicNote({ ...parent, childCount: children.length }),
     children: children.map(publicNote),

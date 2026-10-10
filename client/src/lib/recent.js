@@ -51,3 +51,21 @@ export function clearRecent() {
     }
   }
 }
+
+/** Forget a deleted subject: it is no longer "where the student last was". */
+export function forgetSubject(id) {
+  const remove = (key) => {
+    try {
+      localStorage.removeItem(key);
+    } catch {
+      /* ignore */
+    }
+  };
+  if (get(SUBJECT) === String(id)) {
+    remove(SUBJECT);
+    remove(ATTEMPT); // the last attempt may have been in it
+  }
+  const visits = getSubjectVisits();
+  delete visits[id];
+  set(VISITS, JSON.stringify(visits));
+}

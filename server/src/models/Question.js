@@ -24,3 +24,9 @@ export async function findQuestionsByIds(ids) {
   if (!ids.length) return [];
   return questions().find({ _id: ids });
 }
+
+/** Every accepted question of these tests: what a student has already been asked. */
+export async function findAcceptedQuestionsByTests(testIds) {
+  if (!testIds.length) return [];
+  return questions().find({ testId: testIds, status: "accepted" });
+}

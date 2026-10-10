@@ -1,6 +1,6 @@
 # Continuous integration for Mind Atlas (Member 4, CONTRIBUTING.md §3).
 # Runs on every push and every pull request into main, so a PR shows a green
-# tick only when the server tests pass, the client lints and builds, the
+# tick only when the server lints and its tests pass, the client lints and builds, the
 # production Docker image builds, there are no high/critical npm advisories,
 # and no secrets were committed.
 #
@@ -38,6 +38,7 @@ jobs:
           cache: npm
           cache-dependency-path: server/package-lock.json
       - run: npm ci
+      - run: npm run lint
       - run: npm test
       - name: npm audit (fail on high/critical)
         run: npm audit --omit=dev --audit-level=high

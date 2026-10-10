@@ -7,11 +7,13 @@
   "scripts": {
     "dev": "node src/index.js",
     "start": "node src/index.js",
-    "test": "node test/mongoStore.test.mjs && node test/masteryEngine.test.mjs && node test/graphEngine.test.mjs && node test/graphRoutes.test.mjs && node test/keywordMap.test.mjs && node test/noteUploads.test.mjs && node test/documentStructure.test.mjs && node test/noteContent.test.mjs && node test/questionQuality.test.mjs && node test/noteLifecycle.test.mjs && node test/evaluation.test.mjs && node test/noteExport.test.mjs && node test/security.test.mjs",
+    "test": "node test/mongoStore.test.mjs && node test/masteryEngine.test.mjs && node test/graphEngine.test.mjs && node test/graphRoutes.test.mjs && node test/keywordMap.test.mjs && node test/noteUploads.test.mjs && node test/documentStructure.test.mjs && node test/noteContent.test.mjs && node test/questionQuality.test.mjs && node test/noteLifecycle.test.mjs && node test/evaluation.test.mjs && node test/noteExport.test.mjs && node test/assessment.test.mjs && node test/security.test.mjs",
     "semantic:install": "node scripts/semantic-install.mjs",
     "semantic:check": "node scripts/semantic-check.mjs",
     "eval:generate": "node evaluation/generate.mjs",
-    "eval:score": "node evaluation/score.mjs"
+    "eval:score": "node evaluation/score.mjs",
+    "lint": "oxlint --deny-warnings src test evaluation scripts",
+    "load-test": "node scripts/load-test.mjs"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
@@ -28,5 +30,8 @@
     "pdfjs-dist": "^4.10.38",
     "pdfkit": "^0.20.2",
     "tesseract.js": "^5.1.1"
+  },
+  "devDependencies": {
+    "oxlint": "^1.87.0"
   }
 }

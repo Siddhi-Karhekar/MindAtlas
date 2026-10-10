@@ -10,6 +10,7 @@ import Tests from "./pages/Tests.jsx";
 import TestAttempt from "./pages/TestAttempt.jsx";
 import Insights from "./pages/Insights.jsx";
 import Settings from "./pages/Settings.jsx";
+import Admin from "./pages/Admin.jsx";
 import Progress from "./pages/Progress.jsx";
 import ForgotPassword from "./pages/ForgotPassword.jsx";
 import ResetPassword from "./pages/ResetPassword.jsx";
@@ -50,6 +51,7 @@ export default function App() {
             <Route path="/subjects/:subjectId/progress" element={<Progress />} />
             <Route path="/attempts/:attemptId/feedback" element={<Insights />} />
             <Route path="/settings" element={<Settings />} />
+            <Route path="/admin" element={<Admin />} />
           </Route>
           {/* The focus-mode attempt screen is full-bleed: no icon rail. */}
           <Route

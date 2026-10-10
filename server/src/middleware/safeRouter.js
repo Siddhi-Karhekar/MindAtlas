@@ -16,7 +16,7 @@ import { Router } from "express";
 import { isId } from "./validate.js";
 
 const METHODS = ["use", "all", "get", "post", "put", "patch", "delete"];
-const ID_PARAMS = ["id", "noteId"];
+const ID_PARAMS = ["id", "noteId", "questionId"];
 
 const wrap = (fn) => {
   // error-handling middleware (4 arguments) and anything that is not a

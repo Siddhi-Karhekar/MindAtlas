@@ -44,6 +44,11 @@ export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), 'VITE_')
   return {
     plugins: [react(), contentSecurityPolicy(env.VITE_API_BASE)],
+    build: {
+      // Fonts (the formula fonts, KaTeX) are always separate files, never
+      // inlined as data: addresses, which the policy above does not allow.
+      assetsInlineLimit: (file) => (/\.(woff2?|ttf|otf|eot)$/i.test(file) ? false : undefined),
+    },
     server: {
       port: 5173,
       host: true,

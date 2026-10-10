@@ -113,7 +113,18 @@ Team roles and branch conventions are in [`CONTRIBUTING.md`](CONTRIBUTING.md).
   (connected components - a stand-in for Louvain community detection). The
   graph page can colour notes by cluster, labelled with shared keywords.
 
+**Before launch:** [`docs/LAUNCH.md`](docs/LAUNCH.md) goes through a pre-launch
+checklist item by item - what is done, what does not apply, and the decisions
+still open. [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) is the one-page map
+of the code.
+
 **Tests, attempts and feedback**
+
+[`docs/ASSESSMENT.md`](docs/ASSESSMENT.md) lists every rule below with where it
+lives: the server-kept time limit and resuming after a refresh, marks out of
+the whole paper, theory marking a student cannot steer, the question-by-question
+review, re-marking, "Report this question", and no repeated questions.
+
 - **Grounded question generation** - MCQ and theory (short-answer) questions,
   in any mix. With a `GROQ_API_KEY` an LLM drafts them from the selected
   notes only; every question must quote a supporting excerpt that appears
@@ -309,8 +320,8 @@ and at least two raters.
    plus feeding students' link corrections back into the linking rule.
    Rule-based cross-subject disambiguation, clustering and removing a wrong
    link are already in (see "What works today").
-4. **Test timer** - `durationMinutes` is stored and shown but not yet
-   enforced with a countdown in the attempt screen.
+4. **Test timer** - done: the server keeps the time limit, refuses late
+   answers and resumes an open attempt after a refresh (`docs/ASSESSMENT.md`).
 5. **Quality upgrades from the report** - distractor gating for the LLM path,
    fuzzy (non-verbatim) excerpt matching, stricter theory grading prompt,
    calibrated Rasch difficulties once there is response data. Whole key terms

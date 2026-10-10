@@ -103,7 +103,7 @@ export function contentRuns(text) {
     lastEnd = m.index + m[0].length;
     if (run.length && /[^\s]/.test(gap)) close(); // punctuation between words ends a term
     const lower = m[0].toLowerCase();
-    if (BREAK.has(lower) || /^\d+([.,]\d+)*$/.test(lower) || /ly$/.test(lower)) {
+    if (BREAK.has(lower) || /^\d+([.,]\d+)*$/.test(lower) || lower.endsWith('ly')) {
       close();
       continue;
     }
@@ -118,7 +118,7 @@ export function contentRuns(text) {
 // one key for "block cipher" and "block ciphers"
 function singular(w) {
   if (w.length <= 3 || /(ss|us|is)$/.test(w)) return w;
-  if (/ies$/.test(w) && w.length > 4) return `${w.slice(0, -3)}y`;
+  if (w.endsWith('ies') && w.length > 4) return `${w.slice(0, -3)}y`;
   if (/(sh|ch|x|z|ss)es$/.test(w)) return w.slice(0, -2);
   return w.endsWith("s") ? w.slice(0, -1) : w;
 }
@@ -133,7 +133,7 @@ export function termPattern(term, flags = "gi") {
   const words = String(term).trim().split(/\s+/);
   const last = singular(words[words.length - 1].toLowerCase());
   const body = [...words.slice(0, -1).map(escapeRe), `${escapeRe(last)}(?:s|es)?`];
-  if (/y$/.test(last)) body[body.length - 1] = `(?:${escapeRe(last)}s?|${escapeRe(last.slice(0, -1))}ies)`;
+  if (last.endsWith('y')) body[body.length - 1] = `(?:${escapeRe(last)}s?|${escapeRe(last.slice(0, -1))}ies)`;
   return new RegExp(`(?<![A-Za-z0-9])${body.join("[\\s-]+")}(?![A-Za-z0-9])`, flags);
 }
 

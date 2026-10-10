@@ -21,7 +21,8 @@ const STOPWORDS = new Set([
 ]);
 
 export function tokenize(text) {
-  return (text.toLowerCase().match(/[a-z0-9][a-z0-9'-]{1,}/g) || []).filter(
+  // formula commands (\frac, \int, \alpha) are notation, not key terms
+  return (text.replace(/\\[a-zA-Z]+/g, " ").toLowerCase().match(/[a-z0-9][a-z0-9'-]{1,}/g) || []).filter(
     (t) => !STOPWORDS.has(t) && t.length > 2
   );
 }

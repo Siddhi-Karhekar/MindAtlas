@@ -48,6 +48,11 @@ export async function deleteMasteryForTopics(ownerId, topicIds) {
   return mastery().deleteMany({ ownerId, topicId: topicIds });
 }
 
+/** Every topic the student has been tested on, across subjects. */
+export async function findMasteryByOwner(ownerId) {
+  return mastery().find({ ownerId });
+}
+
 /** Convenience: a Map of topicId -> mastery record for quick lookup. */
 export async function masteryMapForSubject(ownerId, subjectId) {
   const rows = await findMasteryBySubject(ownerId, subjectId);
