@@ -19,7 +19,7 @@
     "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",
     "docx": "^9.8.1",
-    "dotenv": "^16.4.5",
+    "dotenv": "^18.0.5",
     "express": "^4.19.2",
     "jsonwebtoken": "^9.0.2",
     "jszip": "^3.10.1",
