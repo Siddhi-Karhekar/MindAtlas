@@ -2,7 +2,7 @@ import { asData, callLLM, llmAvailable, parseJsonLoose, producedBy } from "./llm
 import { tokenize } from "./tfidf.js";
 import { topicWeight } from "./masteryEngine.js";
 import { blocksOf, isContentExcerpt, isQuestionWorthy, isStatement, quotableText } from "./studyText.js";
-import { GENERIC, studyFor, termKey, termPattern } from "./keyTerms.js";
+import { GENERIC, phrasesIn, studyFor, termKey, termPattern } from "./keyTerms.js";
 import { cosine, getEmbedder } from "./embeddings.js";
 
 // The rules for which sentences are subject matter live in studyText.js; they
@@ -881,17 +881,31 @@ const sentenceCase = (s) => (s ? s[0].toUpperCase() + s.slice(1) : s);
 // "the two-phase locking protocol" reads better than a bare term after "Explain"
 const quoted = (term) => `“${term}”`;
 
-// What a good answer should mention: the other key terms in the model answer,
-// topped up with its distinctive words, never the term the question names.
+// What a good answer should mention, as whole terms ("total internal
+// reflection", not one word of it), never the term the question names nor a
+// piece of it ("system" is no key point for "distributed system"). In order:
+// the note's key terms that are phrases, acronyms or marked by the author;
+// the answer's other noun phrases; then single key terms and words.
 function keyPointsFor(study, modelAnswer, exclude = []) {
-  // nor a piece of it: "system" is no key point for "distributed system"
   const named = (t) => exclude.some((x) => ` ${x.key} `.includes(` ${t.key} `) || ` ${t.key} `.includes(` ${x.key} `));
-  const fromTerms = study.terms.filter((t) => !named(t) && termPattern(t.term, "i").test(modelAnswer)).map((t) => t.term);
+  const inAnswer = study.terms.filter((t) => !named(t) && termPattern(t.term, "i").test(modelAnswer));
+  const strongTerm = (t) => t.words > 1 || t.marks.length || /^[A-Z0-9][A-Z0-9/+.-]*[A-Z0-9+]$/.test(t.term);
   const namedWords = exclude.flatMap((t) => t.key.split(" "));
-  const fromWords = [...new Set(tokenize(modelAnswer))].filter(
-    (w) => w.length >= 5 && !GENERIC.has(w) && !namedWords.some((x) => w.startsWith(x.slice(0, 4))) && !fromTerms.some((t) => t.toLowerCase().includes(w))
-  );
-  const points = [...fromTerms, ...fromWords].slice(0, 4);
+  const noteText = study.sentences.map((s) => s.text).join("\n");
+  const fromPhrases = phrasesIn(modelAnswer, noteText).filter((p) => !p.toLowerCase().split(/\s+/).some((w) => namedWords.some((x) => w.startsWith(x.slice(0, 4)))));
+  const ordered = [
+    ...inAnswer.filter(strongTerm).map((t) => t.term),
+    ...fromPhrases.filter((p) => p.includes(" ")),
+    ...inAnswer.filter((t) => !strongTerm(t) && t.standalone >= 2).map((t) => t.term),
+    ...fromPhrases.filter((p) => !p.includes(" ")),
+  ];
+  // one point per idea: "link" / "links", "OSI" / "OSI model" ("window" adds nothing beside "congestion window")
+  const points = [];
+  const within = (a, b) => ` ${termKey(a)} `.includes(` ${termKey(b)} `) || ` ${termKey(b)} `.includes(` ${termKey(a)} `);
+  for (const p of ordered) {
+    if (points.length >= 4) break;
+    if (!points.some((q) => within(p, q))) points.push(p);
+  }
   return points.length ? points : exclude.map((t) => t.term);
 }
 
@@ -1062,7 +1076,7 @@ function generateTheoryFallback(notes, theoryCount, masteryMap, studies) {
       prompt: `Explain ${quoted(term)} with reference to ${cleanTitle(note.title)}.`,
       guidance: "Answer in two or three sentences.",
       modelAnswer: sentence,
-      keyPoints: [...new Set([term, ...note.keywords.filter((k) => !GENERIC.has(k))])].slice(0, 4),
+      keyPoints: [...new Set([term, ...phrasesIn(sentence, note.rawText).filter((p) => !p.toLowerCase().includes(String(term).toLowerCase()))])].slice(0, 4),
       supportingExcerpt: sentence,
       difficulty,
     });

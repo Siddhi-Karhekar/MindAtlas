@@ -7,6 +7,7 @@ import { timeAgo } from "../lib/format.js";
 import Icon from "../components/Icon.jsx";
 import Ring from "../components/Ring.jsx";
 import { isSplitParent } from "../lib/notes.js";
+import { termsOf } from "../lib/noteFormat.js";
 
 const ICONS = ["psychology", "lan", "balance", "biotech", "science", "calculate", "history_edu", "menu_book", "public", "architecture"];
 function iconFor(name) {
@@ -199,7 +200,7 @@ export default function Home() {
                 </h2>
                 <p className="font-body-md text-body-md text-on-surface-variant line-clamp-2 max-w-xl">
                   {hero.latest
-                    ? `Latest note: “${hero.latest.title}”${hero.latest.keywords?.length ? ` — ${hero.latest.keywords.slice(0, 5).join(", ")}` : ""}.`
+                    ? `Latest note: “${hero.latest.title}”${termsOf(hero.latest).length ? ` — ${termsOf(hero.latest).slice(0, 5).join(", ")}` : ""}.`
                     : "No notes yet. Add your first note and Mind Atlas will start linking related ideas."}
                 </p>
                 <div className="mt-space-lg flex items-center gap-space-md max-w-md">

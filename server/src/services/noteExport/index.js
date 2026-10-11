@@ -13,6 +13,7 @@
 import { findChildNotes, findNoteById, findNotesBySubject, isSplitParent } from "../../models/Note.js";
 import { findOwnedSubject } from "../../models/Subject.js";
 import { dateLabel, documentModel, noteModel, subjectModel } from "./model.js";
+import { withKeyTerms } from "../noteView.js";
 
 export const FORMATS = {
   pdf: { extension: "pdf", contentType: "application/pdf", render: async (model) => (await import("./pdf.js")).renderPdf(model) },
@@ -38,14 +39,19 @@ async function write(model, format) {
 export async function exportNote(note, { format = "pdf", timeZone } = {}) {
   const date = dateLabel(new Date(), timeZone);
   const subject = await findOwnedSubject(note.subjectId, note.ownerId);
+  // key terms judged against the whole subject, as on screen
+  const subjectNotes = await findNotesBySubject(note.subjectId);
+  const terms = (list) => withKeyTerms(list, subjectNotes);
+  [note] = terms([note]);
   if (isSplitParent(note)) {
-    const children = await findChildNotes([note._id]);
+    const children = terms(await findChildNotes([note._id]));
     // a document whose subtopics are all gone is written as the note it still is
     if (children.length) return write(documentModel({ parent: note, children, subject, date }), format);
   }
   if (note.parentNoteId) {
-    const parent = await findNoteById(note.parentNoteId);
-    const siblings = parent ? await findChildNotes([parent._id]) : [];
+    const found = await findNoteById(note.parentNoteId);
+    const parent = found ? terms([found])[0] : null;
+    const siblings = parent ? terms(await findChildNotes([parent._id])) : [];
     return write(noteModel({ note, subject, parent, siblings, date }), format);
   }
   return write(noteModel({ note, subject, date }), format);
@@ -58,7 +64,7 @@ export async function exportSubject(subject, { format = "pdf", timeZone } = {}) 
     err.status = 404;
     throw err;
   }
-  return write(subjectModel({ subject, notes, date: dateLabel(new Date(), timeZone) }), format);
+  return write(subjectModel({ subject, notes: withKeyTerms(notes), date: dateLabel(new Date(), timeZone) }), format);
 }
 
 /**

@@ -4,6 +4,7 @@ import { api } from "../lib/api.js";
 import { timeAgo, wordCount } from "../lib/format.js";
 import Icon from "../components/Icon.jsx";
 import { isTopicNote, noteTree } from "../lib/notes.js";
+import { termsOf } from "../lib/noteFormat.js";
 
 // One selectable row in "Draw questions from these notes". Used for plain
 // notes, split documents (checkbox selects all their subtopics, `partial` when
@@ -26,7 +27,7 @@ function NoteRow({ note, on, partial = false, onToggle, mastery, subtitle, words
         <div className="flex flex-col min-w-0">
           <span className={`${compact ? "font-ui-body text-ui-body" : "font-ui-title text-ui-title"} text-on-surface truncate`}>{note.title}</span>
           <span className="font-body-sm text-body-sm text-on-surface-variant truncate">
-            {subtitle ?? (note.keywords?.slice(0, 5).join(" · ") || note.rawText.slice(0, 80))}
+            {subtitle ?? (termsOf(note).slice(0, 5).join(" · ") || note.rawText.slice(0, 80))}
           </span>
         </div>
       </div>

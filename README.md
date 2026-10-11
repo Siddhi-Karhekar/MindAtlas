@@ -142,9 +142,16 @@ review, re-marking, "Report this question", and no repeated questions.
   Procedure Call (RPC)" - from words that recur together, headings, bold
   type and the term a list entry opens with. A blank hides the whole term,
   everywhere in the sentence, and the wrong options are other whole terms
-  matched in length, number and capitals. (TF-IDF keywords are single words,
-  which is why blanks used to hide half a term; they are still what the
-  knowledge graph links on.)
+  matched in length, number and capitals. The same whole terms are what a
+  note highlights and lists under its title (`keyTermsFor`, sent as
+  `keyTerms` with every note), what downloads mark, and what a theory
+  question's key points are: a term is marked whole ("data link layer",
+  "local area network (LAN)"), the first time it is used. Kinds of one thing
+  said once each ("bus / star / ring topology") and the subject a sentence
+  opens with ("Optical fibre carries ...") count as terms; words said in
+  passing and phrases glued to their verb ("sender retransmits") do not.
+  (TF-IDF keywords are single words, which is why blanks and highlights used
+  to show half a term; they are still what the knowledge graph links on.)
 - **Theory questions are worded like a question paper**, with a command
   word chosen from what the note says about the term - *Define* (it has a
   defining sentence), *Explain*, *List and briefly explain* (a list under a

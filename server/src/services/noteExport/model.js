@@ -25,6 +25,9 @@
 //   table    { rows, color }              rows[0] is the head when there are several
 
 import { withContent } from "../noteView.js";
+
+// whole key terms when the caller worked them out (noteView.js withKeyTerms), else the stored keywords
+const termsOf = (note) => (Array.isArray(note.keyTerms) ? note.keyTerms : note.keywords || []);
 import { INK, PRIMARY, colorSections, flattenOutline, layoutContent, outlineTree, stableColorIndex, topicHex } from "./format.js";
 
 const KEYWORDS_SHOWN = 8; // as in the reading pane
@@ -87,7 +90,7 @@ function builder() {
  */
 function addNoteBody(out, note, { depth, colorIndex, bySection = false, indexHeadings = false }) {
   const full = withContent(note);
-  const blocks = layoutContent(full.content, (note.keywords || []).slice(0, KEYWORDS_SHOWN));
+  const blocks = layoutContent(full.content, termsOf(note).slice(0, KEYWORDS_SHOWN));
   const sections = colorSections(blocks, { baseIndex: colorIndex ?? 0, bySection });
   for (const section of sections) {
     const color = topicHex(section.colorIndex);
@@ -107,7 +110,7 @@ function addNoteBody(out, note, { depth, colorIndex, bySection = false, indexHea
 const topLevelHeadings = (note) => (withContent(note).content || []).filter((b) => b.type === "heading" && b.level === 1).length;
 
 const addKeywords = (out, note, color) => {
-  const terms = (note.keywords || []).slice(0, KEYWORDS_SHOWN);
+  const terms = termsOf(note).slice(0, KEYWORDS_SHOWN);
   if (terms.length) out.push({ kind: "keywords", terms, color });
 };
 
@@ -175,7 +178,7 @@ export function noteModel({ note, subject = null, parent = null, siblings = [], 
   const manySections = bySection && topLevelHeadings(note) >= 2;
   const color = topicHex(colorIndex);
   addNoteBody(out, note, { depth: -1, colorIndex, bySection, indexHeadings: true });
-  const terms = (note.keywords || []).slice(0, KEYWORDS_SHOWN);
+  const terms = termsOf(note).slice(0, KEYWORDS_SHOWN);
   return finish(out, {
     kind: "note",
     // the note's key terms sit under its title, above the contents list
