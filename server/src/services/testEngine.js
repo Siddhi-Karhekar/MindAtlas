@@ -2,7 +2,7 @@ import { asData, callLLM, llmAvailable, parseJsonLoose, producedBy } from "./llm
 import { stem, tokenize } from "./tfidf.js";
 import { topicWeight } from "./masteryEngine.js";
 import { blocksOf, isContentExcerpt, isQuestionWorthy, isStatement, quotableText } from "./studyText.js";
-import { GENERIC, phrasesIn, studyFor, termKey, termPattern } from "./keyTerms.js";
+import { GENERIC, isContentWord, isStrongTerm, phrasesIn, studyFor, termKey, termPattern } from "./keyTerms.js";
 import { cosine, getEmbedder } from "./embeddings.js";
 
 // The rules for which sentences are subject matter live in studyText.js; they
@@ -165,10 +165,11 @@ async function generateMcqWithLLM(notes, mcqCount, masteryMap, studies, avoid = 
   const system = `You are setting multiple-choice questions for a university examination paper, using ONLY the student's notes (given in the message) as source material. Do not use any outside knowledge - every question's correct answer must be directly supported by a verbatim short excerpt from these notes.
 
 Rules:
-- Ask about the subject matter only: concepts, definitions, properties, mechanisms, differences, causes and effects. Never ask about the document itself (titles, authors, the college or department, course codes, page numbers, the syllabus) and never turn an exercise or an instruction ("Write a program ...", "Calculate ...") into a question.
+- Ask about the subject matter only: concepts, definitions, properties, mechanisms, differences, causes and effects. Never ask about the document itself (titles, authors, the college or department, the degree, batch, semester or academic year, course codes, page numbers, the syllabus, notices about how the slides or notes may be used, acknowledgements) and never turn an exercise, a worked numerical example or an instruction ("Write a program ...", "Calculate ...", "If A has private key 9 ...") into a question.
 - Word each question the way an examiner would: one clear question, complete in itself, with no reference to "the notes" or "the passage".
 - In a fill-in-the-blank question, blank the WHOLE technical term (for example "continuous integration", never just "integration"), blank every occurrence of it in the sentence, and make every option a complete term of the same kind and similar length.
 - All four options must be plausible to someone who has not studied; exactly one is correct. No "all of the above" or "none of the above".
+- The wrong options are the same kind of thing as the answer, taken from the same subject, so only knowing the topic tells them apart: beside "public key", other kinds of key ("private key", "session key"); beside "SHA-1", other hash algorithms. Never a word of another kind, a word taken from elsewhere in the sentence, or one that differs from the others in form.
 - Spread the questions across as many different ### sections as possible - each section is a separate topic the student is assessed on - and aim for a roughly even mix of easy, medium and hard.
 - Never repeat or reword a question listed as already asked.
 
@@ -486,7 +487,8 @@ function pickDistractors(note, notes, keyword, sentence, answer = keyword) {
       if (!picked.some((x) => normalize(x).slice(0, 5) === normalize(t).slice(0, 5))) picked.push(t);
     }
   }
-  for (let i = 1; picked.length < 3; i++) picked.push(`${keyword}-related term ${i}`);
+  // fewer than three real wrong options: the caller drops the question rather
+  // than offer a made-up one ("data-related term 1"), which no one would pick
   return picked;
 }
 
@@ -653,8 +655,14 @@ function clozeSentence(study, term, taken = null) {
   let best = null;
   for (const s of sentencesAbout(study, term)) {
     if (taken && sentencesOfExcerpt(s.text).some((x) => taken.has(x))) continue;
-    const rest = wordsIn(blankWhole(s.text, term)).filter((w) => !w.includes("_____"));
+    const blanked = blankWhole(s.text, term);
+    const rest = wordsIn(blanked).filter((w) => !w.includes("_____"));
     if (rest.length < 6) continue; // nothing left to answer from
+    // "a message authentication code (_____)": the words before it spell the answer out
+    if (/\(\s*_____\s*\)/.test(blanked)) continue;
+    // "In _____ key cryptography": a one-word answer that is only the first
+    // word of a longer name is half a term
+    if (term.words === 1 && [...blanked.matchAll(/_____\s+([A-Za-z][\w-]*)/g)].some((m) => isContentWord(m[1]))) continue;
     const n = wordsIn(s.text).length;
     const score =
       (definesTerm(s.text, term.term) ? 3 : 0) +
@@ -671,7 +679,11 @@ function askableTerms(study) {
   if (study.askable) return study.askable;
   const top = study.terms[0]?.score || 0;
   const cut = top * (study.semantic ? TERM_CUT.semantic : TERM_CUT.rules);
-  study.askable = study.terms.filter((t) => t.score >= cut && clozeSentence(study, t));
+  // without the meaning model, only terms that are terms by their form or by
+  // the author's marking: "exchange" or "security" said a few times is no answer
+  // ...or one the note defines ("A frame is the unit the data link layer sends")
+  const defined = (t) => sentencesAbout(study, t).some((s) => definesTerm(s.text, t.term));
+  study.askable = study.terms.filter((t) => t.score >= cut && (study.semantic || isStrongTerm(t) || defined(t)) && clozeSentence(study, t));
   return study.askable;
 }
 
@@ -724,9 +736,16 @@ function termDistractors({ term, answer, note, notes, studies, sentence }) {
   const contains = (a, b) => ` ${a} `.includes(` ${b} `);
   const pool = [];
   const seen = new Set([term.key]);
+  // the same shape as the answer: a name with digits or capitals ("SHA-1",
+  // "MD5") beside others like it, a phrase beside phrases, a word beside words
+  const shapeOf = (t) => (/\d/.test(t.term) || /^[A-Z0-9/+.-]{2,}$/.test(t.term) ? "code" : t.words > 1 ? "phrase" : "word");
+  const shape = shapeOf(term);
   for (const n of [note, ...notes.filter((x) => x !== note)]) {
     for (const t of studies.get(n)?.terms || []) {
       if (seen.has(t.key) || contains(t.key, term.key) || contains(term.key, t.key)) continue;
+      // from other notes only real terms ("symmetric", "difficulty" are words);
+      // the answer's own note may lend its nouns, which belong to the same topic
+      if (n !== note && !studies.get(n)?.semantic && !isStrongTerm(t)) continue;
       if (GENERIC.has(t.key) || termPattern(t.term, "i").test(sentence)) continue;
       if (t.abbr && term.abbr && t.abbr === term.abbr) continue;
       seen.add(t.key);
@@ -736,13 +755,20 @@ function termDistractors({ term, answer, note, notes, studies, sentence }) {
         gap: Math.abs(t.words - term.words),
         // a near-synonym could be argued correct; an unrelated term is no test
         fit: closeness === null ? 0 : closeness > 0.88 ? -1 : closeness,
+        sameShape: shapeOf(t) === shape ? 1 : 0,
         sameKind: t.key.split(" ").pop() === head ? 1 : 0,
         sameNote: n === note ? 1 : 0,
         strength: t.score,
       });
     }
   }
-  pool.sort((a, b) => a.gap - b.gap || b.fit - a.fit || b.sameKind - a.sameKind || b.sameNote - a.sameNote || b.strength - a.strength);
+  // like the answer first - same shape, same kind of thing ("private key" /
+  // "session key" beside "public key") - so the options test the knowledge,
+  // not which one looks different
+  // A one-word answer has no main noun to share, so its closest company is
+  // the same note's other words ("frame" with "bit", "flag", "byte").
+  const near = shape === "word" ? (a, b) => b.sameNote - a.sameNote : () => 0;
+  pool.sort((a, b) => b.sameShape - a.sameShape || near(a, b) || b.sameKind - a.sameKind || a.gap - b.gap || b.fit - a.fit || b.sameNote - a.sameNote || b.strength - a.strength);
 
   const plural = isPlural(answer, term);
   const corpus = notes.map((n) => n.rawText || "").join("\n");
@@ -784,9 +810,11 @@ function clozeDraft({ term, difficulty, note, notes, studies, taken }) {
   const study = studies.get(note);
   const sentence = clozeSentence(study, term, taken);
   if (!sentence) return null;
-  takeSentences(taken, sentence);
   const answer = answerAsWritten(sentence, term);
-  const options = shuffle([...termDistractors({ term, answer, note, notes, studies, sentence }), answer]);
+  const wrong = termDistractors({ term, answer, note, notes, studies, sentence });
+  if (wrong.length < 3) return null;
+  takeSentences(taken, sentence);
+  const options = shuffle([...wrong, answer]);
   return {
     topicId: note._id,
     topic: labelOf(note),
@@ -808,13 +836,15 @@ function legacyClozeDraft({ note, notes, wanted, startIndex, used, taken }) {
   const sentence = sentenceFor(note, keyword);
   if (!sentence) return null;
   if (taken && sentencesOfExcerpt(sentence).some((x) => taken.has(x))) return null;
-  takeSentences(taken, sentence);
   const answer = termFor(note, sentence, keyword);
+  const wrong = pickDistractors(note, notes, keyword, sentence, answer);
+  if (wrong.length < 3) return null;
+  takeSentences(taken, sentence);
   return {
     topicId: note._id,
     topic: labelOf(note),
     prompt: `Fill in the blank: "${neutralArticle(blankTerm(sentence, answer, keyword))}"`,
-    options: shuffle([...pickDistractors(note, notes, keyword, sentence, answer), answer]),
+    options: shuffle([...wrong, answer]),
     correctAnswer: answer,
     supportingExcerpt: sentence,
     difficulty,
@@ -832,7 +862,11 @@ function generateMcqFallback(notes, mcqCount, masteryMap, studies, taken = new S
     const wanted = DIFFICULTY_TIERS[i % DIFFICULTY_TIERS.length];
     const startIndex = Math.floor(i / notes.length);
     const study = studies.get(note);
-    if (!study || askableTerms(study).length === 0) {
+    // a note whose study view has no askable term (a title page, a list of
+    // worked numbers) gets no question: a blank on a word that merely recurs
+    // there tests nothing. Single keywords are only for a note with no study view.
+    if (study && askableTerms(study).length === 0) continue;
+    if (!study) {
       const draft = legacyClozeDraft({ note, notes, wanted, startIndex, used, taken });
       if (draft) drafts.push(draft);
       continue;
@@ -863,7 +897,7 @@ async function generateTheoryWithLLM(notes, theoryCount, masteryMap, studies, av
   const system = `You are setting the theory (short-answer) section of a university examination paper, using ONLY the student's notes (given in the message) as source material.
 
 Rules:
-- Ask about the subject matter only: concepts, definitions, properties, mechanisms, differences, causes and effects. Never ask about the document itself (titles, authors, the college or department, course codes, page numbers, the syllabus) and never copy an exercise or instruction from the notes as a question.
+- Ask about the subject matter only: concepts, definitions, properties, mechanisms, differences, causes and effects. Never ask about the document itself (titles, authors, the college or department, the degree, batch, semester or academic year, course codes, page numbers, the syllabus, notices about how the slides or notes may be used, acknowledgements) and never copy an exercise, a worked numerical example or an instruction from the notes as a question.
 - Word every question the way an examiner would, opening with a command word that fits what is asked: "Define ...", "Explain ...", "Describe ...", "State ...", "List ...", "Differentiate between ... and ...", "Why ...", "How does ...". One clear task per question, complete in itself, with no reference to "the notes" or "your notes".
 - Match the command word to the difficulty: Define / State / List are easy, Explain / Describe are medium, Differentiate / Why / How (reasoning) are hard. Aim for a roughly even mix.
 - The model answer must be what a full-marks answer would say, in 1-4 sentences, using only facts from the notes.

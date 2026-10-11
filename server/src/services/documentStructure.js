@@ -283,6 +283,20 @@ function finalizeSections(raw) {
  * Split on headings. Returns { docTitle, sections } where sections is [] when
  * the document has no usable heading structure.
  */
+// A heading that names the class or the document's paperwork, not a topic:
+// "B. Tech CSE Batch 2023-2027 Semester-VII (AY 2026-27)", "Prepared by",
+// "Disclaimer", "References". Such a heading never becomes a subtopic - its
+// text stays in the whole document only - and nothing under it is asked about.
+const ADMIN_HEADING = new RegExp(
+  [
+    "\\b[bm]\\.\\s?(?:tech|e|sc|com)\\b", "\\bbatch\\b", "\\bsem(?:ester)?[-\\s]+(?:[ivx]+|\\d)\\b", "\\ba\\.?y\\.?\\s*(?:19|20)\\d\\d",
+    "\\bacademic\\s+year\\b", "\\b(?:19|20)\\d\\d\\s*[-–/]\\s*(?:19|20)?\\d\\d\\b", "\\bdepartment\\s+of\\b", "\\b(?:prepared|submitted|compiled|presented)\\s+by\\b",
+    "\\bcourse\\s+(?:code|outcomes?|objectives?)\\b", "^(?:disclaimer|acknowledg(?:e)?ments?|references|bibliography|further\\s+reading|about\\s+the\\s+author|thank\\s+you|questions\\??|any\\s+questions\\??)\\s*:?$",
+  ].join("|"),
+  "i"
+);
+export const isAdminHeading = (text) => ADMIN_HEADING.test(String(text || "").replace(/^\s*\d+(\.\d+)*\.?\s+/, "").trim());
+
 function splitOnHeadings(blocks) {
   let working = blocks.filter((b) => b.text && b.text.trim());
   let docTitle = null;
@@ -305,7 +319,9 @@ function splitOnHeadings(blocks) {
     }
   }
 
-  const level = chooseSplitLevel(working);
+  // paperwork headings are not topics: they and what follows them are set aside
+  working = working.map((b) => (b.type === "heading" && isAdminHeading(b.text) ? { ...b, type: "admin" } : b));
+  const level = chooseSplitLevel(working.filter((b) => b.type !== "admin"));
   if (level === null) return { docTitle, sections: [] };
 
   const raw = [];
@@ -314,7 +330,16 @@ function splitOnHeadings(blocks) {
   // outermost first - a subtopic's place in the document's outline
   const above = [];
   const intro = [];
+  let setAside = false; // under a paperwork heading, until the next real one
   for (const b of working) {
+    if (b.type === "admin") {
+      // a paperwork heading above the split level ends the section it sat in
+      // only for what follows it at that depth
+      setAside = true;
+      continue;
+    }
+    if (b.type === "heading" && b.level <= level) setAside = false;
+    if (setAside) continue;
     if (b.type === "heading" && b.level < level) {
       while (above.length && above[above.length - 1].level >= b.level) above.pop();
       current = { title: b.text, group: null, path: above.map((a) => a.text), level: b.level, groupIntro: true, body: [] };

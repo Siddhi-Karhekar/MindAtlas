@@ -19,7 +19,7 @@
 // Without the model, gate 3 falls back to "mentions one of the note's key
 // terms" (see studyFor in keyTerms.js).
 
-import { blocksFromPlainText, normalizeContent } from "./documentStructure.js";
+import { blocksFromPlainText, isAdminHeading, normalizeContent } from "./documentStructure.js";
 import { centroid, cosine } from "./embeddings.js";
 
 // ---------------------------------------------------------------------------
@@ -41,6 +41,12 @@ const BOILERPLATE = new RegExp(
     // when or where an exam, lecture or lab takes place
     "^students?\\s+(?:should|must|shall|are|will|need|have\\s+to)\\b", "\\bthis\\s+course\\b",
     "\\b(?:exam(?:ination)?s?|quiz(?:zes)?|viva|lectures?|lab(?:oratory)?\\s+sessions?)\\b[^.]{0,60}\\bwill\\s+be\\s+(?:held|conducted|scheduled)\\b",
+    // who the class is, and what the material may be used for: a batch, a
+    // degree, a disclaimer, thanks to the sources
+    "\\bbatch\\s+(?:of\\s+)?(?:19|20)\\d\\d\\b", "\\b[bm]\\.\\s?(?:tech|e|sc|com)\\b", "\\bsem(?:ester)?[-\\s]+(?:[ivx]+|\\d)\\b", "\\ba\\.?y\\.?\\s*(?:19|20)\\d\\d\\b",
+    "\\b(?:commercial|academic|educational|non-commercial)\\s+(?:purposes?|use)\\b", "\\bdisclaimer\\b", "\\bcopyright\\b",
+    "\\b(?:gratefully\\s+)?acknowledged?\\b", "\\b(?:slides|notes|material|content)\\s+(?:are|is|were|have\\s+been|should|may|must)\\s+(?:be\\s+)?(?:used|adapted|taken|prepared|based|meant|intended|compiled|borrowed)\\b",
+    "\\b(?:adapted|taken|borrowed|reproduced)\\s+from\\b", "\\bcourtesy\\b", "\\b(?:for|with)\\s+(?:internal|private)\\s+circulation\\b",
   ].join("|"),
   "i"
 );
@@ -69,8 +75,13 @@ const IMPERATIVE_START = new RegExp(
 /** True when the sentence states something, rather than asking or instructing. */
 export function isStatement(sentence) {
   const s = String(sentence || "").trim().replace(/^[("'“‘]+/, "");
-  // a question from the notes, not a fact to ask about
-  if (/\?["')\]”’]?$/.test(s)) return false;
+  // a question from the notes, not a fact to ask about - also one in the
+  // middle of the text, as in a numbered exercise ("ii. If A has private key 9
+  // what is A's public key? iii.")
+  if (/\?/.test(s)) return false;
+  // a worked calculation, not a statement: "A computes key = 5^9 mod 23 and
+  // B computes key = 5^4 mod 23" (a formula such as "E = 1/2 mv^2" stays)
+  if (/=/.test(s) && (s.match(/\b\d+(?:\.\d+)?\b/g) || []).length > 3) return false;
   // a fragment: prose sentences start with a capital or a digit. A first word
   // with a capital inside it ("iPhone", "eBPF") still counts as a start.
   if (!/^(?:[A-Z0-9]|[a-z]+[A-Z])/.test(s)) return false;
@@ -109,6 +120,9 @@ export function isQuestionWorthy(sentence, { listEntry = false } = {}) {
   const lower = alpha.filter((w) => /^[("']?[a-z]/.test(w)).length;
   if (alpha.length === 0 || lower / alpha.length < 0.5) return false;
   if (!isStatement(s)) return false;
+  // a subscript the PDF reader split off ("the public key PU e", "a session
+  // key K s"): the sentence no longer says what the notes say
+  if (/\b[A-Z]{1,3} [b-hj-z]\b(?![.'’])/.test(s)) return false;
   return true;
 }
 
@@ -151,14 +165,27 @@ const splitSentences = (text) =>
  * the term a list entry opens with ("Shared lock"), if any.
  */
 export function candidateSentences(note) {
+  // a subtopic split off before paperwork headings were recognised
+  // ("B. Tech CSE Batch 2023-2027 Semester-VII"): nothing in it is subject matter
+  if (isAdminHeading(note?.title)) return [];
   const out = [];
   const seen = new Set();
   let section = null;
+  let paperwork = false; // under "B. Tech ... Semester VII", "Disclaimer", "References"
+  let paperworkLevel = 0;
   for (const b of blocksOf(note)) {
+    if (b.type === "heading") {
+      if (paperwork && (b.level || 1) <= paperworkLevel) paperwork = false;
+      if (isAdminHeading(b.text)) {
+        paperwork = true;
+        paperworkLevel = b.level || 1;
+      }
+    }
     if (b.type === "heading" || b.type === "label") {
       section = String(b.text || "").replace(/:\s*$/, "");
       continue;
     }
+    if (paperwork) continue;
     if (b.type !== "para" && b.type !== "item") continue; // tables are cells, not statements
     const listEntry = b.type === "item";
     const parts = splitSentences(b.text);

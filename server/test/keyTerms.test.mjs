@@ -13,6 +13,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import fs from "node:fs";
 import { notesFromFile } from "../evaluation/lib/ingest.js";
+import { candidateSentences, isQuestionWorthy } from "../src/services/studyText.js";
 import { keyTermsFor, phrasesIn } from "../src/services/keyTerms.js";
 import { markText } from "../src/services/noteExport/format.js";
 import { generateQuestions } from "../src/services/testEngine.js";
@@ -102,6 +103,36 @@ check("most key points are phrases or acronyms", points.filter(({ p }) => p.incl
   `${points.filter(({ p }) => p.includes(" ") || /^[A-Z0-9/.-]+$/.test(p)).length} of ${points.length}`);
 const named = points.filter(({ p, q }) => (q.prompt.match(/“([^”]+)”/g) || []).some((m) => m.slice(1, -1).toLowerCase() === p.toLowerCase()) && !/Differentiate/.test(q.prompt));
 check("a key point is never the term the question names", named.length === 0, named.map(({ p }) => p).join(", "));
+
+console.log("\n=== Questions stay on the subject, with options of one kind ===");
+// a unit's slides as a student uploaded them: a class line with a usage
+// notice under it, worked numbers, and subscripts the PDF reader split off
+const ICS = fileURLToPath(new URL("./fixtures/ics_unit3.md", import.meta.url));
+const ics = await notesFromFile(ICS);
+check("the batch / semester line is not a subtopic", !ics.notes.some((n) => /batch|semester/i.test(n.title)), ics.notes.map((n) => n.title).join(" | "));
+for (const [text, why] of [
+  ["The slides should be used only for preparing notes, academic purposes (e.g. in teaching a class), and should not be used for commercial purposes.", "a usage notice"],
+  ["Some of the figures and text are adapted from standard textbooks and their authors are gratefully acknowledged.", "thanks to the sources"],
+  ["ii. If A has private key 9 what is A's public key? iii.", "a numbered exercise question"],
+  ["A computes key = 5^9 mod 23 and B computes key = 5^4 mod 23.", "a worked calculation"],
+  ["The public key PU e is published so that anyone can encrypt a message for its owner.", "a split subscript"],
+]) check(`not asked about: ${why}`, !isQuestionWorthy(text));
+check("  ...while a formula in a statement stays", isQuestionWorthy("The kinetic energy of a body is given by E = 1/2 mv^2 in classical mechanics."));
+check("a subtopic saved before this, named after the batch, gives no sentences",
+  candidateSentences({ title: "B. Tech CSE Batch 2023-2027 Semester-VII (AY 2026-27)", rawText: "The slides should be used only for preparing notes on cryptography and hashing in class." }).length === 0);
+const icsTest = await generateQuestions(ics.notes, { mcqCount: 12, theoryCount: 4, marksPerQuestion: 1 });
+const icsMcq = icsTest.accepted.filter((q) => Array.isArray(q.options));
+check("multiple-choice questions were made", icsMcq.length >= 6, `${icsMcq.length}`);
+const offTopic = icsTest.accepted.filter((q) => /slides|commercial|acknowledged|batch|semester|private key 9|mod 23|\?/i.test(q.prompt.replace(/^Fill in the blank: /, "")));
+check("none is about the class, the usage notice or the worked numbers", offTopic.length === 0, offTopic.map((q) => q.prompt).join(" || "));
+check("no question is set on the paperwork 'topic'", !icsTest.accepted.some((q) => /batch|semester/i.test(q.topic || "")));
+const garbled = icsMcq.flatMap((q) => q.options).filter((o) => /(^|\s)[a-z]$|^[A-Z]{1,2}\s[a-z]$|\bcomputes\b|\bagree\b/.test(o));
+check("no option is a split subscript or a phrase glued to its verb", garbled.length === 0, garbled.join(", "));
+const shapeOf = (o) => (/\d/.test(o) || /^[A-Z0-9/+.-]{2,}$/.test(o) ? "code" : o.trim().includes(" ") ? "phrase" : "word");
+const mixed = icsMcq.filter((q) => new Set(q.options.map(shapeOf)).size > 1);
+check("the four options of a question are of one kind", mixed.length <= 1, mixed.map((q) => q.options.join(" / ")).join(" || "));
+const keyQ = icsMcq.find((q) => /key/.test(q.correctAnswer || q.answerKey || "") && / key$/.test(q.correctAnswer || q.answerKey || ""));
+check("beside a kind of key, the wrong options are other kinds of key", !keyQ || keyQ.options.filter((o) => / key$/.test(o)).length >= 3, keyQ?.options.join(" / "));
 
 // ---------------------------------------------------------------------------
 // Through the API

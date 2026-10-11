@@ -134,8 +134,16 @@ review, re-marking, "Report this question", and no repeated questions.
 - **Only subject matter is asked about.** Questions are built from a note's
   *study sentences* (`services/studyText.js`): text from its paragraphs and
   list entries that states a fact. The college and department, "prepared by",
-  contents pages, references, and exercises ("Write a program ...",
-  "Calculate ...") never qualify. An LLM, when configured, is given only
+  contents pages, references, the class line ("B. Tech CSE Batch 2023-2027
+  Semester-VII"), notices about how the slides may be used, thanks to sources,
+  questions and worked calculations from examples ("If A has private key 9
+  what is A's public key?"), and text whose subscripts the PDF reader split
+  off ("PU e") never qualify; a heading naming the class or the paperwork is
+  never made a subtopic. Wrong options are the same kind of thing as the answer
+  (other kinds of key beside "public key", other algorithms beside "SHA-1"),
+  and a question is left out rather than given a made-up option.
+  Exercises ("Write a program ...",
+  "Calculate ...") never qualify either. An LLM, when configured, is given only
   those sentences too.
 - **Key terms are whole terms.** `services/keyTerms.js` finds a note's terms
   as phrases - "distributed computing", "two-phase locking", "Remote

@@ -181,7 +181,7 @@ try {
   check("deleting the last subtopic removes the empty document too", last.parentDeleted === true && last.deletedIds.includes(r.note._id));
 
   console.log("\n=== Deleting a note cleans up after it ===");
-  const builtFrom = (await add("Virtual memory", "Virtual memory lets a process use more memory than is physically present. Demand paging loads a page only when the process first uses it.")).note;
+  const builtFrom = (await add("Virtual memory", "Virtual memory lets a process use more memory than is physically present. Demand paging loads a page only when the process first uses it. A page fault occurs when a process uses a page that is not in main memory. The swap space on disk holds the pages that are not in main memory.")).note;
   const t = await call(`/subjects/${subject._id}/tests`, {
     method: "POST",
     token: me.token,
