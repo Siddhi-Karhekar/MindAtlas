@@ -1,9 +1,9 @@
-import { findNoteById } from "../models/Note.js";
+import { findNoteById, findNotesBySubject } from "../models/Note.js";
 import { requireAuth } from "../middleware/auth.js";
 import { safeRouter } from "../middleware/safeRouter.js";
 import { LIMITS, text } from "../middleware/validate.js";
 import { deleteNote, editNote } from "../services/noteLifecycle.js";
-import { editTextFor, publicNote } from "../services/noteView.js";
+import { editTextFor, publicNote, withKeyTerms } from "../services/noteView.js";
 import { exportNote, parseFormat, sendExport } from "../services/noteExport/index.js";
 
 // One note, by id: read it for editing, download it, change it, delete it. (Creating and
@@ -24,8 +24,9 @@ async function loadOwnedNote(req, res, next) {
 }
 
 // GET /api/notes/:id - the note, plus `editText`: its content as editable text
-router.get("/:id", loadOwnedNote, (req, res) => {
-  res.json({ note: publicNote(req.note), editText: editTextFor(req.note) });
+router.get("/:id", loadOwnedNote, async (req, res) => {
+  const [note] = withKeyTerms([req.note], await findNotesBySubject(req.note.subjectId));
+  res.json({ note: publicNote(note), editText: editTextFor(req.note) });
 });
 
 // GET /api/notes/:id/export?format=pdf|docx&tz=Asia/Kolkata
@@ -51,9 +52,10 @@ router.patch("/:id", loadOwnedNote, async (req, res, next) => {
   const content = body.content === undefined ? undefined : text(body.content, "content", { max: LIMITS.noteText, trim: false });
   try {
     const result = await editNote(req.note, { title, text: content });
+    const [note, parent] = withKeyTerms([result.note, result.parent], await findNotesBySubject(req.note.subjectId));
     res.json({
-      note: publicNote(result.note),
-      parent: result.parent ? publicNote(result.parent) : null,
+      note: publicNote(note),
+      parent: parent ? publicNote(parent) : null,
       edgesCreated: result.edgesCreated,
       crossSubjectEdgesCreated: result.crossSubjectEdgesCreated,
     });

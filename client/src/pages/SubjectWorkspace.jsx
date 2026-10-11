@@ -6,7 +6,7 @@ import Icon from "../components/Icon.jsx";
 import NoteContent from "../components/NoteContent.jsx";
 import DownloadMenu from "../components/DownloadMenu.jsx";
 import { flattenOutline, isSplitParent, isTopicNote, noteTree, outlineTree } from "../lib/notes.js";
-import { stableColorIndex, topicClass } from "../lib/noteFormat.js";
+import { stableColorIndex, termsOf, topicClass } from "../lib/noteFormat.js";
 
 const SOURCE_LABEL = { typed: "Typed note", image: "Scanned image", file: "Uploaded file" };
 
@@ -564,9 +564,9 @@ export default function SubjectWorkspace() {
                 >
                   {selected.title}
                 </h2>
-                {selected.keywords?.length > 0 && (
+                {termsOf(selected).length > 0 && (
                   <div className="flex flex-wrap gap-space-xs items-center pt-space-2xs" data-testid="note-keywords">
-                    {selected.keywords.slice(0, 8).map((k) => (
+                    {termsOf(selected).slice(0, 8).map((k) => (
                       <span key={k} className="px-space-sm py-space-2xs rounded font-label-md text-label-md font-semibold tracking-wide bg-topic-soft text-topic">
                         {k}
                       </span>
@@ -606,7 +606,7 @@ export default function SubjectWorkspace() {
                                 </span>
                                 <span className="font-ui-title text-ui-title text-on-surface font-semibold truncate">{n.title}</span>
                                 <span className="font-body-sm text-body-sm text-on-surface-variant truncate">
-                                  {(n.item.keywords || []).slice(0, 4).join(" · ")}
+                                  {termsOf(n.item).slice(0, 4).join(" · ")}
                                 </span>
                               </button>
                             ))}
@@ -627,7 +627,7 @@ export default function SubjectWorkspace() {
                   <NoteContent
                     className="mt-space-lg"
                     content={selected.content}
-                    keywords={selected.keywords?.slice(0, 8)}
+                    keywords={termsOf(selected)}
                     bySection
                     colorOf={sectionColorOf}
                   />
@@ -635,7 +635,7 @@ export default function SubjectWorkspace() {
               ) : (
                 <NoteContent
                   content={selected.content}
-                  keywords={selected.keywords?.slice(0, 8)}
+                  keywords={termsOf(selected)}
                   colorIndex={selectedColor ?? 0}
                   bySection={!selectedNode}
                   shrink={Math.min(selectedNode?.depth || 0, 2)}

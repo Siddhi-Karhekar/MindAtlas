@@ -8,6 +8,8 @@
 //     edited note goes through exactly the path a new typed note does.
 
 import { blocksFromPlainText, normalizeContent } from "./documentStructure.js";
+import { keyTermsFor } from "./keyTerms.js";
+import { isSplitParent } from "../models/Note.js";
 
 /**
  * A note with `content` and `path` always present. Notes saved before those
@@ -34,6 +36,18 @@ export function publicNote(note) {
   // eslint-disable-next-line no-unused-vars
   const { vector, ownerId, ...rest } = withContent(note);
   return rest;
+}
+
+/**
+ * Notes with `keyTerms`: the whole terms ("bus topology", "data link layer")
+ * the reading pane highlights and lists under a note's title, and downloads
+ * mark the same way. `subjectNotes` are all the notes of the subject, so a
+ * word every note uses ranks lower. (`keywords` stay the single TF-IDF words
+ * the knowledge graph links notes by.)
+ */
+export function withKeyTerms(notes, subjectNotes = notes) {
+  const corpus = (subjectNotes || []).filter((n) => !isSplitParent(n));
+  return notes.map((n) => (n ? { ...n, keyTerms: keyTermsFor(n, corpus) } : n));
 }
 
 /** Any other record as the API sends it: without the owner's id. */

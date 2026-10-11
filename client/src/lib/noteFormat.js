@@ -28,10 +28,27 @@ function leadInLength(text) {
   return m[1].trim().split(/\s+/).length <= 5 ? m[1].length : 0;
 }
 
-// First whole-word use of `word` (or its plural) in `text`, as [start, end].
-function findWord(text, word) {
-  const m = new RegExp(`(^|[^A-Za-z0-9])(${escapeRe(word)}(?:s|es)?)(?![A-Za-z0-9])`, "i").exec(text);
-  return m ? [m.index + m[1].length, m.index + m[1].length + m[2].length] : null;
+// First whole-term use of `term` in `text`, as [start, end]. A term of several
+// words is matched whole, across any spacing or a hyphen ("data link layer",
+// "point-to-point link"), with its last word singular or plural ("ring
+// topologies" for "ring topology"). An acronym given straight after it is
+// part of the match: "local area network (LAN)" is marked as one. `skip`
+// passes over uses inside a longer term already marked ("layer" in "network layer").
+function findTerm(text, term, skip = () => false) {
+  const words = String(term).trim().split(/[\s-]+/).filter(Boolean);
+  if (!words.length) return null;
+  const last = words[words.length - 1];
+  const lastRe = /[^aeiou]y$/i.test(last)
+    ? `(?:${escapeRe(last)}s?|${escapeRe(last.slice(0, -1))}ies)`
+    : `${escapeRe(last.replace(/s$/i, ""))}(?:s|es)?`;
+  const body = [...words.slice(0, -1).map(escapeRe), last.length > 3 ? lastRe : `${escapeRe(last)}(?:s|es)?`].join("[\\s-]+");
+  const re = new RegExp(`(^|[^A-Za-z0-9])(${body})(?![A-Za-z0-9])(\\s*\\([A-Z][A-Za-z0-9/-]{1,9}\\))?`, "gi");
+  for (const m of text.matchAll(re)) {
+    const start = m.index + m[1].length;
+    const hit = [start, start + m[2].length + (m[3] ? m[3].length : 0)];
+    if (!skip(hit)) return hit;
+  }
+  return null;
 }
 
 /**
@@ -50,13 +67,21 @@ export function markText(text, { strong = [], keywords = [], used = new Set() } 
     const at = text.indexOf(term);
     if (at >= 0) ranges.push([at, at + term.length]);
   }
-  const covered = (s, e) => ranges.some(([a, b]) => s < b && e > a);
-  for (const k of keywords) {
+  const overlaps = (list) => (s, e) => list.some(([a, b]) => s < b && e > a);
+  // what the author marked: a term already set in bold there counts as introduced
+  const byAuthor = overlaps([...ranges]);
+  const covered = overlaps(ranges);
+  // longest first, so "data link layer" is marked whole before "layer" can take a piece of it
+  const byLength = [...keywords].sort((a, b) => b.split(/\s+/).length - a.split(/\s+/).length || b.length - a.length);
+  for (const k of byLength) {
     if (used.has(k)) continue;
-    const hit = findWord(text, k);
-    if (!hit) continue;
+    const first = findTerm(text, k);
+    if (!first) continue;
     used.add(k);
-    if (!covered(hit[0], hit[1])) ranges.push(hit);
+    if (byAuthor(first[0], first[1])) continue;
+    const hit = findTerm(text, k, ([s, e]) => covered(s, e));
+    if (!hit) continue;
+    ranges.push(hit);
   }
   if (ranges.length === 0) return [{ text, mark: false }];
 
@@ -80,9 +105,9 @@ export function markText(text, { strong = [], keywords = [], used = new Set() } 
 
 // "lock", "locks" and "locking" are one term to a reader: keep the first.
 function distinctKeywords(keywords) {
-  const stem = (k) => (k.length > 4 ? k.replace(/(ing|es|s)$/, "") : k);
+  const stem = (k) => String(k).toLowerCase().trim().split(/\s+/).map((w) => (w.length > 4 ? w.replace(/(ing|es|s)$/, "") : w)).join(" ");
   const seen = new Set();
-  return (keywords || []).filter((k) => !seen.has(stem(k)) && seen.add(stem(k)));
+  return (keywords || []).filter((k) => k && !seen.has(stem(k)) && seen.add(stem(k)));
 }
 
 /** Consecutive list entries (flat, with `depth`) -> a nested tree. */
@@ -144,4 +169,13 @@ export function colorSections(blocks, { baseIndex = 0, bySection = false, colorO
     }
   }
   return sections;
+}
+
+/**
+ * A note's key terms as a reader should see them: whole terms ("bus
+ * topology", "data link layer") worked out by the server (`keyTerms`), or the
+ * single TF-IDF `keywords` for a note that arrived without them.
+ */
+export function termsOf(note) {
+  return Array.isArray(note?.keyTerms) ? note.keyTerms : note?.keywords || [];
 }

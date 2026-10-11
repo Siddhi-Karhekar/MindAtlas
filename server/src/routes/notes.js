@@ -13,7 +13,7 @@ import { extractInWorker } from "../services/extractInWorker.js";
 import { blocksFromPlainText, countWords, normalizeContent, segmentDocument } from "../services/documentStructure.js";
 import { computeTfidf, tokenSet } from "../services/tfidf.js";
 import { updateGraphForNote } from "../services/graphEngine.js";
-import { publicNote } from "../services/noteView.js";
+import { publicNote, withKeyTerms } from "../services/noteView.js";
 import { checkUploadContent } from "../services/uploadCheck.js";
 
 const router = safeRouter();
@@ -286,7 +286,7 @@ router.get("/:id/notes", async (req, res) => {
   if (!subject) return res.status(404).json({ error: "subject not found" });
 
   const notes = await findNotesBySubject(subject._id);
-  res.json({ notes: notes.map(publicNote) });
+  res.json({ notes: withKeyTerms(notes).map(publicNote) });
 });
 
 export default router;
