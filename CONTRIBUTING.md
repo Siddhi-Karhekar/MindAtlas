@@ -32,6 +32,11 @@ in `server/`), and the client lints (10 warnings, no errors) and builds. CI
    `main`'s `KnowledgeGraph.jsx` on the branch
    (`git checkout origin/main -- client/src/pages/KnowledgeGraph.jsx`)
    before merging.
+
+   **Resolved (12 Oct):** `main`'s page was restored on the branch
+   (`5cd0c85`) before it merged (PR #8). `d3cf125` turned out to have no
+   dark-mode fix to port; the fix was written fresh in
+   `graph/dark-mode-link-lines` (Member 2, item 1).
 2. **`notes/knowledge-ingestion` is stale.** It adds reference textbooks
    (24 Sep), but it was branched before subtopic splitting landed, and its
    own `sectionSplitter.js` overlaps `services/documentStructure.js` on
@@ -68,12 +73,12 @@ member's section of §3.
    concepts, "explain like I'm 5" (new).
 
 **Member 2: knowledge graph**
-1. Port the dark-mode link-line fix so `test-generation-and-feedback` can
-   merge safely (new, urgent).
+1. ~~Port the dark-mode link-line fix.~~ Done (`graph/dark-mode-link-lines`;
+   there was nothing to port, see §3).
 2. A relink tool that recomputes links with the current rule (new; needed
    before any change to the linking rule).
-3. Fix a note's links when it is edited or deleted; pairs with Member 1's
-   item 3 (new).
+3. ~~Fix a note's links when it is edited or deleted.~~ Done by Member 3 with
+   note edit/delete (`services/noteLifecycle.js`, PR #8).
 4. Tune the linking thresholds on real notes, then TextRank keywords.
 5. MiniLM sentence embeddings (backlog item 1).
 6. Louvain/Leiden clustering, and feeding link corrections back into the
@@ -637,12 +642,17 @@ Its quality is only as good as the stored keywords, so TextRank keywords
 (README "What's next") would improve it directly.
 
 **Next phase (after the demo), in order:**
-1. **Dark-mode link lines on the current graph page** (urgent). `d3cf125`
-   on `test-generation-and-feedback` draws link lines in `var(--c-primary)`
-   so they show in dark mode. On `main`, unselected same-subject links use
-   `var(--c-outline)`. Make the same fix on the current `KnowledgeGraph.jsx`
-   in a small `graph/` PR, so Member 3 can merge their branch without its
-   old copy of the page.
+1. ~~**Dark-mode link lines on the current graph page.**~~ **Done** (12 Oct,
+   `graph/dark-mode-link-lines`). `d3cf125` coloured lines exactly as `main`
+   does, so there was nothing to port. The lines nothing is selected on (links,
+   keyword-map spokes, other-subject links in the Clusters view, document ->
+   subtopic lines) were effectively invisible in dark mode: APCA Lc 0 against
+   14-20 in light, although their WCAG 2 ratios were about equal (1.3:1), which
+   is why it was easy to miss. Two new tokens in `index.css` fix it, dark mode
+   only: `--c-graph-link` (the unselected link colour, same as `--c-outline`
+   in light) and `--graph-subtopic-line-boost` (scales the document ->
+   subtopic lines' opacity; 1 in light, 2.2 in dark). Draw new graph lines
+   with these, not `--c-outline`.
 2. **A relink tool.** Links are only worked out when a note is created, so
    any change to the linking rule (items 4–6) leaves every existing link on
    the old rule. Add a relink for one student's notes that recomputes links
@@ -650,11 +660,12 @@ Its quality is only as good as the stored keywords, so TextRank keywords
    also fixes the known limit above, notes saved to MongoDB before PR #1.
    Take a database backup before running it on the live site (Member 4,
    next-phase item 3).
-3. **Links after an edit or delete** (pairs with Member 1's item 3). When a
-   note's text changes, recompute its links (item 2, for one note). When a
-   note is deleted, its links must stop showing and counting everywhere.
-   There is no delete in the database layer yet, so either add one or flag
-   the edges the way removed links are flagged.
+3. ~~**Links after an edit or delete.**~~ **Done** by Member 3 (3 Oct, PR #8;
+   see "Edit and delete a note: done" under Member 1). An edit deletes the
+   note's links, keeping removed ones, and relinks it; a delete removes every
+   link touching the note (`deleteEdgesForNotes` in `models/GraphEdge.js`).
+   Other notes' keywords are not recomputed after an edit - item 2 covers
+   that.
 4. **Tune the thresholds on real notes, then TextRank keywords.** The
    0.12 / 0.25 + two-keyword rule was tuned on sample notes. Re-check it on
    `sample-notes/` and the team's own notes on the live site. TextRank
