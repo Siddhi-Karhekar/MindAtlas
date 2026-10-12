@@ -13,7 +13,9 @@
     "eval:generate": "node evaluation/generate.mjs",
     "eval:score": "node evaluation/score.mjs",
     "lint": "oxlint --deny-warnings src test evaluation scripts",
-    "load-test": "node scripts/load-test.mjs"
+    "load-test": "node scripts/load-test.mjs",
+    "db:backup": "node scripts/db-backup.mjs",
+    "db:restore": "node scripts/db-restore.mjs"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

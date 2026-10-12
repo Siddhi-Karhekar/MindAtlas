@@ -20,6 +20,23 @@ export async function connectDB() {
     return;
   }
 
+  if (process.env.NODE_ENV === "production" && process.env.ALLOW_FILE_DB !== "true") {
+    // Two cases are always a mistake, so they stop the deploy instead of only
+    // warning (the warning below scrolls past in the logs - the live site once
+    // lost every account for days because the key was saved as "MONDODB_URI"):
+    //   - a variable that is nearly MONGODB_URI: a typo, not a decision;
+    //   - running on Render (it sets RENDER=true) with no database: its disk
+    //     is wiped on every deploy, restart and idle spin-down.
+    const nearMisses = Object.keys(process.env).filter((k) => k !== "MONGODB_URI" && /^MON.?.?DB_?UR[IL]$|^MONGO_?(DB)?_?UR[IL]$/i.test(k));
+    if (nearMisses.length || process.env.RENDER) {
+      throw new Error(
+        "MONGODB_URI is not set" +
+          (nearMisses.length ? `, but ${nearMisses.join(", ")} is - check the spelling (it must be exactly MONGODB_URI).` : " on Render, where the local disk is wiped on every deploy and restart.") +
+          " Set it to the MongoDB Atlas connection string, or set ALLOW_FILE_DB=true to use the local file database on purpose."
+      );
+    }
+  }
+
   if (process.env.NODE_ENV === "production") {
     console.warn(
       "\n[db] WARNING: NODE_ENV=production but MONGODB_URI is not set. Accounts and notes are being\n" +
