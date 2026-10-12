@@ -200,6 +200,19 @@ the graph relink tool), and before demos.
    backup is emptied and refilled. Set `RESTORE_URI=...` to restore somewhere
    other than `ATLAS_URI` (a local test database) - practise there first.
 
+## Relinking the graph (after a keyword or linking change)
+
+Notes keep the keywords and links they were given when they were saved. After
+deploying a change to how those are worked out (`server/src/services/tfidf.js`
+or `graphEngine.js`), bring the existing notes onto the new rules:
+
+1. `cd server && npm run db:backup` - the relink refuses to write to the live
+   database without a backup of it from the last 24 hours.
+2. `npm run relink -- --live --all` shows, per student, the links before and
+   after. Nothing is written.
+3. `npm run relink -- --live --all --yes` applies it. Running it again is safe:
+   the second run changes nothing. Links students removed stay removed.
+
 ## Troubleshooting
 
 | Symptom | Cause |

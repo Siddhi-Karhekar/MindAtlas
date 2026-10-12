@@ -75,8 +75,8 @@ member's section of §3.
 **Member 2: knowledge graph**
 1. ~~Port the dark-mode link-line fix.~~ Done (`graph/dark-mode-link-lines`;
    there was nothing to port, see §3).
-2. A relink tool that recomputes links with the current rule (new; needed
-   before any change to the linking rule).
+2. ~~A relink tool that recomputes links with the current rule.~~ Done
+   (`npm run relink`, `graph/relink-tool`; see §3).
 3. ~~Fix a note's links when it is edited or deleted.~~ Done by Member 3 with
    note edit/delete (`services/noteLifecycle.js`, PR #8).
 4. Tune the linking thresholds on real notes, then TextRank keywords.
@@ -653,13 +653,32 @@ Its quality is only as good as the stored keywords, so TextRank keywords
    in light) and `--graph-subtopic-line-boost` (scales the document ->
    subtopic lines' opacity; 1 in light, 2.2 in dark). Draw new graph lines
    with these, not `--c-outline`.
-2. **A relink tool.** Links are only worked out when a note is created, so
-   any change to the linking rule (items 4–6) leaves every existing link on
-   the old rule. Add a relink for one student's notes that recomputes links
-   with the current rule and keeps every `correction: "removed"` flag. It
-   also fixes the known limit above, notes saved to MongoDB before PR #1.
-   Take a database backup before running it on the live site (Member 4,
-   next-phase item 3).
+2. ~~**A relink tool.**~~ **Done** (12 Oct, `graph/relink-tool`). Keywords,
+   vectors and links are worked out once, when a note is saved, so a rule
+   change (items 4–6, or `tfidf.js` like the formula-command change) leaves
+   older notes on the old rule. `services/relink.js` recomputes one
+   student's: every note's keywords and vector against the rest of its
+   subject (no longer depending on the order notes were added - so even a
+   fresh upload's keywords change on the first relink), then every pair of
+   topics with `classifyPair()`. Removed links stay removed and stored
+   (re-scored only while the pair is still a link, so Restore keeps working);
+   links that still qualify keep their edge id; links the rule no longer
+   makes, and links to deleted notes, go. A second run changes nothing. This
+   also fixes the known limit above (notes saved to MongoDB before PR #1
+   have no cross-subject links).
+   - **Running it**: `npm run relink -- --email <address>` or `--all` is a
+     dry run that prints, per student, links before and after by type;
+     `--yes` writes. It uses the database the server would use; `--live`
+     uses `ATLAS_URI`, and `--live --yes` refuses unless `server/backups/`
+     has a backup of that database from the last 24 hours. Steps for the
+     live site are in `DEPLOY.md`, "Relinking the graph".
+   - **After any change to `tfidf.js` or `graphEngine.js`'s rules**, run it
+     on the live site once the change is deployed (Member 4).
+   - New in `models/GraphEdge.js`: `edgeFields()` (what `upsertEdge` writes,
+     shared with the relink), `findEdgesForNotes`, `deleteEdgesByIds`.
+     `deleteEdgesForNotes` behaves as before.
+   - **Tests**: `server/test/relink.test.mjs` (39 checks, part of `npm
+     test`; in-process, no port).
 3. ~~**Links after an edit or delete.**~~ **Done** by Member 3 (3 Oct, PR #8;
    see "Edit and delete a note: done" under Member 1). An edit deletes the
    note's links, keeping removed ones, and relinks it; a delete removes every

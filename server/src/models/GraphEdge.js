@@ -56,34 +56,48 @@ export async function setEdgeCorrection(id, correction) {
   );
 }
 
-export async function upsertEdge({
-  sourceNoteId,
-  targetNoteId,
-  sourceSubjectId,
-  targetSubjectId,
-  edgeType,
-  weight,
-  sharedKeywords,
-}) {
-  const subjectId = edgeType === "same-subject" ? sourceSubjectId : null;
+/**
+ * The fields the linker owns on an edge - everything except the student's
+ * `correction`. upsertEdge writes exactly these, and the relink tool
+ * (services/relink.js) compares a stored edge against them to tell whether
+ * the pair needs rewriting.
+ */
+export function edgeFields({ sourceNoteId, targetNoteId, sourceSubjectId, targetSubjectId, edgeType, weight, sharedKeywords }) {
+  return {
+    subjectId: edgeType === "same-subject" ? sourceSubjectId : null,
+    sourceSubjectId,
+    targetSubjectId,
+    sourceNoteId,
+    targetNoteId,
+    edgeType,
+    weight,
+    sharedKeywords,
+  };
+}
+
+export async function upsertEdge(pair) {
   return graphEdges().findOneAndUpdate(
-    { sourceNoteId, targetNoteId },
-    {
-      // Deliberately never touches `correction`: a link the student removed
-      // stays removed however often the pair is re-scored.
-      $set: {
-        subjectId,
-        sourceSubjectId,
-        targetSubjectId,
-        sourceNoteId,
-        targetNoteId,
-        edgeType,
-        weight,
-        sharedKeywords,
-      },
-    },
+    { sourceNoteId: pair.sourceNoteId, targetNoteId: pair.targetNoteId },
+    // Deliberately never touches `correction`: a link the student removed
+    // stays removed however often the pair is re-scored.
+    { $set: edgeFields(pair) },
     { upsert: true }
   );
+}
+
+/** Every edge with an end in `noteIds`, removed ones included. */
+export async function findEdgesForNotes(noteIds) {
+  if (!noteIds.length) return [];
+  const [asSource, asTarget] = await Promise.all([
+    graphEdges().find({ sourceNoteId: noteIds }),
+    graphEdges().find({ targetNoteId: noteIds }),
+  ]);
+  const byId = new Map([...asSource, ...asTarget].map((e) => [String(e._id), e]));
+  return [...byId.values()];
+}
+
+export async function deleteEdgesByIds(ids) {
+  return ids.length ? graphEdges().deleteMany({ _id: ids }) : 0;
 }
 
 /**
@@ -94,13 +108,8 @@ export async function upsertEdge({
  * itself is deleted, nothing about it is kept.
  */
 export async function deleteEdgesForNotes(noteIds, { keepCorrections = false } = {}) {
-  if (!noteIds.length) return 0;
-  const [asSource, asTarget] = await Promise.all([
-    graphEdges().find({ sourceNoteId: noteIds }),
-    graphEdges().find({ targetNoteId: noteIds }),
-  ]);
-  const ids = [...new Set([...asSource, ...asTarget].filter((e) => !(keepCorrections && isRemoved(e))).map((e) => String(e._id)))];
-  return ids.length ? graphEdges().deleteMany({ _id: ids }) : 0;
+  const edges = await findEdgesForNotes(noteIds);
+  return deleteEdgesByIds(edges.filter((e) => !(keepCorrections && isRemoved(e))).map((e) => String(e._id)));
 }
 
 /** An edge as the API returns it. */
