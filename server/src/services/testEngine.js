@@ -152,7 +152,8 @@ function renderNote(n, study) {
 // LLM so it writes new ones (the result is also checked: see pickFresh).
 function alreadyAsked(avoid) {
   if (!avoid?.length) return "";
-  const list = avoid.slice(0, 40).map((p) => `- ${String(p).replace(/\s+/g, " ").slice(0, 200)}`).join("\n");
+  // the most recent 40: those are the ones it is likeliest to write again
+  const list = avoid.slice(-40).map((p) => `- ${String(p).replace(/\s+/g, " ").slice(0, 200)}`).join("\n");
   return `\n\n${asData("already_asked", list)}`;
 }
 
@@ -1237,12 +1238,20 @@ async function generateBatch({ notes, count, generateLLM, generateFallback, mast
   let generatedBy = "rule-based-fallback";
 
   if (llmAvailable()) {
-    drafts = await generateLLM(notes, count, masteryMap, studies, avoid);
+    // the LLM writes the pool; what it was told to avoid is not counted twice
+    const ask = Math.min(LLM_MAX_ASK, avoid.length ? count - Math.min(avoid.length, count - Math.ceil(count / 2)) : count);
+    drafts = await generateLLM(notes, Math.max(1, ask), masteryMap, studies, avoid);
     if (drafts) generatedBy = "llm";
   }
   if (!drafts || drafts.length === 0) {
     drafts = generateFallback(notes, count, masteryMap, studies, taken);
     generatedBy = "rule-based-fallback";
+  } else if (avoid.length) {
+    // Given the same notes, an LLM tends to write the same questions again
+    // even when shown the ones already asked. Rule-based drafts go behind its
+    // own, so a repeat it wrote is replaced by a new question rather than
+    // asked again (pickFresh prefers new questions, in this order).
+    drafts = [...drafts, ...generateFallback(notes, count, masteryMap, studies, taken)];
   }
   return { drafts, generatedBy };
 }
@@ -1260,6 +1269,10 @@ async function generateBatch({ notes, count, generateLLM, generateFallback, mast
 // How long a test build will wait for the embedding model to finish loading
 // before going ahead on the rules alone. It keeps loading in the background.
 const SEMANTIC_WAIT_MS = 6000;
+// Most drafts one batch may make to find new questions (rule-based drafts
+// take milliseconds; an LLM is never asked for more than LLM_MAX_ASK).
+const MAX_DRAFTS = 120;
+const LLM_MAX_ASK = 30;
 
 // ---------------------------------------------------------------------------
 // No repeats: within one test, and across a student's tests
@@ -1334,7 +1347,11 @@ export async function generateQuestions(
 
   // With earlier tests on these notes, more candidates are drafted than are
   // needed, so there is room to leave out what the student has already seen.
-  const withRoom = (n) => (n > 0 && avoid.length ? Math.min(36, n + Math.min(avoid.length, n)) : n);
+  // The rule-based drafts come in a fixed order, so the first ones are the
+  // ones asked before: room for ALL of those, then the pool on top. (Room for
+  // only one pool's worth meant the third test on a chapter drafted nothing
+  // new and repeated the same questions.)
+  const withRoom = (n) => (n > 0 && avoid.length ? Math.min(MAX_DRAFTS, n + avoid.length) : n);
   // Sentences the rule-based generators have built a question from, shared so
   // no sentence is used twice in one test (see clozeSentence). Theory is
   // listed first so its model answers claim their sentences before the MCQs
