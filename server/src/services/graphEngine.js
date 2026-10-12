@@ -23,34 +23,54 @@ export const SIMILARITY_THRESHOLD = 0.12;
 export const CROSS_SUBJECT_THRESHOLD = 0.25;
 export const CROSS_SUBJECT_MIN_SHARED = 2;
 
+// The three numbers above as one rule, the form decideEdge() takes.
+export const LINK_RULE = Object.freeze({
+  similarity: SIMILARITY_THRESHOLD,
+  crossSimilarity: CROSS_SUBJECT_THRESHOLD,
+  crossMinShared: CROSS_SUBJECT_MIN_SHARED,
+});
+
 /**
- * Decide what edge, if any, belongs between two notes. Pure - no database -
- * so the linking rules can be unit tested on their own.
- *
- * Returns { edgeType, weight, sharedKeywords }, or null for "no edge":
- *   "same-subject"  - same subject, similarity >= SIMILARITY_THRESHOLD
+ * What the linking rule looks at for two notes: their similarity, the top
+ * keywords they share, and whether they are in the same subject.
+ */
+export function pairFeatures(a, b) {
+  return {
+    weight: cosineSimilarity(a.vector, b.vector),
+    sharedKeywords: a.keywords.filter((k) => b.keywords.includes(k)),
+    sameSubject: String(a.subjectId) === String(b.subjectId),
+  };
+}
+
+/**
+ * The edge type for a pair's features under `rule`, or null for "no edge":
+ *   "same-subject"  - same subject, similarity >= rule.similarity
  *   "cross-subject" - different subjects, passes the stricter rule above
  *   "rejected"      - different subjects, shares a keyword and would have
  *                     been linked under the same-subject rule, but fails the
  *                     stricter one: the ambiguous case. Stored rather than
  *                     dropped so the graph can show that the pair was
  *                     considered and turned down.
+ * Kept apart from pairFeatures() so the link evaluation
+ * (evaluation/links.mjs) can try other thresholds on the same pairs with
+ * exactly this code.
+ */
+export function decideEdge({ weight, sharedKeywords, sameSubject }, rule = LINK_RULE) {
+  if (sameSubject) return weight >= rule.similarity ? "same-subject" : null;
+  if (sharedKeywords.length >= rule.crossMinShared && weight >= rule.crossSimilarity) return "cross-subject";
+  if (sharedKeywords.length > 0 && weight >= rule.similarity) return "rejected";
+  return null;
+}
+
+/**
+ * Decide what edge, if any, belongs between two notes under the current
+ * rule. Pure - no database - so the linking rules can be unit tested on
+ * their own. Returns { edgeType, weight, sharedKeywords }, or null.
  */
 export function classifyPair(a, b) {
-  const weight = cosineSimilarity(a.vector, b.vector);
-  const sharedKeywords = a.keywords.filter((k) => b.keywords.includes(k));
-  const sameSubject = String(a.subjectId) === String(b.subjectId);
-
-  let edgeType = null;
-  if (sameSubject) {
-    if (weight >= SIMILARITY_THRESHOLD) edgeType = "same-subject";
-  } else if (sharedKeywords.length >= CROSS_SUBJECT_MIN_SHARED && weight >= CROSS_SUBJECT_THRESHOLD) {
-    edgeType = "cross-subject";
-  } else if (sharedKeywords.length > 0 && weight >= SIMILARITY_THRESHOLD) {
-    edgeType = "rejected";
-  }
-
-  return edgeType ? { edgeType, weight: Number(weight.toFixed(4)), sharedKeywords } : null;
+  const features = pairFeatures(a, b);
+  const edgeType = decideEdge(features);
+  return edgeType ? { edgeType, weight: Number(features.weight.toFixed(4)), sharedKeywords: features.sharedKeywords } : null;
 }
 
 /**

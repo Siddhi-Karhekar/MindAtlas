@@ -79,7 +79,10 @@ member's section of §3.
    (`npm run relink`, `graph/relink-tool`; see §3).
 3. ~~Fix a note's links when it is edited or deleted.~~ Done by Member 3 with
    note edit/delete (`services/noteLifecycle.js`, PR #8).
-4. Tune the linking thresholds on real notes, then TextRank keywords.
+4. Tune the linking thresholds on real notes, then TextRank keywords. The
+   link evaluation is built (`npm run eval:links`, `docs/LINK_EVALUATION.md`,
+   `graph/link-evaluation`); waiting for real notes and ratings before the
+   thresholds change.
 5. MiniLM sentence embeddings (backlog item 1).
 6. Louvain/Leiden clustering, and feeding link corrections back into the
    linking rule (backlog item 2).
@@ -686,9 +689,29 @@ Its quality is only as good as the stored keywords, so TextRank keywords
    Other notes' keywords are not recomputed after an edit - item 2 covers
    that.
 4. **Tune the thresholds on real notes, then TextRank keywords.** The
-   0.12 / 0.25 + two-keyword rule was tuned on sample notes. Re-check it on
-   `sample-notes/` and the team's own notes on the live site. TextRank
-   keywords then improve both linking and the keyword map.
+   0.12 / 0.25 + two-keyword rule was tuned on sample notes. TextRank
+   keywords then improve both linking and the keyword map. Two PRs, in this
+   order.
+   - **Link evaluation: built** (12 Oct, `graph/link-evaluation`); the
+     thresholds have not changed yet, because the ratings do not exist yet.
+     `npm run eval:links -- generate <folder>` takes one subfolder of notes
+     per subject, scores every pair of topics the way the graph does
+     (keywords recomputed as a relink would), and writes a blinded rating
+     sheet: all cross-subject pairs that share a keyword, plus same-subject
+     pairs sampled evenly across similarity bins. `score <output folder>`
+     turns the raters' yes / no / unsure into precision, recall and F1 for
+     every threshold setting (weighted back to all pairs, with intervals) and
+     recommends one: the best F1, the most precise when F1 is flat, and the
+     current setting kept when it is within 0.02 of the best. The protocol
+     is `docs/LINK_EVALUATION.md`. The team's own notes are used, never
+     students' notes from the live database.
+   - `graphEngine.js`: `classifyPair` is now `pairFeatures` (what the rule
+     looks at) plus `decideEdge(features, rule)` (the decision), with the
+     constants also exported together as `LINK_RULE`, so the evaluation
+     tries other thresholds with exactly the graph's code. `classifyPair`
+     and the constants behave and are named as before.
+   - **Tests**: `server/test/linkEvaluation.test.mjs` (65 checks, part of
+     `npm test`; in-process, no port).
 5. **MiniLM sentence embeddings** (backlog item 1).
 6. **Louvain/Leiden clustering and the correction feedback loop** (backlog
    item 2).
