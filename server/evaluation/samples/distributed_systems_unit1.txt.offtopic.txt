@@ -1,0 +1,14 @@
+# Lines of distributed_systems_unit1.txt that are NOT subject matter.
+# One line (or a distinctive part of one) per line. Lines starting with # are ignored.
+# Lines with initials or abbreviations are written out in full, because the
+# sentence splitter cuts them into pieces and every piece has to match.
+Pune Institute of Computer Technology
+Department of Computer Engineering
+Prepared by Prof. A. B. Kulkarni for Semester VII students of the 2026-27 batch.
+Students should bring their own laptops
+The examination for this course will be held
+Write a program to implement the Bully election algorithm
+Calculate the speedup obtained when eight processors
+Explain the difference between synchronous and asynchronous message passing
+What is marshalling in a remote procedure call
+References: Tanenbaum, A. S. and van Steen, M. Distributed Systems: Principles and Paradigms.

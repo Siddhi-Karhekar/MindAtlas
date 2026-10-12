@@ -82,7 +82,8 @@ member's section of §3.
 **Member 3: tests and feedback**
 1. Merge `test-generation-and-feedback` without its `KnowledgeGraph.jsx`
    change (urgent).
-2. Enforce the time limit on the server as well as in the browser (new).
+2. ~~Enforce the time limit on the server as well as in the browser.~~ Done
+   (`docs/ASSESSMENT.md`).
 3. Make the docs match BKT, and reword "IRT-inspired" (new).
 4. Quality upgrades: distractor gating for LLM-drafted questions, fuzzy
    excerpt matching, a stricter theory-grading prompt (README "What's next"
@@ -271,6 +272,125 @@ to show.
 > `server/test/documentStructure.test.mjs` and
 > `verify/e2e_document_split_test.py`. Suggest Member 1 treats
 > `documentStructure.js` as theirs from now on.
+
+> **Formatted notes and the document outline** (2 Oct 2026, branch
+> `notes/ingestion-hardening`; Member 1's files, done by Member 3 while
+> Member 1 is away). Notes used to be stored as one flat string, so bullets,
+> sub-headings and bold terms were lost and every source looked different.
+>
+> **What changed**
+> - **`content` on every note**: the note's words as blocks - `heading`
+>   (level 1-4), `para`, `item` (a list entry: `depth`, `ordered`, optional
+>   `marker`), `label`, `table` - plus `strong`, the terms the author set in
+>   bold. `rawText` is unchanged and is still what keywords, links, questions
+>   and grading use; `content` is for display only. The block shapes are
+>   listed at the top of `services/documentStructure.js`.
+> - **`path` on every subtopic**: the headings above it, outermost first.
+>   `sectionGroup` is still there and still means the nearest one. The
+>   hierarchy stays two levels in the database (see §4); the deeper outline
+>   is rebuilt from `path` by `outlineTree()` in `client/src/lib/notes.js`.
+> - **Every extractor keeps structure** (`services/documentText.js`): Word
+>   lists (nested), tables and bold; slide outline levels, tables, bold and
+>   deck sections; PDF bullets, numbering, indentation and bold fonts; plain
+>   text and markdown lists, `**bold**`, tables and title-like lines. Photos
+>   are rebuilt from OCR line positions and letter heights
+>   (`blocksFromOcrLines`), so a photo's `rawText` is now reflowed
+>   paragraphs rather than Tesseract's raw line breaks.
+> - **Choosing where to split** now measures the text under each heading
+>   level, counting "(cont.)" slides once. A document where only one chapter
+>   has third-level headings splits at the second level, and those headings
+>   stay inside their note.
+> - **One renderer**: `client/src/components/NoteContent.jsx`. Topic colours
+>   are `--c-topic-1..6` in `index.css` (each at least 4.5:1 on the note
+>   surface in both themes); which words are key terms is decided in
+>   `client/src/lib/noteFormat.js`.
+> - **Old notes** have no `content` in the database. `withContent()` in
+>   `routes/notes.js` works it out from `rawText` on every read, so nothing
+>   needs migrating. Old PowerPoint notes lose their bullets this way (the
+>   old `rawText` did not record them) - re-upload the deck to get them.
+> - **Tests**: new `server/test/noteContent.test.mjs` (66 checks, part of
+>   `npm test`). It starts the real API on **port 4597**, so CI must leave
+>   that port free too (Member 4).
+>
+> **Still open**: scanned PDFs (they need a page renderer before OCR) and
+> old `.doc` / `.ppt` files, which are refused with a "Save As" message.
+> Formatting is rule-based; an optional LLM tidy-up could sit on top later
+> but must never touch `rawText`.
+
+> **Edit and delete a note: done** (3 Oct 2026, branch
+> `test-generation-and-feedback`). This is next-phase item 3 below, with one
+> change to the rule proposed there.
+>
+> - **The rule.** The proposal was "a note can be edited or deleted only
+>   while no test has used it". That would lock a note for good the first
+>   time a student tests themselves on it, which is exactly when they find
+>   the mistakes worth fixing. Instead, tests are treated as snapshots: a
+>   question already stores its own prompt, options, answer, excerpt and
+>   topic label, so nothing in an existing test, attempt or feedback report
+>   reads the note again. Edits and deletes are always allowed and never
+>   alter a test. Mastery is keyed by note id, so it survives an edit and is
+>   removed with a deleted note.
+> - **API** (new `routes/noteItems.js`, one `app.use` line):
+>   `GET /api/notes/:id` (the note plus `editText`), `PATCH /api/notes/:id`
+>   `{ title?, content? }`, `DELETE /api/notes/:id`. Someone else's note is a
+>   404, same as a missing one.
+> - **Editing** goes through the typed-note path: the note is written out as
+>   text (`services/noteView.js`, `contentToEditText`) and read back with
+>   `blocksFromPlainText`, so `rawText`, `content`, keywords and vector are
+>   all rebuilt together. A split document's own text is not editable -
+>   only its title; its subtopics are.
+> - **Links** (Member 2's next-phase item 3): on an edit the note's links are
+>   deleted and recomputed with `updateGraphForNote`; links the student
+>   removed by hand are kept as removed. On a delete, every link touching
+>   the note goes. New `deleteEdgesForNotes` in `models/GraphEdge.js`.
+> - **Split documents**: deleting a document deletes its subtopics; deleting
+>   the last subtopic deletes the document; after a subtopic is edited or
+>   deleted the parent's full text and content are rebuilt from the remaining
+>   subtopics (`composeDocument`). Parts of the upload that were never
+>   subtopics (contents, references) are dropped from the parent at that
+>   point.
+> - **Database layer**: both stores gained `deleteMany(filter)`, which
+>   refuses an empty filter. Covered in `server/test/mongoStore.test.mjs`.
+> - **Accounts** (not Member 1's, but done in the same change):
+>   `POST /api/auth/password` and `DELETE /api/auth/me`, both asking for the
+>   current password. Deleting an account removes everything it owns
+>   (`deleteUserAndData` in `models/User.js`). Known limit: sign-in tokens are
+>   stateless, so a token issued before a password change keeps working until
+>   it expires.
+> - **Tests**: `server/test/noteLifecycle.test.mjs` (60 checks, part of
+>   `npm test`), on **port 4596**.
+>
+> **Downloading notes as PDF or Word (4 Oct)** - `server/src/services/noteExport/`.
+> - `GET /api/notes/:id/export?format=pdf|docx` (a note; for a split
+>   document, the whole document) and `GET /api/subjects/:id/export` (every
+>   note of the subject). `tz` is the student's time zone, for the date on
+>   the first page. The download button is `components/DownloadMenu.jsx`, in
+>   the reading pane's header.
+> - `model.js` decides what the file says and how it is coloured, once;
+>   `pdf.js` and `docx.js` only draw it. The colouring rules in `format.js`
+>   are a **copy** of `client/src/lib/noteFormat.js` and the outline helpers
+>   of `client/src/lib/notes.js` (the server cannot import client code once
+>   deployed). The test runs both copies on the same notes and fails if they
+>   differ, and checks the colours against `index.css`: change one side,
+>   change the other.
+> - **New server dependencies**: `pdfkit` and `docx` (both MIT, both loaded
+>   only when the first download is asked for). Run `npm install` in
+>   `server/` after pulling. `npm audit --audit-level=high` is still clean.
+> - **Fonts**: `server/assets/fonts/` holds DejaVu Sans regular and bold
+>   (1.5 MB, free licence in `LICENSE.txt` beside them), embedded in the PDF
+>   because they have the Greek letters, arrows and maths signs notes use.
+>   Word files name Calibri and use whatever the reader's machine has.
+> - **Known limits**: the Word contents list has no page numbers (Word only
+>   knows them once the file is open; asking for them makes Word show a
+>   warning on opening) - the PDF has them. Scripts DejaVu lacks (Devanagari,
+>   Chinese, emoji) print as a replacement mark in the PDF; the Word file
+>   keeps them. The key terms that get coloured are the note's TF-IDF
+>   keywords, as on screen, so some are ordinary words. Downloads are limited
+>   to 60 per 15 minutes per address (`RATE_LIMIT_EXPORT_MAX`).
+> - **Tests**: `server/test/noteExport.test.mjs` (76 checks, part of
+>   `npm test`), on **port 4594**. It reads the files back - the Word file
+>   with the app's Word reader, the PDF with its PDF reader - and checks that
+>   each contents line prints the page its topic is really on.
 
 What's missing (post-Saturday backlog, not this week):
 1. **Summarization** — a new endpoint that takes a note's raw text (or a
@@ -586,17 +706,91 @@ doc, is kept below for reference:
    decision the architecture doc calls out as what keeps the feedback
    auditable — don't invert it.
 
+> **Question quality: relevance, whole terms, exam wording** (2 Oct 2026,
+> branch `test-generation-and-feedback`, which now includes
+> `notes/ingestion-hardening`).
+>
+> Three complaints from testing on real notes, and what changed:
+>
+> | Problem | Cause | Now |
+> | --- | --- | --- |
+> | Questions about the college name, "prepared by", exercises | any sentence containing a keyword could be used | only *study sentences* are used: `services/studyText.js` |
+> | "distributed _____" - half a term blanked | TF-IDF keywords are single words | key terms are phrases: `services/keyTerms.js` |
+> | "explain what your notes say about X" | one template | Define / Explain / List / Differentiate, with marks and length |
+>
+> **How it fits together**
+> - `studyText.js` - a sentence must come from a paragraph or list entry of
+>   the note's `content`, pass the statement rules (`isQuestionWorthy`,
+>   moved here from `testEngine.js` and still exported from it), and be on
+>   topic.
+> - `keyTerms.js` - `studyFor(note)` returns the note's study sentences and
+>   ranked key terms. `note.keywords` (TF-IDF) is untouched and still drives
+>   the graph and the keyword map.
+> - `embeddings.js` - the optional all-MiniLM-L6-v2 model. Free and local.
+>   Everything has a rule-based path for when it is absent, and that path is
+>   what a default install, CI and the live site run.
+> - `testEngine.js` - the rule-based generators now work from terms; the LLM
+>   prompts ask for exam wording and are given study sentences only. The
+>   older keyword path remains for a note too short to have key terms.
+> - Questions gained `guidance` (theory only: "Answer in two or three
+>   sentences."); the build response gained `rankedBy` ("embeddings" |
+>   "rules"); `/api/health` gained `semantic`.
+>
+> **The embedding model is an add-on, not a dependency.** It lives in
+> `server/semantic/` with its own `package.json`, installed by
+> `npm run semantic:install` (about 500 MB on disk; the script skips the ONNX
+> runtime's CUDA download). Measured here: loads in under a second, about
+> 125 MB of memory with the default 8-bit model, 200 sentences per second.
+> Whether to turn it on for the live site is **Member 4's call**: Render's
+> free tier has 512 MB, and OCR and PDF parsing need headroom too. To enable
+> it there, add `npm run semantic:install --prefix server` to the build
+> command and watch memory; `SEMANTIC_MODEL=off` turns it back off without a
+> redeploy of code.
+>
+> **Tests**: `server/test/questionQuality.test.mjs` (82 checks, part of
+> `npm test`; no server, no network - a stand-in embedder exercises the model
+> path, and two more checks run against the real model when it is installed).
+>
+> **Still open**: theory answers are still graded by keyword overlap without
+> an LLM key (the embedding model could grade by meaning); single-word terms
+> are weaker than phrases when the model is off.
+>
+> **Evaluating question quality (4 Oct)** - `server/evaluation/`, protocol in
+> `docs/EVALUATION.md`. `npm run eval:generate -- <notes folder>` builds
+> questions from the same notes with the earlier TF-IDF generator (frozen in
+> `evaluation/baseline/`, from `d202772`), the current rules, and the
+> embedding model if installed, and writes a shuffled, blinded
+> `rating_sheet.csv`, its `key.csv`, and automatic measures (`metrics.md`).
+> Raters save their copies as `ratings_<name>.csv`; `npm run eval:score --
+> <folder>` reports per-strategy scores with Wilson intervals, each strategy
+> against the baseline (Fisher / Mann-Whitney, Holm-corrected) and
+> inter-rater kappa.
+> - **No results exist yet.** They need real notes that the generator was not
+>   developed on, and at least two raters. The two files in
+>   `evaluation/samples/` are for trying the tool only - the rules were
+>   written while looking at them.
+> - `evaluation/lib/ingest.js` repeats what the upload route does, without a
+>   database. If you change how `routes/notes.js` builds notes, change it
+>   there too; the test below fails if the two disagree.
+> - Found while building it: with the model off, a notice such as "The
+>   examination for this course will be held ..." got through. `studyText.js`
+>   now drops notices to the class and exam/lecture arrangements.
+> - **Tests**: `server/test/evaluation.test.mjs` (75 checks, part of
+>   `npm test`): the statistics against values from scipy, the measures, a
+>   whole generate-rate-score run on the samples, and the app-vs-evaluation
+>   check, which starts the real API on **port 4595**.
+> - Evaluation output (`evaluation-output/`) is git-ignored: it holds notes'
+>   text and raters' names.
+
 > **Status (27 Sep)**
 > - **Steps 1–4: done** (see above).
 > - **BKT → accuracy swap: not done, and now dropped.** BKT stays as the
 >   mastery model (see §0). `server/test/masteryEngine.test.mjs` already
 >   covers it (32 checks). The "don't ship it running this week" note above
 >   no longer applies.
-> - **Timer: done in the browser, not on the server.** `TestAttempt.jsx`
->   counts down from `durationMinutes` and submits when it reaches zero. The
->   server doesn't check the time, so answers sent after the deadline are
->   still accepted. The README's "What's next" item 4 still says there is no
->   countdown.
+> - **Timer: done on the server.** Each attempt stores its deadline; answers
+>   after it (plus 30 s) are refused, and the page counts down to the
+>   server's deadline. See `docs/ASSESSMENT.md`.
 > - **Webcam proctoring: not started** (stretch goal, unchanged).
 > - **Also on `main`** (`c317224`, 26 Sep): tests, mastery and feedback work
 >   per subtopic, so feedback can name a subtopic ("Paging in Unit 3").
@@ -608,10 +802,8 @@ doc, is kept below for reference:
 > 1. **Merge `test-generation-and-feedback` without its `KnowledgeGraph.jsx`
 >    change** (urgent). Wait for Member 2's dark-mode fix, restore `main`'s
 >    `KnowledgeGraph.jsx` on the branch, then merge.
-> 2. **Enforce the time limit on the server.** Each attempt already stores
->    `startedAt`, so reject answers and submissions that arrive after
->    `startedAt + durationMinutes` plus a short grace period. That way the
->    limit holds even if someone edits the page.
+> 2. ~~**Enforce the time limit on the server.**~~ Done: answers after the
+>    deadline plus 30 s are refused (`routes/attempts.js`).
 > 3. **Make the docs match BKT.** Fix the README's prototype-scope note and
 >    "What's next" items 1 and 4. Reword the "IRT-inspired" comment in
 >    `adaptiveEngine.js` to call it a rule-based staircase.
@@ -681,8 +873,43 @@ other three to finish anything. Start now:
 > move to the single service (delete the static site first, then deploy the
 > Blueprint). Don't apply the Blueprint as-is.
 >
+> **Security pass (5 Oct)** - full list in `docs/SECURITY.md`. What changes
+> for everyone writing server code:
+> - **Make routers with `safeRouter()`** (`middleware/safeRouter.js`), never
+>   `Router()`. It passes an `async` handler's error to the error handler.
+>   Before this, one request with a password sent as an object crashed the
+>   whole server (Express 4 does not catch async errors, and Node ends the
+>   process on an unhandled rejection).
+> - **Read every request field through `middleware/validate.js`**
+>   (`text`, `integer`, `id`, `idList`, `email`, `oneOf`). They throw an
+>   `InputError`, which is answered as a 400. Never spread `req.body` into a
+>   record: take named fields.
+> - **Send records through `publicNote` / `publicDoc`** (`services/noteView.js`)
+>   so internal fields (`ownerId`, `vector`) stay on the server. `GET
+>   /api/tests/:id` no longer includes answer keys; for scripts that need them
+>   in development, start the server with `TEST_REVEAL_KEYS=1` and ask with
+>   `?keys=1` (`verify/e2e_cross_attempt.py` does).
+> - **Database filters take plain values or lists of them only**
+>   (`db/filter.js`). An object or `undefined` as a filter value throws.
+> - **Sessions**: `requireAuth` now accepts the session cookie or a bearer
+>   token and looks the account up on every request; `req.user` is unchanged,
+>   `req.account` is the full record. A request that changes data from a
+>   browser needs an allowed `Origin`. Tokens of the test password
+>   `password123` no longer work: the password rules refuse it, tests use
+>   `river-Kettle-42x`.
+> - **Uploads are read in a worker thread** (`services/extractInWorker.js`)
+>   after `services/uploadCheck.js` has checked what the file really is.
+> - **Member 4**: the four deploy items at the top of `docs/SECURITY.md`
+>   (email settings, one address for client and API, static-site headers,
+>   Atlas user). None is needed for the app to keep working. `docker-compose.yml`
+>   now sets `TRUST_PROXY` empty, because the compose stack has no proxy in
+>   front and would otherwise believe any `X-Forwarded-For`.
+> - **Tests**: `server/test/security.test.mjs` (part of `npm test`), on
+>   **ports 4591 to 4593** (a stand-in mail server, and the API in production
+>   and development setups).
+>
 > **Things everyone should know**
-> - **CI ports**: the server tests start the API on 4598 and 4599 - don't add
+> - **CI ports**: the server tests start the API on 4591 to 4599 - don't add
 >   anything to CI that uses them.
 > - **Free-tier sleep**: the API sleeps after 15 idle minutes; the first
 >   request then takes ~20-50 s. Open `/api/health` a minute before a demo.
@@ -750,6 +977,20 @@ Added since the demo prep (26 Sep):
   subtopics. Check for it with `isSplitParent()` from
   `server/src/models/Note.js` or `client/src/lib/notes.js` rather than
   re-deriving the rule.
+- **A note's text has two forms**: `rawText` (plain; anything that reads,
+  quotes, scores or links a note uses this) and `content` (blocks, for
+  display only). If you change one when saving a note, keep the other in
+  step - both come from the same blocks in `routes/notes.js`. Never generate
+  questions from `content`, and never show `rawText` where `content` exists.
+- **Server test ports**: `4596` (note edit / delete, accounts), `4597` (note
+  content), `4598` (graph routes) and `4599` (note uploads).
+- **Tests are snapshots**: a question stores everything it needs. Never make
+  a test, attempt or feedback report read its note again - notes can now be
+  edited and deleted underneath them.
+- **Deleting**: `deleteMany(filter)` exists on both database backends. If
+  you add a collection that belongs to a user or hangs off a note, add it to
+  `deleteUserAndData` (`models/User.js`) and, for notes, to
+  `services/noteLifecycle.js`.
 - **Local database file**: with no `MONGODB_URI`, data is saved to
   `server/data/mindatlas-db.json` (git-ignored). Tests must set
   `DB_FILE=memory` so they never write to it. Never point a local `.env` at

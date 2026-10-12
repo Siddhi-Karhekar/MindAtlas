@@ -20,6 +20,11 @@ services:
       # Local-only default; production gets a real secret from Render.
       JWT_SECRET: ${JWT_SECRET:-local-compose-only-secret-not-for-production-use}
       GROQ_API_KEY: ${GROQ_API_KEY:-}
+      # The image sets TRUST_PROXY=1 for hosts that put a proxy in front
+      # (Render, Railway). Here port 4000 is reached directly, so no header
+      # may be believed about who is calling: with it on, anyone could claim
+      # any address and walk around every per-address limit.
+      TRUST_PROXY: ""
     depends_on:
       mongo:
         condition: service_healthy

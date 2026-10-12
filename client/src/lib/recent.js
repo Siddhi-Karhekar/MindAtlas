@@ -40,3 +40,32 @@ export function getSubjectVisits() {
     return {};
   }
 }
+
+/** Forget where the last student was: called on sign-out, for shared computers. */
+export function clearRecent() {
+  for (const key of [SUBJECT, ATTEMPT, VISITS]) {
+    try {
+      localStorage.removeItem(key);
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+/** Forget a deleted subject: it is no longer "where the student last was". */
+export function forgetSubject(id) {
+  const remove = (key) => {
+    try {
+      localStorage.removeItem(key);
+    } catch {
+      /* ignore */
+    }
+  };
+  if (get(SUBJECT) === String(id)) {
+    remove(SUBJECT);
+    remove(ATTEMPT); // the last attempt may have been in it
+  }
+  const visits = getSubjectVisits();
+  delete visits[id];
+  set(VISITS, JSON.stringify(visits));
+}

@@ -45,10 +45,19 @@ export function nextDifficulty(current, wasGood) {
  * feasibility report names as a limitation of the bare staircase. Passing no
  * mastery map restores the previous random behaviour exactly.
  */
-export function pickNextQuestion(pool, shownIds, targetDifficulty, masteryMap = null) {
+//
+// `types`, when given, are the question types still owed to the student: a
+// mixed test of 5 MCQ and 2 theory must deliver 5 and 2, whatever the
+// difficulty steps do. Only when none of those types is left in the pool does
+// another type stand in, so the test still reaches its length.
+export function pickNextQuestion(pool, shownIds, targetDifficulty, masteryMap = null, { types = null } = {}) {
   const shown = new Set(shownIds.map(String));
-  const remaining = pool.filter((q) => !shown.has(String(q._id)));
+  let remaining = pool.filter((q) => !shown.has(String(q._id)));
   if (remaining.length === 0) return null;
+  if (types?.length) {
+    const owed = remaining.filter((q) => types.includes(q.type || "mcq"));
+    if (owed.length) remaining = owed;
+  }
 
   const weakestFirst = (candidates) => {
     if (!masteryMap || masteryMap.size === 0) {
@@ -75,4 +84,20 @@ export function pickNextQuestion(pool, shownIds, targetDifficulty, masteryMap = 
     return da - db;
   });
   return byDistance[0];
+}
+
+/**
+ * Which question types an attempt still owes, from the test's requested mix
+ * ({ mcq: 5, theory: 2 }) and what has been shown so far. Null for a test
+ * built before the mix was recorded: any type will do.
+ */
+//
+// A paper in sections (`sectioned`) owes its MCQs first (Section A) and its
+// theory questions only once those are done (Section B).
+export function typesOwed(mix, shownQuestions, { sectioned = false } = {}) {
+  if (!mix) return null;
+  const shownBy = { mcq: 0, theory: 0 };
+  for (const q of shownQuestions) shownBy[q.type === "theory" ? "theory" : "mcq"] += 1;
+  const owed = Object.keys(shownBy).filter((t) => (mix[t] || 0) > shownBy[t]);
+  return sectioned && owed.includes("mcq") ? ["mcq"] : owed;
 }

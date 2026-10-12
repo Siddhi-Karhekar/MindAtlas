@@ -5,6 +5,7 @@ import { setLastAttempt } from "../lib/recent.js";
 import Icon from "../components/Icon.jsx";
 import Ring from "../components/Ring.jsx";
 import TopicName from "../components/TopicName.jsx";
+import AnswerReview from "../components/AnswerReview.jsx";
 import { topicParts } from "../lib/notes.js";
 
 const shortName = (t) => topicParts(t).name;
@@ -22,8 +23,11 @@ function groupByDocument(topics) {
   }
   return [...docs.values()]
     .map((d) => {
+      // weighted by questions set: an unanswered question counts as 0 in accuracy
+      const setOf = (t) => t.questionsAnswered + (t.questionsUnanswered || 0);
       const n = d.subtopics.reduce((a, t) => a + t.questionsAnswered, 0);
-      const accuracy = n ? d.subtopics.reduce((a, t) => a + t.accuracy * t.questionsAnswered, 0) / n : 0;
+      const total = d.subtopics.reduce((a, t) => a + setOf(t), 0);
+      const accuracy = total ? d.subtopics.reduce((a, t) => a + t.accuracy * setOf(t), 0) / total : 0;
       return { ...d, accuracy, questionsAnswered: n, subtopics: [...d.subtopics].sort((a, b) => a.accuracy - b.accuracy) };
     })
     .sort((a, b) => a.accuracy - b.accuracy);
@@ -59,28 +63,48 @@ export default function Insights() {
   const [data, setData] = useState(null);
   const [subjectName, setSubjectName] = useState("");
   const [error, setError] = useState("");
+  const [marking, setMarking] = useState(false);
 
   useEffect(() => {
     setLastAttempt(attemptId);
-    api
-      .getFeedback(attemptId)
-      .then((d) => {
-        setData(d);
-        if (d.test?.subjectId) {
-          api
-            .listSubjects()
-            .then((s) => setSubjectName(s.subjects.find((x) => String(x._id) === String(d.test.subjectId))?.name || ""))
-            .catch(() => {});
-        }
-      })
-      .catch((err) => setError(err.message));
+    let cancelled = false;
+    let timer = null;
+    // While the answers are still being marked (theory answers can take a
+    // minute), the page waits and asks again every few seconds.
+    const load = (tries = 0) =>
+      api
+        .getFeedback(attemptId)
+        .then((d) => {
+          if (cancelled) return;
+          setMarking(false);
+          setData(d);
+          if (d.test?.subjectId) {
+            api
+              .listSubjects()
+              .then((s) => setSubjectName(s.subjects.find((x) => String(x._id) === String(d.test.subjectId))?.name || ""))
+              .catch(() => {});
+          }
+        })
+        .catch((err) => {
+          if (cancelled) return;
+          if (err.code === "closing" && tries < 100) {
+            setMarking(true);
+            timer = setTimeout(() => load(tries + 1), 3000);
+          } else setError(err.message);
+        });
+    load();
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
   }, [attemptId]);
 
   const stats = useMemo(() => {
     if (!data) return null;
     const topics = data.feedback.topicScores || [];
     const answered = topics.reduce((n, t) => n + t.questionsAnswered, 0);
-    const weightedAcc = answered ? topics.reduce((n, t) => n + t.accuracy * t.questionsAnswered, 0) / answered : 0;
+    const setCount = topics.reduce((n, t) => n + t.questionsAnswered + (t.questionsUnanswered || 0), 0);
+    const weightedAcc = setCount ? topics.reduce((n, t) => n + t.accuracy * (t.questionsAnswered + (t.questionsUnanswered || 0)), 0) / setCount : 0;
     const marks = data.feedback;
     const mastery =
       typeof marks.marksPossible === "number" && marks.marksPossible > 0
@@ -92,7 +116,8 @@ export default function Insights() {
     return {
       topics,
       answered,
-      mastery: Math.round(mastery * 100),
+      // negative marking can take the total below zero; the ring and band show 0 (the marks show the real total)
+      mastery: Math.max(0, Math.round(mastery * 100)),
       avgSeconds: answered ? Math.round(totalMs / answered / 1000) : 0,
       strongest: byAccuracy[0] || null,
       attention: topics[0] || null, // already ranked weakest-first by the server
@@ -110,11 +135,17 @@ export default function Insights() {
       </div>
     );
   }
-  if (!data || !stats) return <p className="font-body-md text-on-surface-variant">Loading…</p>;
+  if (!data || !stats) {
+    return (
+      <p className="font-body-md text-on-surface-variant" data-testid={marking ? "results-marking" : undefined}>
+        {marking ? "Marking your answers… this page will update by itself." : "Loading…"}
+      </p>
+    );
+  }
 
   const { feedback, attempt, test } = data;
   const maxAttention = Math.max(...stats.topics.map((t) => t.attentionScore), 0.01);
-  const band = stats.mastery >= 80 ? "Strong recall" : stats.mastery >= 50 ? "Getting there" : "Needs more work";
+  const band = stats.mastery >= 80 ? "Strong recall" : stats.mastery >= 50 ? "Getting there" : "Building up";
   const took = attempt ? duration(attempt.startedAt, attempt.submittedAt) : null;
   const subjectId = test?.subjectId;
   const documents = groupByDocument(stats.topics);
@@ -137,7 +168,16 @@ export default function Insights() {
                 <span className="w-1 h-1 rounded-full bg-outline-variant"></span>
               </>
             )}
-            <span>{stats.answered} {stats.answered === 1 ? "question" : "questions"} answered</span>
+            <span>
+              {stats.answered} of {Math.max(stats.answered, attempt?.targetCount || 0)}{" "}
+              {Math.max(stats.answered, attempt?.targetCount || 0) === 1 ? "question" : "questions"} answered
+            </span>
+            {attempt?.closedBy === "time" && (
+              <>
+                <span className="w-1 h-1 rounded-full bg-outline-variant"></span>
+                <span className="text-tertiary" data-testid="closed-by-time">Time ran out - submitted automatically</span>
+              </>
+            )}
             {feedback.marksPossible > 0 && (
               <>
                 <span className="w-1 h-1 rounded-full bg-outline-variant"></span>
@@ -169,6 +209,11 @@ export default function Insights() {
               </span>
             </div>
             <p className="font-body-lg text-body-lg text-on-surface leading-relaxed">{renderInline(feedback.feedbackText)}</p>
+            {feedback.remarkedAt && feedback.generatedBy === "llm" && (
+              <p className="font-label-md text-label-md text-on-surface-variant" data-testid="written-before-remark">
+                Written before an answer was marked again; the marks and topic scores on this page include the new mark.
+              </p>
+            )}
           </div>
           <div className="pt-space-lg flex items-center gap-space-md text-on-surface-variant font-label-md text-label-md flex-wrap">
             <span className="flex items-center gap-space-xs text-secondary font-semibold">
@@ -176,7 +221,7 @@ export default function Insights() {
               Deterministic ranking
             </span>
             <span>•</span>
-            <span>Weakest topics first — correctness plus response time, not an LLM guess</span>
+            <span>Topics with most room to grow first — correctness plus response time, not an LLM guess</span>
           </div>
         </div>
 
@@ -192,7 +237,12 @@ export default function Insights() {
             {stats.attention && (
               <p className="font-body-sm text-body-sm opacity-80">
                 {Math.round(stats.attention.accuracy * 100)}% correct across {stats.attention.questionsAnswered}{" "}
-                {stats.attention.questionsAnswered === 1 ? "question" : "questions"} — the best place to spend your next study session.
+                {stats.attention.questionsAnswered === 1 ? "question" : "questions"}
+                {stats.attention.enoughEvidence === false
+                  ? ` — an early sign only: ${stats.attention.observations || stats.attention.questionsAnswered} ${
+                      (stats.attention.observations || stats.attention.questionsAnswered) === 1 ? "answer" : "answers"
+                    } on it so far. Another test will show where you really stand.`
+                  : " — the best place to spend your next study session."}
               </p>
             )}
           </div>
@@ -227,11 +277,11 @@ export default function Insights() {
             <div className="flex items-center justify-between">
               <span className="font-label-md text-label-md uppercase tracking-wider text-tertiary flex items-center gap-space-xs">
                 <Icon name="flag" className="text-base" />
-                Attention needed
+                Focus here next
               </span>
               {stats.attention && (
                 <span className="font-label-md text-label-md font-semibold bg-tertiary-fixed text-on-tertiary-fixed px-space-xs py-space-2xs rounded">
-                  Rank #1
+                  {stats.attention.enoughEvidence === false ? "Early sign" : "Rank #1"}
                 </span>
               )}
             </div>
@@ -240,7 +290,10 @@ export default function Insights() {
             ) : (
               <h4 className="font-headline-sm text-headline-sm text-primary">—</h4>
             )}
-            <p className="font-body-sm text-body-sm text-on-surface-variant">Highest attention score once accuracy and response time are combined.</p>
+            <p className="font-body-sm text-body-sm text-on-surface-variant">
+              Highest attention score once accuracy and response time are combined.
+              {stats.attention?.enoughEvidence === false ? " Fewer than three answers on it so far, so this is an early sign only." : ""}
+            </p>
           </div>
         </div>
 
@@ -362,7 +415,7 @@ export default function Insights() {
               title: stats.attention ? `Re-read your notes on ${shortName(stats.attention)}` : "Re-read your notes",
               body: topicParts(stats.attention).parent
                 ? `Opens that section of ${topicParts(stats.attention).parent}.`
-                : "Start with the topic that needs the most attention.",
+                : "Start with the topic with most room to grow.",
             },
             subjectId && {
               to: `/subjects/${subjectId}/tests`,
@@ -396,6 +449,12 @@ export default function Insights() {
             ))}
         </div>
       </section>
+
+      <AnswerReview
+        attemptId={attemptId}
+        subjectId={subjectId}
+        onMarksChanged={(out) => setData((d) => ({ ...d, feedback: out.feedback ? { ...d.feedback, ...out.feedback } : { ...d.feedback, ...out.marks } }))}
+      />
 
       {feedback.masteryDeltas?.length > 0 && (
         <section className="bg-surface-container-lowest rounded-xl p-space-xl shadow-sm flex flex-col gap-space-md">

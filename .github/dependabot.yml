@@ -1,0 +1,27 @@
+# Dependabot: opens a pull request when a dependency has a newer version or a
+# security fix, so updates arrive as small reviewable changes that CI tests,
+# instead of piling up. Free on GitHub. Security fixes are raised as soon as
+# they are published; ordinary updates weekly, grouped so there is one pull
+# request per folder rather than one per package.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /server
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      server-minor-and-patch:
+        update-types: [minor, patch]
+  - package-ecosystem: npm
+    directory: /client
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      client-minor-and-patch:
+        update-types: [minor, patch]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly

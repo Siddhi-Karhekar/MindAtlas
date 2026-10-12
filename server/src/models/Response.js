@@ -21,11 +21,38 @@ export async function findResponsesByAttempt(attemptId) {
   return responses().find({ attemptId });
 }
 
-/** Persist a grading result computed after the fact (theory questions only). */
-export async function updateResponseGrade({ attemptId, questionId, score, gradedBy, graderNote }) {
+/**
+ * Persist a grading result computed after the fact (theory questions only):
+ * the score, how it was marked, the one-line reason shown to the student, and
+ * per key point whether the answer covered it.
+ */
+export async function updateResponseGrade({ attemptId, questionId, score, gradedBy, graderNote, keyPointResults = null, flagged = false, promptVersion = null, model = null }) {
   return responses().findOneAndUpdate(
     { attemptId, questionId },
-    { $set: { score, gradedBy, graderNote } },
+    // promptVersion / model: which prompt and model marked it, when an LLM did
+    { $set: { score, gradedBy, graderNote, keyPointResults, flagged: Boolean(flagged), promptVersion, model } },
+    { upsert: false }
+  );
+}
+
+/**
+ * Record a second marking the student asked for. The first mark is kept in
+ * `remark.before`, so what changed, and why, can always be shown.
+ */
+export async function recordRemark({ attemptId, questionId, before, reason, graded }) {
+  return responses().findOneAndUpdate(
+    { attemptId, questionId },
+    {
+      $set: {
+        score: graded.score,
+        gradedBy: graded.gradedBy,
+        graderNote: graded.note,
+        keyPointResults: graded.keyPointResults || null,
+        promptVersion: graded.promptVersion || null,
+        model: graded.model || null,
+        remark: { requestedAt: new Date(), reason, before, after: graded.score, gradedBy: graded.gradedBy, promptVersion: graded.promptVersion || null, model: graded.model || null },
+      },
+    },
     { upsert: false }
   );
 }

@@ -1,19 +1,33 @@
-import { Router } from "express";
 import { findOwnedSubject } from "../models/Subject.js";
 import { createNote, findNotesByOwner, findNotesBySubject, isSplitParent, setChildCount } from "../models/Note.js";
 import { requireAuth } from "../middleware/auth.js";
+import { safeRouter } from "../middleware/safeRouter.js";
+import { LIMITS, text } from "../middleware/validate.js";
 import { uploadSingle } from "../middleware/upload.js";
+import { once } from "../middleware/once.js";
+import { envNumber } from "../config.js";
+import { markActivity } from "../models/User.js";
 import { extractTextFromImage } from "../services/ocr.js";
-import { classifyUpload, extractDocument, titleFromFilename } from "../services/documentText.js";
-import { blocksFromPlainText, countWords, segmentDocument } from "../services/documentStructure.js";
-import { computeTfidf } from "../services/tfidf.js";
+import { blocksFromOcrLines, classifyUpload, titleFromFilename } from "../services/documentText.js";
+import { extractInWorker } from "../services/extractInWorker.js";
+import { blocksFromPlainText, countWords, normalizeContent, segmentDocument } from "../services/documentStructure.js";
+import { computeTfidf, tokenSet } from "../services/tfidf.js";
 import { updateGraphForNote } from "../services/graphEngine.js";
+import { publicNote, withKeyTerms } from "../services/noteView.js";
+import { checkUploadContent } from "../services/uploadCheck.js";
 
-const router = Router();
+const router = safeRouter();
 router.use(requireAuth);
 
 const UNSUPPORTED =
   "unsupported file type - upload a PDF, Word (.docx), PowerPoint (.pptx), text/markdown file or an image";
+// The pre-2007 Office formats are a different, binary file format that the
+// readers here cannot open - say how to fix it rather than "unsupported".
+const LEGACY_OFFICE = {
+  ".doc": "old Word files (.doc) can't be read - open it in Word and use Save As > Word Document (.docx), then upload that",
+  ".ppt": "old PowerPoint files (.ppt) can't be read - open it in PowerPoint and use Save As > PowerPoint Presentation (.pptx), then upload that",
+};
+const NO_SPLIT = { sections: [], method: "none", docTitle: null };
 
 /**
  * Read an uploaded file into { content, sourceType, ocrFailed, blocks }.
@@ -21,10 +35,27 @@ const UNSUPPORTED =
  */
 async function readUpload(file) {
   const kind = classifyUpload(file);
-  if (!kind) throw new Error(UNSUPPORTED);
+  if (!kind) {
+    const ext = (String(file.originalname || "").match(/\.[a-z0-9]+$/i)?.[0] || "").toLowerCase();
+    throw new Error(LEGACY_OFFICE[ext] || UNSUPPORTED);
+  }
+  const read = await readUploadOfKind(file, kind);
+  if (read.content.length > MAX_UPLOAD_TEXT) {
+    throw new Error(`this file has too much text for one note (about ${countWords(read.content).toLocaleString("en-GB")} words) - upload it in parts`);
+  }
+  return read;
+}
+
+// About 250,000 words. Past this, splitting, keyword extraction and linking
+// take long enough to hold up every other student's requests.
+const MAX_UPLOAD_TEXT = 1_500_000;
+
+async function readUploadOfKind(file, kind) {
   if (kind === "image") {
-    // scanned / photographed notes: read with OCR. No structure to split on.
-    const { text, ocrFailed } = await extractTextFromImage(file.buffer);
+    // the file has to BE a picture, and of a size that is safe to decode
+    await checkUploadContent(file, kind);
+    // scanned / photographed notes: read with OCR.
+    const { text, ocrFailed, lines } = await extractTextFromImage(file.buffer);
     if (!text) {
       throw new Error(
         ocrFailed
@@ -32,9 +63,16 @@ async function readUpload(file) {
           : "no readable text found in this image - try a sharper, well-lit photo, or type the note instead"
       );
     }
-    return { kind, content: text, sourceType: "image", ocrFailed, blocks: null };
+    // The page's structure is rebuilt from where OCR found each line and how
+    // tall it is; the note's text is that rebuilt version, so a heading is a
+    // line of its own and a wrapped sentence is whole again.
+    const page = lines?.length ? blocksFromOcrLines(lines) : null;
+    if (page?.text) return { kind, content: page.text, sourceType: "image", ocrFailed, blocks: page.blocks };
+    return { kind, content: text, sourceType: "image", ocrFailed, blocks: blocksFromPlainText(text, { ocr: true }) };
   }
-  const { text, blocks } = await extractDocument(file, kind);
+  // Checked (is it what its name says, is it safe to open) and read on a
+  // thread of its own, under a time limit: see services/extractInWorker.js.
+  const { text, blocks } = await extractInWorker(file, kind);
   if (!text) {
     throw new Error(
       kind === "pdf"
@@ -59,7 +97,9 @@ router.post("/:id/notes/preview", uploadSingle("file", 10), async (req, res) => 
   } catch (err) {
     return res.status(400).json({ error: err.message });
   }
-  const seg = read.blocks ? segmentDocument(read.blocks) : { sections: [], method: "none", docTitle: null };
+  let seg = read.blocks ? segmentDocument(read.blocks) : NO_SPLIT;
+  // a photo is only split where it has real headings, never into even parts
+  if (read.sourceType !== "file" && seg.method === "chunks") seg = NO_SPLIT;
   res.json({
     kind: read.kind,
     title:
@@ -70,6 +110,7 @@ router.post("/:id/notes/preview", uploadSingle("file", 10), async (req, res) => 
     sections: seg.sections.map((s) => ({
       title: s.title,
       group: s.group,
+      path: s.path || [],
       words: countWords(s.text),
       excerpt: s.text.slice(0, 160),
     })),
@@ -84,12 +125,16 @@ router.post("/:id/notes/preview", uploadSingle("file", 10), async (req, res) => 
 // A long document with detectable subtopics (headings, slide titles, or - as a
 // fallback - evenly sized parts) is saved as one parent note plus a child note
 // per subtopic. Send the form field split=false to keep it as a single note.
-router.post("/:id/notes", uploadSingle("file", 10), async (req, res) => {
+const storageLimit = (name, fallback) => Math.max(1, envNumber(name, fallback));
+
+router.post("/:id/notes", uploadSingle("file", 10), once(), async (req, res) => {
   const subject = await findOwnedSubject(req.params.id, req.user.id);
   if (!subject) return res.status(404).json({ error: "subject not found" });
 
-  let { title, content } = req.body || {};
-  const userTitle = Boolean(title && String(title).trim());
+  const body = req.body || {};
+  let title = text(body.title, "title", { required: false, max: LIMITS.title });
+  let content = req.file ? "" : text(body.content, "content", { required: false, max: LIMITS.noteText, trim: false });
+  const userTitle = Boolean(title);
   let sourceType = "typed";
   let ocrFailed = false;
   let blocks = null;
@@ -101,10 +146,23 @@ router.post("/:id/notes", uploadSingle("file", 10), async (req, res) => {
     } catch (err) {
       return res.status(400).json({ error: err.message });
     }
-    title = title || titleFromFilename(req.file.originalname) || req.file.originalname;
+    title = (title || titleFromFilename(req.file.originalname) || req.file.originalname).slice(0, LIMITS.title);
   }
 
   if (!title || !title.trim()) return res.status(400).json({ error: "title is required" });
+
+  // Storage per student. Only the text of notes is kept (never the uploaded
+  // file), so the cost is small, but it grows every month and must have a
+  // ceiling: a full library refuses new notes, and says how to make room.
+  const owned = (await findNotesByOwner(req.user.id)).filter((n) => !isSplitParent(n));
+  const used = owned.reduce((n, x) => n + (x.rawText?.length || 0), 0);
+  if (owned.length >= storageLimit("NOTES_MAX_PER_STUDENT", 2000) || used + (content?.length || 0) > storageLimit("NOTES_MAX_CHARS_PER_STUDENT", 30_000_000)) {
+    return res.status(413).json({
+      error: "your library is full - delete notes you no longer need to make room for new ones",
+      code: "library_full",
+    });
+  }
+
   if (!content || !content.trim()) {
     return res.status(400).json({
       error: ocrFailed
@@ -115,14 +173,16 @@ router.post("/:id/notes", uploadSingle("file", 10), async (req, res) => {
 
   // Typed notes can be long, structured documents too (pasted lecture notes
   // with markdown headings), so they go through the same splitter.
-  // Only real headings split a typed note, though - never the evenly-sized
-  // "parts" fallback, which would be a surprise for text the student wrote.
-  if (!blocks && sourceType === "typed" && wantSplit && content) blocks = blocksFromPlainText(content);
-  let seg = wantSplit && blocks ? segmentDocument(blocks) : { sections: [], method: "none" };
-  if (sourceType === "typed" && seg.method === "chunks") seg = { sections: [], method: "none" };
+  // Only real headings split a typed note or a photo, though - never the
+  // evenly-sized "parts" fallback, which would be a surprise for text the
+  // student wrote. The blocks are needed either way: they are what the note's
+  // formatted `content` is built from.
+  if (!blocks && content) blocks = blocksFromPlainText(content);
+  let seg = wantSplit && blocks ? segmentDocument(blocks) : NO_SPLIT;
+  if (sourceType !== "file" && seg.method === "chunks") seg = NO_SPLIT;
   // A file name like "unit3_final_v2" makes a worse title than the heading the
   // document gives itself, so an untitled upload uses its own title if found.
-  if (req.file && !userTitle && seg.docTitle && seg.sections.length >= 2) title = seg.docTitle;
+  if (req.file && !userTitle && seg.docTitle && seg.sections.length >= 2) title = seg.docTitle.slice(0, LIMITS.title);
 
   // Split parents are containers whose text duplicates their children's, so
   // they are left out of both the TF-IDF corpus (it would double-count every
@@ -151,9 +211,11 @@ router.post("/:id/notes", uploadSingle("file", 10), async (req, res) => {
       keywords,
       vector,
       ocrFailed,
+      content: normalizeContent(blocks, { title: title.trim() }),
     });
     const edges = await updateGraphForNote(note, ownerNotes);
-    return res.status(201).json({ note, children: [], ...countLinks(edges) });
+    markActivity(req.user.id, "note").catch(() => {});
+    return res.status(201).json({ note: publicNote(note), children: [], ...countLinks(edges) });
   }
 
   // Parent: keeps the whole text for reading, and document-level keywords for
@@ -170,20 +232,24 @@ router.post("/:id/notes", uploadSingle("file", 10), async (req, res) => {
     ocrFailed,
     childCount: seg.sections.length,
     splitMethod: seg.method,
+    // the whole document, formatted, for "Read the full document"
+    content: normalizeContent(blocks, { title: seg.docTitle || title.trim() }),
   });
 
   // Children: each subtopic's IDF is computed against the rest of the subject
   // AND its sibling sections, so its keywords are what make it distinct from
   // the other parts of the same document - "tlb, frames, offset" for Paging
   // rather than "memory, process" shared by every section.
-  const sectionTexts = seg.sections.map((s) => s.text);
+  // tokenised once each; every section is then compared against all of them
+  const corpusSets = corpus.map(tokenSet);
+  const sectionSets = seg.sections.map((s) => tokenSet(s.text));
   const children = [];
   const allEdges = [];
   const linkable = [...ownerNotes];
   for (let i = 0; i < seg.sections.length; i++) {
     const s = seg.sections[i];
-    const siblings = sectionTexts.filter((_, j) => j !== i);
-    const { vector, keywords } = computeTfidf(s.text, [...corpus, ...siblings]);
+    const siblings = sectionSets.filter((_, j) => j !== i);
+    const { vector, keywords } = computeTfidf(s.text, [...corpusSets, ...siblings]);
     const child = await createNote({
       ownerId: req.user.id,
       subjectId: subject._id,
@@ -196,6 +262,8 @@ router.post("/:id/notes", uploadSingle("file", 10), async (req, res) => {
       parentNoteId: parent._id,
       order: i,
       sectionGroup: s.group || null,
+      path: s.path || [],
+      content: s.content,
     });
     // Link against the rest of the subject and the siblings saved before it,
     // so related subtopics inside one document connect to each other too.
@@ -205,7 +273,12 @@ router.post("/:id/notes", uploadSingle("file", 10), async (req, res) => {
   }
   await setChildCount(parent._id, children.length);
 
-  res.status(201).json({ note: { ...parent, childCount: children.length }, children, ...countLinks(allEdges) });
+  markActivity(req.user.id, "note").catch(() => {});
+  res.status(201).json({
+    note: publicNote({ ...parent, childCount: children.length }),
+    children: children.map(publicNote),
+    ...countLinks(allEdges),
+  });
 });
 
 router.get("/:id/notes", async (req, res) => {
@@ -213,7 +286,7 @@ router.get("/:id/notes", async (req, res) => {
   if (!subject) return res.status(404).json({ error: "subject not found" });
 
   const notes = await findNotesBySubject(subject._id);
-  res.json({ notes });
+  res.json({ notes: withKeyTerms(notes).map(publicNote) });
 });
 
 export default router;

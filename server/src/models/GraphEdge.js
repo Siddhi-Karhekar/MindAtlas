@@ -86,6 +86,23 @@ export async function upsertEdge({
   );
 }
 
+/**
+ * Delete every edge with an end in `noteIds`.
+ * `keepCorrections`: leave the links the student removed by hand. Used when a
+ * note is edited and relinked - "these two are not related" is the student's
+ * decision about the pair, and survives a change of wording. When the note
+ * itself is deleted, nothing about it is kept.
+ */
+export async function deleteEdgesForNotes(noteIds, { keepCorrections = false } = {}) {
+  if (!noteIds.length) return 0;
+  const [asSource, asTarget] = await Promise.all([
+    graphEdges().find({ sourceNoteId: noteIds }),
+    graphEdges().find({ targetNoteId: noteIds }),
+  ]);
+  const ids = [...new Set([...asSource, ...asTarget].filter((e) => !(keepCorrections && isRemoved(e))).map((e) => String(e._id)))];
+  return ids.length ? graphEdges().deleteMany({ _id: ids }) : 0;
+}
+
 /** An edge as the API returns it. */
 export const toApiEdge = (e) => ({
   id: e._id,

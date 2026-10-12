@@ -1,0 +1,38 @@
+Pune Institute of Computer Technology
+Department of Computer Engineering
+Distributed Systems - Unit 1
+Prepared by Prof. A. B. Kulkarni for Semester VII students of the 2026-27 batch.
+
+Introduction to Distributed Computing
+
+A distributed system is a collection of independent computers that appears to its users as a single coherent system. Distributed computing divides a large problem into smaller tasks that are solved by many computers communicating over a network. The computers in a distributed system coordinate their actions only by passing messages.
+
+Students should bring their own laptops to every laboratory session and sign the attendance sheet before leaving.
+
+Characteristics
+
+- Resource sharing: hardware, software and data are shared among the nodes of the system.
+- Concurrency: several processes execute at the same time on different nodes.
+- Fault tolerance: the distributed system continues to operate correctly when some of its nodes fail.
+- Scalability: the system can grow by adding more nodes without a loss of performance.
+
+Message Passing
+
+In message passing, processes communicate by sending and receiving messages over a communication channel. Synchronous message passing blocks the sender until the receiver has accepted the message. Asynchronous message passing lets the sender continue immediately, and the message is stored in a buffer until the receiver is ready.
+
+Remote Procedure Call (RPC) hides message passing behind an ordinary procedure call. A client stub packs the arguments into a message, which is known as marshalling, and sends it to the server.
+
+Logical Clocks
+
+A logical clock assigns a number to each event so that the order of events can be determined without a shared physical clock. Lamport's logical clock increments its counter before each event and attaches the counter to every message. Vector clocks extend this idea so that concurrent events can be detected.
+
+The examination for this course will be held in the last week of November in the main seminar hall.
+
+Exercises
+
+1. Write a program to implement the Bully election algorithm.
+2. Calculate the speedup obtained when eight processors are used instead of one.
+3. Explain the difference between synchronous and asynchronous message passing.
+4. What is marshalling in a remote procedure call?
+
+References: Tanenbaum, A. S. and van Steen, M. Distributed Systems: Principles and Paradigms.

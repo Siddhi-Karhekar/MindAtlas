@@ -1,0 +1,7 @@
+{
+  "rules": {
+    "unicorn/no-new-array": "off",
+    "unicorn/no-invalid-fetch-options": "off",
+    "unicorn/prefer-string-starts-ends-with": "off"
+  }
+}

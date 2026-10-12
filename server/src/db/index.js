@@ -20,17 +20,29 @@ export async function connectDB() {
     return;
   }
 
-  // In production a missing MONGODB_URI is always a mistake: the fallback
-  // file database lives on the host's disk, and Render (like most hosts)
-  // wipes that disk on every restart, redeploy and wake-up - so accounts and
-  // notes would silently vanish. Fail the deploy loudly instead. (This once
-  // happened for real: the variable was saved on Render as "MONDODB_URI".)
   if (process.env.NODE_ENV === "production" && process.env.ALLOW_FILE_DB !== "true") {
-    const nearMisses = Object.keys(process.env).filter((k) => /MONG|DB_?UR/i.test(k));
-    throw new Error(
-      "MONGODB_URI is not set, and NODE_ENV=production. Set it to your MongoDB Atlas " +
-        "connection string (or set ALLOW_FILE_DB=true to use a local file database on purpose)." +
-        (nearMisses.length ? ` Similar variables found: ${nearMisses.join(", ")} - check the spelling.` : "")
+    // Two cases are always a mistake, so they stop the deploy instead of only
+    // warning (the warning below scrolls past in the logs - the live site once
+    // lost every account for days because the key was saved as "MONDODB_URI"):
+    //   - a variable that is nearly MONGODB_URI: a typo, not a decision;
+    //   - running on Render (it sets RENDER=true) with no database: its disk
+    //     is wiped on every deploy, restart and idle spin-down.
+    const nearMisses = Object.keys(process.env).filter((k) => k !== "MONGODB_URI" && /^MON.?.?DB_?UR[IL]$|^MONGO_?(DB)?_?UR[IL]$/i.test(k));
+    if (nearMisses.length || process.env.RENDER) {
+      throw new Error(
+        "MONGODB_URI is not set" +
+          (nearMisses.length ? `, but ${nearMisses.join(", ")} is - check the spelling (it must be exactly MONGODB_URI).` : " on Render, where the local disk is wiped on every deploy and restart.") +
+          " Set it to the MongoDB Atlas connection string, or set ALLOW_FILE_DB=true to use the local file database on purpose."
+      );
+    }
+  }
+
+  if (process.env.NODE_ENV === "production") {
+    console.warn(
+      "\n[db] WARNING: NODE_ENV=production but MONGODB_URI is not set. Accounts and notes are being\n" +
+        "[db] stored on this server's own disk, which hosts like Render wipe on every deploy, restart\n" +
+        "[db] and idle spin-down - users will find their account gone and have to sign up again.\n" +
+        "[db] Set MONGODB_URI (MongoDB Atlas) in the host's environment settings.\n"
     );
   }
 
@@ -58,6 +70,15 @@ export async function connectDB() {
  */
 export function flushDB() {
   if (dbInstance?.flush) dbInstance.flush();
+}
+
+/** Which database is in use, for /api/health: kind and whether data survives restarts. */
+export function dbInfo() {
+  if (!dbInstance) return { kind: "none", persistent: false };
+  if (dbInstance.kind === "mongo") return { kind: "mongodb", persistent: true };
+  if (dbInstance.kind === "file")
+    return { kind: "local-file", persistent: process.env.NODE_ENV !== "production", file: dbInstance.file };
+  return { kind: "memory", persistent: false };
 }
 
 export function getCollection(name) {

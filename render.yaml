@@ -38,7 +38,13 @@ services:
       - key: MONGODB_URI
         sync: false            # MongoDB Atlas connection string - spelled exactly MONGODB_URI
       - key: GROQ_API_KEY
-        sync: false            # optional - leave blank for the rule-based fallback
+        sync: false            # optional - AI questions and marking; blank = rule-based fallback
+      - key: SUPPORT_EMAIL
+        sync: false            # help address shown to students
+      - key: ADMIN_USER_IDS
+        sync: false            # account ids (comma-separated) that may open /admin
+      # Email confirmation and "Forgot password?" stay off until the SMTP_*
+      # settings, MAIL_FROM and APP_URL are added - see DEPLOY.md "Email".
 
   # --- Client --------------------------------------------------------------
   - type: web
@@ -51,9 +57,23 @@ services:
     envVars:
       - key: VITE_API_BASE     # baked in at build time - redeploy the site if the API URL changes
         value: https://mindatlas-api.onrender.com/api
+    headers:
+      # A static host only sends the headers it is told to (the API sends its
+      # own). Render already adds Strict-Transport-Security and nosniff.
+      - path: /*
+        name: X-Frame-Options
+        value: DENY
+      - path: /*
+        name: Referrer-Policy
+        value: no-referrer
+      - path: /*
+        name: Permissions-Policy
+        value: camera=(), microphone=(), geolocation=()
     routes:
       # React Router handles pages like /subjects/:id in the browser; without
       # this, refreshing any page but the home page is a 404.
+      # (Not yet done on the live site: an /api/* rewrite to the API placed
+      # above this rule, with VITE_API_BASE=/api - docs/SECURITY.md.)
       - type: rewrite
         source: /*
         destination: /index.html

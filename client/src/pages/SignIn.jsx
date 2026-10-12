@@ -1,5 +1,6 @@
-import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useEffect, useState } from "react";
+import { Link, useNavigate } from "react-router-dom";
+import { api } from "../lib/api.js";
 import { useAuth } from "../lib/AuthContext.jsx";
 import Icon from "../components/Icon.jsx";
 import Logo from "../components/Logo.jsx";
@@ -13,17 +14,39 @@ export default function SignIn() {
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  // a field people never see; a form-filling bot fills it in, and the server refuses the sign-up
+  const [website, setWebsite] = useState("");
+  // from the server: the sign-up challenge, whether it sends email, the password rule
+  const [config, setConfig] = useState({ challenge: "", emailEnabled: false, minLength: 10, support: null });
+
+  const loadConfig = () =>
+    api
+      .authConfig()
+      .then((c) =>
+        setConfig({
+          challenge: c.signup?.challenge || "",
+          emailEnabled: Boolean(c.email?.enabled),
+          minLength: c.password?.minLength || 10,
+          support: c.support?.email || null,
+        })
+      )
+      .catch(() => {});
+  useEffect(() => {
+    loadConfig();
+  }, []);
 
   async function handleSubmit(e) {
     e.preventDefault();
     setError("");
     setBusy(true);
     try {
-      if (mode === "login") await login(email, password);
-      else await register(email, password);
+      const cleanEmail = email.trim(); // autofill often adds a trailing space
+      if (mode === "login") await login(cleanEmail, password);
+      else await register(cleanEmail, password, { challenge: config.challenge, website });
       navigate("/");
     } catch (err) {
       setError(err.message);
+      if (mode === "register") loadConfig(); // a fresh challenge for the next try
     } finally {
       setBusy(false);
     }
@@ -86,12 +109,13 @@ export default function SignIn() {
                   id="study-pass"
                   type={showPassword ? "text" : "password"}
                   required
-                  minLength={8}
+                  // the length rule is for new passwords; an existing account signs in with what it has
+                  minLength={mode === "register" ? config.minLength : undefined}
                   autoComplete={mode === "login" ? "current-password" : "new-password"}
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   className={input}
-                  placeholder="At least 8 characters"
+                  placeholder={mode === "register" ? `At least ${config.minLength} characters` : "Your password"}
                 />
                 <button
                   type="button"
@@ -103,6 +127,26 @@ export default function SignIn() {
                 </button>
               </div>
             </div>
+
+            {mode === "register" && (
+              <>
+                <p className="font-body-sm text-body-sm text-on-surface-variant" data-testid="password-rules">
+                  At least {config.minLength} characters. Not a common password, not your email name, not only digits.
+                </p>
+                {/* hidden from people and from screen readers; see `website` above */}
+                <div aria-hidden="true" className="absolute -left-[9999px] w-px h-px overflow-hidden">
+                  <label>
+                    Website
+                    <input type="text" name="website" tabIndex={-1} autoComplete="off" value={website} onChange={(e) => setWebsite(e.target.value)} />
+                  </label>
+                </div>
+              </>
+            )}
+            {mode === "login" && config.emailEnabled && (
+              <Link to="/forgot-password" data-testid="forgot-link" className="self-end -mt-space-xs font-label-md text-label-md text-primary hover:text-on-surface-variant font-semibold">
+                Forgot password?
+              </Link>
+            )}
 
             {error && (
               <p role="alert" className="font-body-sm text-body-sm text-error">
@@ -136,6 +180,14 @@ export default function SignIn() {
               <Icon name={mode === "login" ? "auto_stories" : "login"} className="text-sm" />
             </button>
           </div>
+          {config.support && (
+            <p className="mt-space-md text-center font-body-sm text-body-sm text-on-surface-variant">
+              Need help? Write to{" "}
+              <a className="text-secondary hover:underline" href={`mailto:${config.support}`}>
+                {config.support}
+              </a>
+            </p>
+          )}
         </div>
       </div>
     </div>

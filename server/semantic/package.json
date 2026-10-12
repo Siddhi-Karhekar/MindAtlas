@@ -1,0 +1,9 @@
+{
+  "name": "mindatlas-semantic",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Optional add-on: the local embedding model behind meaning-based question ranking. Installed only by `npm run semantic:install` in server/ - see services/embeddings.js.",
+  "dependencies": {
+    "@huggingface/transformers": "4.3.0"
+  }
+}

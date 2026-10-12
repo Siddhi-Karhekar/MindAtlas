@@ -62,6 +62,16 @@
   --c-cluster-1:#2a78d6;
   --c-cluster-2:#eb6834;
   --c-cluster-3:#1baf7a;
+  /* Topic colours for formatted notes (components/NoteContent.jsx): a topic's
+     headings and key terms wear its colour, body text never does. They are
+     text colours, so each one clears 4.5:1 contrast on the note surface in
+     its mode. Six, then they repeat. */
+  --c-topic-1:#2a62b8;
+  --c-topic-2:#b4481f;
+  --c-topic-3:#15775c;
+  --c-topic-4:#7d44b0;
+  --c-topic-5:#8f6400;
+  --c-topic-6:#b82e6a;
 }
 
 html.dark {
@@ -116,7 +126,28 @@ html.dark {
   --c-cluster-1:#3987e5;
   --c-cluster-2:#d95926;
   --c-cluster-3:#199e70;
+  --c-topic-1:#86b4f7;
+  --c-topic-2:#f19a72;
+  --c-topic-3:#62cfa9;
+  --c-topic-4:#c9a0f0;
+  --c-topic-5:#e2b65a;
+  --c-topic-6:#f48db4;
 }
+
+/* Everything inside one of these reads its topic colour from --topic.
+   "none" is for text that belongs to no topic (a contents page, references). */
+.note-topic-1 { --topic: var(--c-topic-1); }
+.note-topic-2 { --topic: var(--c-topic-2); }
+.note-topic-3 { --topic: var(--c-topic-3); }
+.note-topic-4 { --topic: var(--c-topic-4); }
+.note-topic-5 { --topic: var(--c-topic-5); }
+.note-topic-6 { --topic: var(--c-topic-6); }
+.note-topic-none { --topic: var(--c-primary); }
+.text-topic { color: var(--topic, var(--c-primary)); }
+.bg-topic { background-color: var(--topic, var(--c-primary)); }
+.border-topic { border-color: var(--topic, var(--c-primary)); }
+.bg-topic-soft { background-color: color-mix(in srgb, var(--topic, var(--c-primary)) 12%, transparent); }
+.border-topic-soft { border-color: color-mix(in srgb, var(--topic, var(--c-primary)) 30%, transparent); }
 
 html,
 body,

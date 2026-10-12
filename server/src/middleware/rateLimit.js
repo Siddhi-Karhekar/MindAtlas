@@ -7,8 +7,13 @@
 // Behind a reverse proxy / PaaS load balancer, set TRUST_PROXY=1 (see
 // server/.env.example) so req.ip is the real client and not the proxy.
 
-export function rateLimit({ windowMs, max, message = "too many requests, please try again later" }) {
-  const hits = new Map(); // ip -> { count, resetAt }
+//
+// `key(req)` chooses what is counted. The default is the client's address.
+// The general API limit counts a signed-in student by account instead
+// (sessionKey in auth.js): a whole classroom or hostel shares one public
+// address, and counting them as one client would lock all of them out.
+export function rateLimit({ windowMs, max, message = "too many requests, please try again later", key = null }) {
+  const hits = new Map(); // key -> { count, resetAt }
 
   // Drop expired entries so the map can't grow without bound. unref() so
   // this timer never keeps the process alive on its own.
@@ -20,11 +25,11 @@ export function rateLimit({ windowMs, max, message = "too many requests, please 
 
   return function limiter(req, res, next) {
     const now = Date.now();
-    const key = req.ip || "unknown";
-    let entry = hits.get(key);
+    const id = (key && key(req)) || `ip:${req.ip || "unknown"}`;
+    let entry = hits.get(id);
     if (!entry || entry.resetAt <= now) {
       entry = { count: 0, resetAt: now + windowMs };
-      hits.set(key, entry);
+      hits.set(id, entry);
     }
     entry.count += 1;
 
