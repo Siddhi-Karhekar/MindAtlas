@@ -27,6 +27,18 @@ export function tokenize(text) {
   );
 }
 
+/**
+ * A crude stem, only for telling whether two words are forms of one word:
+ * "processes"/"process", "frames"/"frame", "waiting"/"wait". Never shown.
+ */
+export function stem(word) {
+  let w = String(word || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+  if (w.length > 4) {
+    w = w.replace(/(?:ing|ed)$/, "").replace(/(ss|x|z|ch|sh)es$/, "$1").replace(/([^s])s$/, "$1");
+  }
+  return w.slice(0, 6);
+}
+
 function termFrequencies(tokens) {
   const tf = {};
   for (const t of tokens) tf[t] = (tf[t] || 0) + 1;

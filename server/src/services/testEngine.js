@@ -1,5 +1,5 @@
 import { asData, callLLM, llmAvailable, parseJsonLoose, producedBy } from "./llm.js";
-import { tokenize } from "./tfidf.js";
+import { stem, tokenize } from "./tfidf.js";
 import { topicWeight } from "./masteryEngine.js";
 import { blocksOf, isContentExcerpt, isQuestionWorthy, isStatement, quotableText } from "./studyText.js";
 import { GENERIC, phrasesIn, studyFor, termKey, termPattern } from "./keyTerms.js";
@@ -636,11 +636,23 @@ function singularise(t) {
   return words.join(" ");
 }
 
+// One sentence, one question. Two questions on the same sentence answer each
+// other: an MCQ blanking "apart from _____" in "A semaphore is an integer
+// variable that, apart from initialization, ..." prints the model answer to
+// "Define the term semaphore" right beside it. `taken` holds the sentences
+// already used in this test (normalised); theory is drafted first, so its
+// model answers keep their sentences and the MCQs blank other ones.
+const sentencesOfExcerpt = (excerpt) => String(excerpt || "").split(/(?<=[.!?;])\s+/).map(normalize).filter(Boolean);
+function takeSentences(taken, excerpt) {
+  if (taken) for (const s of sentencesOfExcerpt(excerpt)) taken.add(s);
+}
+
 /** The study sentence that makes the best blank for `term`, or null. */
-function clozeSentence(study, term) {
+function clozeSentence(study, term, taken = null) {
   const all = termPattern(term.term);
   let best = null;
   for (const s of sentencesAbout(study, term)) {
+    if (taken && sentencesOfExcerpt(s.text).some((x) => taken.has(x))) continue;
     const rest = wordsIn(blankWhole(s.text, term)).filter((w) => !w.includes("_____"));
     if (rest.length < 6) continue; // nothing left to answer from
     const n = wordsIn(s.text).length;
@@ -733,6 +745,8 @@ function termDistractors({ term, answer, note, notes, studies, sentence }) {
   pool.sort((a, b) => a.gap - b.gap || b.fit - a.fit || b.sameKind - a.sameKind || b.sameNote - a.sameNote || b.strength - a.strength);
 
   const plural = isPlural(answer, term);
+  const corpus = notes.map((n) => n.rawText || "").join("\n");
+  const numeric = /\d/.test(answer);
   const startsLower = /^[a-z]/.test(answer);
   const titleCased = wordsIn(answer).length > 1 && wordsIn(answer).every((w) => /^[A-Z]/.test(w));
   const picked = [];
@@ -740,6 +754,12 @@ function termDistractors({ term, answer, note, notes, studies, sentence }) {
     if (picked.length === 3) break;
     // the options agree in number with the answer, so grammar gives nothing away
     let text = plural ? pluralise(t.term) : singularise(t);
+    // a plural the notes never use is often not a word ("framings",
+    // "encryptions"), and reads as wrong at a glance
+    if (plural && text !== t.term && !wholeWord(text).test(corpus)) continue;
+    // "10.0.0.0/8" beside "host", or "host" beside "200.23.16.0/23": the odd
+    // one out is the answer
+    if (/\d/.test(text) !== numeric) continue;
     // ...and in capitals: beside "Remote Procedure Call" the others are written
     // the same way, or the capitals would point at the answer
     if (titleCased) text = wordsIn(text).map((w) => (/^[a-z]/.test(w) ? w[0].toUpperCase() + w.slice(1) : w)).join(" ");
@@ -757,16 +777,20 @@ function termDistractors({ term, answer, note, notes, studies, sentence }) {
   return picked;
 }
 
-function clozeDraft({ term, difficulty, note, notes, studies }) {
+// "an _____" would tell the student the answer starts with a vowel
+const neutralArticle = (blanked) => blanked.replace(/\b(a|an)(\s+_____)/gi, (_, art, rest) => `${art[0]}(n)${rest}`);
+
+function clozeDraft({ term, difficulty, note, notes, studies, taken }) {
   const study = studies.get(note);
-  const sentence = clozeSentence(study, term);
+  const sentence = clozeSentence(study, term, taken);
   if (!sentence) return null;
+  takeSentences(taken, sentence);
   const answer = answerAsWritten(sentence, term);
   const options = shuffle([...termDistractors({ term, answer, note, notes, studies, sentence }), answer]);
   return {
     topicId: note._id,
     topic: labelOf(note),
-    prompt: `Fill in the blank: "${blankWhole(sentence, term)}"`,
+    prompt: `Fill in the blank: "${neutralArticle(blankWhole(sentence, term))}"`,
     options,
     correctAnswer: answer,
     supportingExcerpt: sentence,
@@ -776,18 +800,20 @@ function clozeDraft({ term, difficulty, note, notes, studies }) {
 
 // A note with no detectable key terms (a few lines of text) still gets
 // questions, the older way: a single keyword, widened to its term in place.
-function legacyClozeDraft({ note, notes, wanted, startIndex, used }) {
+function legacyClozeDraft({ note, notes, wanted, startIndex, used, taken }) {
   const picked = pickUnusedKeyword(note, wanted, startIndex, used);
   if (!picked) return null;
   const { keyword, difficulty } = picked;
   used.add(`${note._id}|${keyword}`);
   const sentence = sentenceFor(note, keyword);
   if (!sentence) return null;
+  if (taken && sentencesOfExcerpt(sentence).some((x) => taken.has(x))) return null;
+  takeSentences(taken, sentence);
   const answer = termFor(note, sentence, keyword);
   return {
     topicId: note._id,
     topic: labelOf(note),
-    prompt: `Fill in the blank: "${blankTerm(sentence, answer, keyword)}"`,
+    prompt: `Fill in the blank: "${neutralArticle(blankTerm(sentence, answer, keyword))}"`,
     options: shuffle([...pickDistractors(note, notes, keyword, sentence, answer), answer]),
     correctAnswer: answer,
     supportingExcerpt: sentence,
@@ -795,7 +821,7 @@ function legacyClozeDraft({ note, notes, wanted, startIndex, used }) {
   };
 }
 
-function generateMcqFallback(notes, mcqCount, masteryMap, studies) {
+function generateMcqFallback(notes, mcqCount, masteryMap, studies, taken = new Set()) {
   const drafts = [];
   const used = new Set(); // "note id|term" already turned into a question
   const asked = new Set(); // terms already the answer to some question
@@ -807,16 +833,23 @@ function generateMcqFallback(notes, mcqCount, masteryMap, studies) {
     const startIndex = Math.floor(i / notes.length);
     const study = studies.get(note);
     if (!study || askableTerms(study).length === 0) {
-      const draft = legacyClozeDraft({ note, notes, wanted, startIndex, used });
+      const draft = legacyClozeDraft({ note, notes, wanted, startIndex, used, taken });
       if (draft) drafts.push(draft);
       continue;
     }
-    const picked = pickUnusedTerm(note, study, wanted, startIndex, used, asked);
-    if (!picked) continue; // this note is out of distinct questions; don't repeat one
-    used.add(`${note._id}|${picked.term.key}`);
-    asked.add(picked.term.key);
-    const draft = clozeDraft({ ...picked, note, notes, studies });
-    if (draft) drafts.push(draft);
+    // a term whose sentences another question already uses gives way to the
+    // note's next term
+    for (let tries = 0; tries < 4; tries++) {
+      const picked = pickUnusedTerm(note, study, wanted, startIndex, used, asked);
+      if (!picked) break; // this note is out of distinct questions; don't repeat one
+      used.add(`${note._id}|${picked.term.key}`);
+      asked.add(picked.term.key);
+      const draft = clozeDraft({ ...picked, note, notes, studies, taken });
+      if (draft) {
+        drafts.push(draft);
+        break;
+      }
+    }
   }
   return drafts;
 }
@@ -1032,7 +1065,7 @@ const FORMS_BY_TIER = {
   hard: ["differentiate", "list", "explain", "define"],
 };
 
-function generateTheoryFallback(notes, theoryCount, masteryMap, studies) {
+function generateTheoryFallback(notes, theoryCount, masteryMap, studies, taken = new Set()) {
   const drafts = [];
   const used = new Set();
   const order = weightedNoteOrder(notes, theoryCount, masteryMap);
@@ -1055,6 +1088,7 @@ function generateTheoryFallback(notes, theoryCount, masteryMap, studies) {
       const { form: _form, key, ...draft } = chosen;
       used.add(`${note._id}|${key}`);
       used.add(about(chosen));
+      takeSentences(taken, draft.supportingExcerpt);
       drafts.push(draft);
       continue;
     }
@@ -1070,6 +1104,7 @@ function generateTheoryFallback(notes, theoryCount, masteryMap, studies) {
     const sentence = sentenceFor(note, keyword);
     if (!sentence) continue;
     const term = termFor(note, sentence, keyword);
+    takeSentences(taken, sentence);
     drafts.push({
       topicId: note._id,
       topic: labelOf(note),
@@ -1161,7 +1196,7 @@ function toQuestionItem(d, type, marks, notes, contextText, generatedBy) {
   return { ...base, answerKey: d?.modelAnswer, keyPoints: d?.keyPoints };
 }
 
-async function generateBatch({ notes, count, generateLLM, generateFallback, masteryMap, studies, avoid }) {
+async function generateBatch({ notes, count, generateLLM, generateFallback, masteryMap, studies, avoid, taken }) {
   if (count <= 0) return { drafts: [], generatedBy: "none" };
 
   let drafts = null;
@@ -1172,7 +1207,7 @@ async function generateBatch({ notes, count, generateLLM, generateFallback, mast
     if (drafts) generatedBy = "llm";
   }
   if (!drafts || drafts.length === 0) {
-    drafts = generateFallback(notes, count, masteryMap, studies);
+    drafts = generateFallback(notes, count, masteryMap, studies, taken);
     generatedBy = "rule-based-fallback";
   }
   return { drafts, generatedBy };
@@ -1266,9 +1301,14 @@ export async function generateQuestions(
   // With earlier tests on these notes, more candidates are drafted than are
   // needed, so there is room to leave out what the student has already seen.
   const withRoom = (n) => (n > 0 && avoid.length ? Math.min(36, n + Math.min(avoid.length, n)) : n);
-  const [mcqBatch, theoryBatch] = await Promise.all([
-    generateBatch({ notes, count: withRoom(mcqCount), generateLLM: generateMcqWithLLM, generateFallback: generateMcqFallback, masteryMap, studies, avoid }),
-    generateBatch({ notes, count: withRoom(theoryCount), generateLLM: generateTheoryWithLLM, generateFallback: generateTheoryFallback, masteryMap, studies, avoid }),
+  // Sentences the rule-based generators have built a question from, shared so
+  // no sentence is used twice in one test (see clozeSentence). Theory is
+  // listed first so its model answers claim their sentences before the MCQs
+  // are blanked.
+  const taken = new Set();
+  const [theoryBatch, mcqBatch] = await Promise.all([
+    generateBatch({ notes, count: withRoom(theoryCount), generateLLM: generateTheoryWithLLM, generateFallback: generateTheoryFallback, masteryMap, studies, avoid, taken }),
+    generateBatch({ notes, count: withRoom(mcqCount), generateLLM: generateMcqWithLLM, generateFallback: generateMcqFallback, masteryMap, studies, avoid, taken }),
   ]);
 
   let repeatsUsed = 0;
@@ -1295,4 +1335,16 @@ export async function generateQuestions(
     theoryGeneratedBy: theoryCount > 0 ? theoryBatch.generatedBy : "none",
     rankedBy: embedder ? "embeddings" : "rules",
   };
+}
+
+/**
+ * True when a topic label would give an MCQ's answer away: every word of the
+ * answer, in some form, is in the label's last part ("Unit 3 › Monitors" for
+ * "monitor", "› The Critical Section Problem" for "critical section problem").
+ */
+export function topicRevealsAnswer(topic, answer) {
+  const label = String(topic || "").split("›").pop();
+  const labelStems = new Set(tokenize(label).map(stem));
+  const answerStems = tokenize(String(answer || "")).map(stem);
+  return answerStems.length > 0 && answerStems.every((s) => labelStems.has(s));
 }

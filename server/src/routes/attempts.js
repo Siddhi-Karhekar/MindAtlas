@@ -32,6 +32,7 @@ import { findOwnedSubject, findSubjectsByOwner } from "../models/Subject.js";
 import { markActivity } from "../models/User.js";
 import { findTestsBySubject } from "../models/Test.js";
 import { findNotesByIds, findNotesBySubject, topicLabelFor } from "../models/Note.js";
+import { topicRevealsAnswer } from "../services/testEngine.js";
 
 const router = safeRouter();
 router.use(requireAuth);
@@ -42,6 +43,13 @@ function forAttemptTaking(question) {
   // progress - only after submission, via the review.
   // eslint-disable-next-line no-unused-vars
   const { answerKey, supportingExcerpt, keyPoints, ...safe } = question;
+  // The topic label is shown beside the question. When it names the answer
+  // ("A _____ is a high level abstraction ..." under "Unit 3 › Monitors"),
+  // show only the document until the attempt is over.
+  if (question.type === "mcq" && topicRevealsAnswer(question.topic, answerKey)) {
+    safe.topic = question.parentTopic || null;
+    safe.subtopic = null;
+  }
   return safe;
 }
 
