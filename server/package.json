@@ -7,11 +7,12 @@
   "scripts": {
     "dev": "node src/index.js",
     "start": "node src/index.js",
-    "test": "node test/mongoStore.test.mjs && node test/masteryEngine.test.mjs && node test/graphEngine.test.mjs && node test/graphRoutes.test.mjs && node test/relink.test.mjs && node test/keywordMap.test.mjs && node test/noteUploads.test.mjs && node test/documentStructure.test.mjs && node test/noteContent.test.mjs && node test/questionQuality.test.mjs && node test/keyTerms.test.mjs && node test/noteLifecycle.test.mjs && node test/evaluation.test.mjs && node test/noteExport.test.mjs && node test/assessment.test.mjs && node test/security.test.mjs && node test/questionLeaks.test.mjs",
+    "test": "node test/mongoStore.test.mjs && node test/masteryEngine.test.mjs && node test/graphEngine.test.mjs && node test/graphRoutes.test.mjs && node test/relink.test.mjs && node test/linkEvaluation.test.mjs && node test/keywordMap.test.mjs && node test/noteUploads.test.mjs && node test/documentStructure.test.mjs && node test/noteContent.test.mjs && node test/questionQuality.test.mjs && node test/keyTerms.test.mjs && node test/noteLifecycle.test.mjs && node test/evaluation.test.mjs && node test/noteExport.test.mjs && node test/assessment.test.mjs && node test/security.test.mjs && node test/questionLeaks.test.mjs",
     "semantic:install": "node scripts/semantic-install.mjs",
     "semantic:check": "node scripts/semantic-check.mjs",
     "eval:generate": "node evaluation/generate.mjs",
     "eval:score": "node evaluation/score.mjs",
+    "eval:links": "node evaluation/links.mjs",
     "lint": "oxlint --deny-warnings src test evaluation scripts",
     "load-test": "node scripts/load-test.mjs",
     "db:backup": "node scripts/db-backup.mjs",

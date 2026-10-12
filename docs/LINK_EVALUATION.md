@@ -1,0 +1,236 @@
+# Evaluating the knowledge graph's links
+
+How to check whether the graph links the right notes, and how to choose the
+linking thresholds from evidence: real notes, every pair of topics scored the
+way the graph scores it, people judging a sample of pairs without seeing the
+scores.
+
+Nothing here costs money or needs an account. The code is
+`server/evaluation/links.mjs` and `server/evaluation/lib/links.js`; its checks
+are `server/test/linkEvaluation.test.mjs`.
+
+**There are no results yet.** This document and the code are the method.
+
+## What is measured
+
+The linking rule (`server/src/services/graphEngine.js`) has three numbers:
+
+| Constant | Now | What it does |
+| --- | --- | --- |
+| `SIMILARITY_THRESHOLD` | 0.12 | Two topics in the same subject are linked at this similarity or above. |
+| `CROSS_SUBJECT_THRESHOLD` | 0.25 | Topics in different subjects need this similarity... |
+| `CROSS_SUBJECT_MIN_SHARED` | 2 | ...and this many shared top keywords. |
+
+They were set on a handful of hand-written notes. The evaluation measures, for
+every setting of them in a grid, how many of the links it makes are right
+(**precision**) and how many of the right links it makes (**recall**), with
+**F1** combining the two, separately for same-subject and cross-subject links.
+
+Same-subject decisions depend only on the same-subject threshold, and
+cross-subject ones only on the other two numbers, so the two are searched
+separately: 0.05-0.30 for the same-subject threshold, 0.15-0.40 by 1-3
+shared keywords for the cross-subject rule, in steps of 0.01.
+
+## The procedure
+
+Commands are run in `server/`.
+
+### 1. Collect the notes
+
+One folder, with one subfolder per subject holding that subject's files (PDF,
+Word, PowerPoint, text or photos, as students upload them). A file directly in
+the folder counts as a subject of its own.
+
+```
+eval-notes/
+  biology/      cell_structure.pdf, osmosis.docx, ...
+  chemistry/    ...
+  networks/     ...
+```
+
+- Real notes people are happy to share, with anything personal removed. Never
+  students' notes from the live database.
+- At least 3-4 subjects with about 10-20 topics each (several files, or long
+  files that split into subtopics). Fewer topics give too few pairs near the
+  thresholds.
+- Include subjects that share a word with different meanings ("cell" in
+  biology, chemistry and networks; "nucleus"; "kernel"; "tree"), and at least
+  one real overlap between subjects (diffusion in biology and in chemistry).
+  The cross-subject rule exists for exactly these.
+- `sample-notes/networks_unit2.md` and the files in `server/evaluation/samples/`
+  may be added. Use one format of `networks_unit2`, not all four.
+
+### 2. Generate
+
+```
+npm run eval:links -- generate D:\eval-notes --out D:\links-run1 --seed 1
+```
+
+It makes every file into topics exactly as an upload would, works out every
+topic's keywords against the rest of its subject as `npm run relink` does (so
+they do not depend on the order files were added), scores every pair of topics
+with the current rule, and picks the pairs to rate (below). Options:
+`--per-bin 10`, `--cross-cap 150`, `--zero-shared 20`, `--seed`.
+
+It writes:
+
+- `for-raters/` - everything the raters get, and nothing else:
+  - `rating_sheet.csv` - the pairs: each topic's subject, title and the
+    opening of its text, then `related` and `comment` to fill in. Shuffled,
+    with the order inside each pair random too, and no scores, keywords or
+    decisions.
+  - `practice_sheet.csv` - 10 other pairs, for the practice round.
+  - `topics.md` - the full text of every topic, by T number.
+  - `HOW_TO_RATE.txt` - the instructions.
+- `key.csv` - each rated pair's similarity, shared keywords, current decision
+  and stratum. **Raters must not see it.**
+- `pairs.csv` - every pair, for the record (and a chart of the similarity
+  distribution).
+- `manifest.json` - the seed, the commit, the rule, the subjects and how many
+  pairs each stratum has.
+
+The same command with the same seed gives the same sheet.
+
+### 3. Rate
+
+Give each rater the `for-raters` folder.
+
+- **At least two raters**, ideally three (so a pair is rarely a tie), who know
+  the subjects. Say in the report if any of them built the graph.
+- First, all raters do `practice_sheet.csv` together and talk through every
+  disagreement. It is not counted.
+- Then each rates `rating_sheet.csv` alone and saves it as
+  `ratings_<name>.csv` (CSV, not .xlsx), which goes back into the output
+  folder.
+
+The question for each pair is whether the two topics **should be linked**: a
+student revising one would be helped by being pointed to the other, because
+they are about the same concept, one builds on the other, or they explain one
+idea from different sides. Answers are `yes`, `no` or `unsure`.
+
+- The same word with a different meaning is "no" ("cell" in biology and in an
+  electrochemical cell).
+- Being in the same subject is not enough on its own.
+- Topics in different subjects can be "yes".
+
+Raters see subject names, because "cell" cannot be judged without knowing the
+subject; it does mean they can tell which pairs cross subjects.
+
+### 4. Score
+
+```
+npm run eval:links -- score D:\links-run1
+```
+
+It reads every `ratings_*.csv` and writes `results.md` (the tables for the PR
+or a report), `results.json` and `grid.csv` (every setting with intervals).
+Options: `--flat 0.02`, `--min-linked 10`, `--reps 1000`.
+
+### 5. Change the constants (if the results say so)
+
+Change the three constants in `graphEngine.js` to the recommended ones, with a
+comment giving the evidence (how many pairs were rated, precision and recall
+before and after), and update `server/test/graphEngine.test.mjs`. Show the
+effect with `npm run relink -- --all` (a dry run) on a local database holding
+the same notes, before and after the change. After the change is deployed,
+Member 4 relinks the live site (`DEPLOY.md`, "Relinking the graph").
+
+## Which pairs are rated
+
+Most pairs of topics have nothing to do with each other and score near zero:
+in the sample notes, 152 of 221 same-subject pairs score below 0.05 and only 6
+fall between 0.10 and 0.125. A random sample would be almost all easy "no"s.
+So pairs are drawn from **strata**:
+
+| Stratum | How many are rated |
+| --- | --- |
+| Same subject, similarity in bins of 0.025 from 0.05 to 0.30 | up to `--per-bin` (10) from each bin |
+| Same subject, below 0.05 | 15 (half as many again: most pairs, and most of the related pairs recall could miss, are here) |
+| Same subject, 0.30 and above | up to 10 |
+| Different subjects sharing a keyword | **all of them**; past `--cross-cap` (150) they are sampled evenly across bins of shared keywords (1, 2, 3+) and similarity |
+| Different subjects sharing no keyword | `--zero-shared` (20), half below 0.05 and half above |
+
+The last group can never be linked whatever the thresholds are. It is rated to
+see whether the shared-keyword requirement itself misses real links, for
+example two notes that say "cell" and "cells", which are different keywords
+today.
+
+Expect about 150-250 pairs to rate; at 20-30 seconds a pair, 1-1.5 hours per
+rater.
+
+## How the setting is chosen
+
+**One label per pair.** The majority of the raters' yes/no answers; `unsure`
+is no vote. A tie counts as not related (as in `docs/EVALUATION.md`), which
+leans the choice towards precision. A pair everyone was unsure about is left
+out and counted in the report.
+
+**Weights.** Because near-threshold pairs are rated more densely than the
+rest, each rated pair is weighted by the number of pairs it stands for: its
+stratum's size over the stratum's labelled pairs. The estimates are therefore
+for all pairs, not for the sample. Unweighted, recall would come out too high,
+because the related pairs that score low sit in the big low-similarity
+strata where few pairs are rated.
+
+**Intervals.** Precision and recall have 95% Wilson intervals on the effective
+number of pairs (Kish: the number of equally weighted pairs that would carry
+as much information). F1 is not a proportion, so its interval comes from 1000
+resamples drawn within each stratum.
+
+**The choice**, for same-subject and cross-subject links separately:
+
+1. Settings that link fewer than 10 rated pairs are not considered: their
+   precision would rest on too few pairs.
+2. Take the best F1. Every setting within 0.02 of it counts as equally good.
+3. If the current setting is among them, keep it: the difference is smaller
+   than a sample this size can show.
+4. Otherwise choose, among them, the one with the highest precision, because
+   a wrong link costs a student more than a missing one, especially across
+   subjects. Ties go to the higher F1, then the stricter setting.
+
+`results.md` also lists the rated pairs the recommendation would decide
+differently, so the change can be checked pair by pair.
+
+## How much it can show
+
+With about 10 rated pairs per 0.025 bin, the evaluation can tell whether 0.12
+is clearly too low or too high, not where the best threshold is to the
+second decimal place. A precision of 80% from 30 linked pairs has an interval
+of roughly 63-91%. Read neighbouring thresholds together, not one row on its
+own.
+
+## What to report
+
+- The notes: subjects, files, topics, formats and where they came from.
+- The raters: how many, who they are relative to the project, and the
+  agreement table. If kappa is low, say so: the labels are then partly taste.
+- The recommendation table with intervals, and the rated pairs it changes.
+- The command, the seed and the commit (all in `manifest.json`).
+
+## Limits to state
+
+- **The labels judge pairs of topics, not the graph a student sees.** A link
+  can be "right" and still clutter a busy graph.
+- **The keywords are the relink's.** Notes saved before the last relink on
+  the live site may have different keywords, so their links can differ until
+  Member 4 relinks.
+- **Shared keywords depend on the keyword method.** Changing it (TextRank,
+  item 4 of Member 2's list) changes which pairs share keywords. The labels
+  stay valid, because they are about the notes, so the same ratings can be
+  scored again; re-check the cross-subject rule after any such change.
+- **The sample notes were used while developing the rule.** Do not report
+  numbers from them alone.
+
+## Files
+
+```
+server/evaluation/
+  links.mjs          generate and score
+  lib/links.js       topics, pairs, strata, labels, weighted metrics, the choice
+  lib/ingest.js      files -> notes, the way the app builds them
+  lib/stats.js       Wilson intervals, kappa, CSV
+server/test/linkEvaluation.test.mjs
+```
+
+The output folder holds your notes' text and the raters' names: do not commit
+it. `evaluation-output/` (the default) is git-ignored.
