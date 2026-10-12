@@ -542,9 +542,11 @@ export default function KnowledgeGraph() {
                   y1={a[1]}
                   x2={b[0]}
                   y2={b[1]}
-                  style={{ stroke: "var(--c-primary)" }}
+                  style={{
+                    stroke: "var(--c-primary)",
+                    opacity: `calc(var(--graph-subtopic-line-boost) * ${dim ? 0.05 : touches ? 0.55 : 0.18})`,
+                  }}
                   strokeWidth={touches ? 2 : 1.25}
-                  opacity={dim ? 0.05 : touches ? 0.55 : 0.18}
                 />
               );
             })}
@@ -561,7 +563,7 @@ export default function KnowledgeGraph() {
                   y1={a[1]}
                   x2={b[0]}
                   y2={b[1]}
-                  style={{ stroke: touches ? "var(--c-secondary)" : "var(--c-outline)" }}
+                  style={{ stroke: touches ? "var(--c-secondary)" : "var(--c-graph-link)" }}
                   strokeWidth={1 + (e.weight || 0.3) * 4}
                   strokeDasharray={touches ? undefined : "4 3"}
                   opacity={dim ? 0.08 : touches ? 0.85 : 0.4}
@@ -584,7 +586,7 @@ export default function KnowledgeGraph() {
                   y1={a[1]}
                   x2={b[0]}
                   y2={b[1]}
-                  style={{ stroke: byCluster ? "var(--c-outline)" : "var(--c-tertiary)" }}
+                  style={{ stroke: byCluster ? "var(--c-graph-link)" : "var(--c-tertiary)" }}
                   strokeWidth={1 + (e.weight || 0.3) * 4}
                   strokeDasharray="1 6"
                   strokeLinecap="round"
@@ -715,7 +717,7 @@ export default function KnowledgeGraph() {
                     y1={y1}
                     x2={x2}
                     y2={y2}
-                    style={{ stroke: open ? "var(--c-secondary)" : "var(--c-outline)" }}
+                    style={{ stroke: open ? "var(--c-secondary)" : "var(--c-graph-link)" }}
                     strokeWidth={open ? 2.5 : 1 + k.weight * 2}
                     opacity={open ? 0.9 : 0.5}
                   />

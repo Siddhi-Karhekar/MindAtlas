@@ -62,6 +62,15 @@
   --c-cluster-1:#2a78d6;
   --c-cluster-2:#eb6834;
   --c-cluster-3:#1baf7a;
+  /* Knowledge-graph lines (KnowledgeGraph.jsx). Lines that nothing is selected
+     on are drawn faint so the notes stay in front, and a faint line on a dark
+     canvas is much harder to see than the same contrast ratio on a light one.
+     These keep them as visible in dark mode as in light: APCA Lc about 14-20
+     on the canvas (surface-container-low) in both. --c-graph-link is the
+     unselected link; the boost scales the document -> subtopic lines'
+     opacity, since no colour is light enough at 0.18. */
+  --c-graph-link:#b9b6a6;
+  --graph-subtopic-line-boost:1;
   /* Topic colours for formatted notes (components/NoteContent.jsx): a topic's
      headings and key terms wear its colour, body text never does. They are
      text colours, so each one clears 4.5:1 contrast on the note surface in
@@ -126,6 +135,8 @@ html.dark {
   --c-cluster-1:#3987e5;
   --c-cluster-2:#d95926;
   --c-cluster-3:#199e70;
+  --c-graph-link:#a8a496;
+  --graph-subtopic-line-boost:2.2;
   --c-topic-1:#86b4f7;
   --c-topic-2:#f19a72;
   --c-topic-3:#62cfa9;
