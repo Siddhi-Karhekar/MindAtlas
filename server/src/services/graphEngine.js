@@ -1,5 +1,5 @@
 import { upsertEdge } from "../models/GraphEdge.js";
-import { cosineSimilarity } from "./tfidf.js";
+import { cosineSimilarity, sameWord } from "./tfidf.js";
 
 // Below this similarity score, two notes in the same subject are considered
 // unrelated and no edge is drawn - mirrors "Similarity scoring within
@@ -20,7 +20,8 @@ export const SIMILARITY_THRESHOLD = 0.11;
 // in Biology, Chemistry (electrochemical cell) and Computer Networks (ATM
 // cell), or "nucleus" in Biology and Chemistry. A pair is linked across
 // subjects only when BOTH hold:
-//   - at least CROSS_SUBJECT_MIN_SHARED of their top-12 TF-IDF keywords match,
+//   - at least CROSS_SUBJECT_MIN_SHARED of their top-12 keywords match (in
+//     singular or plural; sharedKeywords below),
 //   - and their cosine similarity is at least CROSS_SUBJECT_THRESHOLD.
 // CONTRIBUTING.md first proposed "at least one shared keyword"; on real notes
 // that still linked Biology "Cell structure" to Chemistry "Electrochemical
@@ -52,9 +53,27 @@ export const LINK_RULE = Object.freeze({
 export function pairFeatures(a, b) {
   return {
     weight: cosineSimilarity(a.vector, b.vector),
-    sharedKeywords: a.keywords.filter((k) => b.keywords.includes(k)),
+    sharedKeywords: sharedKeywords(a.keywords, b.keywords),
     sameSubject: String(a.subjectId) === String(b.subjectId),
   };
+}
+
+/**
+ * The keywords two notes share, in the first note's order. A word is shared
+ * in singular or plural ("cells" in one note, "cell" in the other, see
+ * sameWord in tfidf.js) and given in its shorter form, so the words are the
+ * same whichever note comes first. Counted once even when a note saved
+ * before plurals were merged has both forms.
+ */
+export function sharedKeywords(a = [], b = []) {
+  const shared = [];
+  for (const k of a) {
+    const match = b.find((other) => sameWord(k, other));
+    if (match === undefined) continue;
+    const word = match.length < k.length ? match : k;
+    if (!shared.some((w) => sameWord(w, word))) shared.push(word);
+  }
+  return shared;
 }
 
 /**
@@ -143,21 +162,28 @@ export function clusterNotes(notes, edges) {
 }
 
 // Keywords appearing in at least two of a cluster's notes, most widespread
-// first; ties go to the keyword ranked higher within those notes.
+// first; ties go to the keyword ranked higher within those notes. Singular
+// and plural count as one keyword (sameWord), shown in the shorter form.
 function sharedClusterKeywords(members) {
   if (members.length < 2) return [];
-  const stats = new Map();
+  const stats = [];
   for (const n of members) {
+    const counted = new Set(); // a note saved with both "cell" and "cells" counts once
     (n.keywords || []).forEach((k, rank) => {
-      const s = stats.get(k) || { count: 0, rank: 0 };
-      stats.set(k, { count: s.count + 1, rank: s.rank + rank });
+      let s = stats.find((x) => sameWord(x.word, k));
+      if (!s) stats.push((s = { word: k, count: 0, rank: 0 }));
+      if (k.length < s.word.length) s.word = k;
+      if (counted.has(s)) return;
+      counted.add(s);
+      s.count += 1;
+      s.rank += rank;
     });
   }
-  return [...stats.entries()]
-    .filter(([, s]) => s.count >= 2)
-    .sort(([ka, a], [kb, b]) => b.count - a.count || a.rank - b.rank || (ka < kb ? -1 : 1))
+  return stats
+    .filter((s) => s.count >= 2)
+    .sort((a, b) => b.count - a.count || a.rank - b.rank || (a.word < b.word ? -1 : 1))
     .slice(0, 3)
-    .map(([k]) => k);
+    .map((s) => s.word);
 }
 
 // A long upload split into subtopics (see services/documentStructure.js) is a

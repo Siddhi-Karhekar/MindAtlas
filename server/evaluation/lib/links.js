@@ -103,6 +103,45 @@ export function scorePairs(topics) {
 
 export const isLink = (edgeType) => edgeType === "same-subject" || edgeType === "cross-subject";
 
+/**
+ * An earlier run's rated pairs (its key.csv rows), scored again on `topics`:
+ * the same notes read with the current code (loadTopics). This is how a
+ * change to the keywords is measured on ratings that already exist - the
+ * labels are about the notes, not the keywords, so they still apply. Each
+ * pair is found again by its topics' refs ("<subject>/<file>#<n>"), so T
+ * numbers and file order play no part. Returns:
+ *   key           - the pairs found, as scoring reads them: the run's stratum,
+ *                   so the sampling weights stay as generated, with the
+ *                   features worked out now (pairFeatures) and today's decision
+ *   unmatched     - [{ pair, reason }]: a topic no longer exists, or the two
+ *                   topics are no longer in the same (or different) subjects
+ *   largestChange - the largest change in similarity from key.csv. The
+ *                   keywords play no part in it, so anything above rounding
+ *                   means the notes or the vector are not what was rated.
+ */
+export function rescorePairs(keyRows, topics) {
+  const byRef = new Map(topics.map((t) => [t.ref, t]));
+  const key = [];
+  const unmatched = [];
+  let largestChange = 0;
+  for (const row of keyRows) {
+    const [a, b] = [byRef.get(row.ref_a), byRef.get(row.ref_b)];
+    if (!a || !b) {
+      const gone = [!a && row.ref_a, !b && row.ref_b].filter(Boolean);
+      unmatched.push({ pair: row.pair, reason: `no topic ${gone.join(" or ")} in the notes now` });
+      continue;
+    }
+    const features = pairFeatures(a, b);
+    if (features.sameSubject !== (row.same_subject === "yes")) {
+      unmatched.push({ pair: row.pair, reason: `${row.ref_a} and ${row.ref_b} are no longer ${features.sameSubject ? "in different subjects" : "in the same subject"}` });
+      continue;
+    }
+    largestChange = Math.max(largestChange, Math.abs(features.weight - Number(row.similarity)));
+    key.push({ pair: row.pair, stratum: row.stratum, ...features, current: decideEdge(features) });
+  }
+  return { key, unmatched, largestChange };
+}
+
 // ---------------------------------------------------------------------------
 // Which pairs to rate
 // ---------------------------------------------------------------------------

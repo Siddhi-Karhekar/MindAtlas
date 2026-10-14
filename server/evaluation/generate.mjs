@@ -37,6 +37,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { generateQuestions as generateBaseline, isQuestionWorthy as baselineKeeps } from "./baseline/testEngine.tfidf.js";
+import { tfidfKeywords } from "./baseline/keywords.tfidf.js";
 import { collectFiles, notesFromFile, readOffTopicLabels } from "./lib/ingest.js";
 import { allSentences, automaticMetrics, gateMetrics } from "./lib/metrics.js";
 import { seededRandom, shuffled, toCsv } from "./lib/stats.js";
@@ -63,6 +64,12 @@ function parseArgs(argv) {
   }
   return opts;
 }
+
+// The baseline was measured on TF-IDF keywords, and the app's are now ranked
+// by TextRank (services/tfidf.js), so it gets the frozen TF-IDF ones: each
+// topic against the file's other topics, as lib/ingest.js computes keywords.
+export const withBaselineKeywords = (notes) =>
+  notes.map((n) => ({ ...n, keywords: tfidfKeywords(n.rawText, notes.filter((m) => m !== n).map((m) => m.rawText)) }));
 
 const clozeOf = (q) => String(q.prompt || "").match(/^Fill in the blank:\s*["“]([\s\S]*)["”]\s*$/)?.[1] ?? null;
 
@@ -103,7 +110,7 @@ export async function runGeneration(options) {
       // every strategy but llm runs with no LLM key, so nothing is drafted by a model by accident
       tfidf: async (notes) => {
         delete process.env.GROQ_API_KEY;
-        return generateBaseline(notes, counts);
+        return generateBaseline(withBaselineKeywords(notes), counts);
       },
       terms: async (notes) => {
         delete process.env.GROQ_API_KEY;
