@@ -34,7 +34,8 @@
 // results.json and grid.csv: precision, recall and F1 of every threshold
 // setting for same-subject and cross-subject links, the recommended setting,
 // and how far the raters agree. Options: --flat <x> (default 0.02),
-// --min-linked <n> (default 10), --reps <n> bootstrap draws (default 1000).
+// --min-linked <n> (default 10), --min-precision <x> (default 0.5), --reps <n>
+// bootstrap draws (default 1000).
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -94,7 +95,7 @@ Steps
 function parseArgs(argv) {
   const [command, ...rest] = argv;
   const opts = { command, inputs: [] };
-  const numbers = { "--seed": "seed", "--per-bin": "perBin", "--cross-cap": "crossCap", "--zero-shared": "zeroShared", "--flat": "flat", "--min-linked": "minLinked", "--reps": "reps" };
+  const numbers = { "--seed": "seed", "--per-bin": "perBin", "--cross-cap": "crossCap", "--zero-shared": "zeroShared", "--flat": "flat", "--min-linked": "minLinked", "--min-precision": "minPrecision", "--reps": "reps" };
   for (let i = 0; i < rest.length; i++) {
     const a = rest[i];
     if (a === "--out") opts.out = rest[++i];
@@ -348,6 +349,7 @@ export function runLinkScoring(options) {
     choice: {
       flat: opts.flat,
       min_linked: opts.minLinked,
+      min_precision: opts.minPrecision,
       same: { keep: same.keep, best_f1: same.best, reason: same.reason, setting: same.row },
       cross: { keep: cross.keep, best_f1: cross.best, reason: cross.reason, setting: cross.row },
     },
@@ -402,7 +404,7 @@ export function resultsMarkdown(r) {
     `| CROSS_SUBJECT_THRESHOLD | ${current.crossSimilarity} | ${recommended.crossSimilarity} | ${r.choice.cross.keep ? "keep: " : ""}${r.choice.cross.reason} |`,
     `| CROSS_SUBJECT_MIN_SHARED | ${current.crossMinShared} | ${recommended.crossMinShared} | (chosen with the cross-subject threshold) |`,
     "",
-    `How it is chosen: the best F1, but among all settings within ${r.choice.flat} of it the one with the highest precision, because a wrong link costs more than a missing one; settings linking fewer than ${r.choice.min_linked} rated pairs are not considered; and the current setting is kept when it is itself within ${r.choice.flat} of the best.`,
+    `How it is chosen: settings linking fewer than ${r.choice.min_linked} rated pairs are not considered. A setting is as good as the best when its F1 is not clearly below the best one's: across the same resamples, the difference stays above -${r.choice.flat} at the 97.5th percentile. The current setting is kept if it is as good as the best; otherwise the most precise of those settings is recommended, because a wrong link costs more than a missing one, provided its precision is at least ${pct(r.choice.min_precision)} so that the links it adds are right more often than wrong.`,
     "",
     "| Link type | Setting | Rated pairs linked | Precision | Recall | F1 |",
     "| --- | --- | --- | --- | --- | --- |",
@@ -461,7 +463,7 @@ export function resultsMarkdown(r) {
 const samePath = (a, b) => (process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b);
 const USAGE = [
   "usage: npm run eval:links -- generate <notes folder> [--out dir] [--seed 1] [--per-bin 10] [--cross-cap 150] [--zero-shared 20]",
-  "       npm run eval:links -- score <output folder> [ratings files...] [--flat 0.02] [--min-linked 10] [--reps 1000]",
+  "       npm run eval:links -- score <output folder> [ratings files...] [--flat 0.02] [--min-linked 10] [--min-precision 0.5] [--reps 1000]",
 ].join("\n");
 
 // run directly: `node evaluation/links.mjs ...`

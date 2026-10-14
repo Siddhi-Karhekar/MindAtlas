@@ -9,7 +9,8 @@ Nothing here costs money or needs an account. The code is
 `server/evaluation/links.mjs` and `server/evaluation/lib/links.js`; its checks
 are `server/test/linkEvaluation.test.mjs`.
 
-**There are no results yet.** This document and the code are the method.
+The first run (14 Oct 2026) is under "Results" below: it lowered the
+same-subject threshold from 0.12 to 0.11 and kept the cross-subject rule.
 
 ## What is measured
 
@@ -124,7 +125,7 @@ npm run eval:links -- score D:\links-run1
 
 It reads every `ratings_*.csv` and writes `results.md` (the tables for the PR
 or a report), `results.json` and `grid.csv` (every setting with intervals).
-Options: `--flat 0.02`, `--min-linked 10`, `--reps 1000`.
+Options: `--flat 0.02`, `--min-linked 10`, `--min-precision 0.5`, `--reps 1000`.
 
 ### 5. Change the constants (if the results say so)
 
@@ -181,12 +182,26 @@ resamples drawn within each stratum.
 
 1. Settings that link fewer than 10 rated pairs are not considered: their
    precision would rest on too few pairs.
-2. Take the best F1. Every setting within 0.02 of it counts as equally good.
+2. Take the best F1. A setting counts as equally good unless its F1 is
+   clearly below the best one's: across the same 1000 resamples, its F1 minus
+   the best's stays under -0.02 at the 97.5th percentile. The comparison is
+   paired, because every setting is scored on the same pairs.
 3. If the current setting is among them, keep it: the difference is smaller
    than a sample this size can show.
 4. Otherwise choose, among them, the one with the highest precision, because
    a wrong link costs a student more than a missing one, especially across
-   subjects. Ties go to the higher F1, then the stricter setting.
+   subjects. Ties go to the higher F1, then the stricter setting. Only a
+   setting with precision of at least 50% can be chosen, so the links a
+   change adds are right more often than wrong; if none qualifies, keep the
+   current setting.
+
+Steps 2 and 4 were tightened after the first run, before any constant was
+changed. As first written, "equally good" meant within a fixed 0.02 of the
+best F1, and there was no precision floor. That version recommended 0.07 for
+same-subject links, a peak resting on two rated pairs that each stood for
+about 40 others, and loosening the cross-subject rule to 0.15 with one
+shared keyword, where only 31% of links were right. Both results are kept in
+the run's output.
 
 `results.md` also lists the rated pairs the recommendation would decide
 differently, so the change can be checked pair by pair.
@@ -198,6 +213,40 @@ is clearly too low or too high, not where the best threshold is to the
 second decimal place. A precision of 80% from 30 linked pairs has an interval
 of roughly 63-91%. Read neighbouring thresholds together, not one row on its
 own.
+
+## Results (14 Oct 2026)
+
+**Notes.** 117 topics in 5 subjects, 6,786 pairs: the team's own DEDV notes
+(data engineering, warehousing and pre-processing; 2 PDFs, 32 topics) and
+Machine Learning notes (5 PDFs, 54 topics), plus the sample notes
+(Networks, DBMS, Distributed Systems; 31 topics). A sixth subject's two PDFs were one-page
+scans with no text layer, which the app cannot read either.
+
+**Rater.** One: Claude (Anthropic's AI model), working only from the rater
+folder and writing its answers before key.csv was opened. 293 pairs, 291
+labelled (2 unsure). No second rater, so no agreement figure: the labels are
+one rater's judgement. Its rule for "related": the same concept, an overview
+and one of its techniques, a revision sheet and a topic it summarises, two
+methods for the same task, or the same idea in two subjects; "no" for a
+shared word with another meaning ("class", "support", "network", "layers",
+"variance").
+
+| Links | Setting | Precision | Recall | F1 | Links made |
+| --- | --- | --- | --- | --- | --- |
+| Same subject | 0.12 (before) | 62% [49-74%] | 34% [16-59%] | 0.44 [0.32-0.61] | 237 |
+| Same subject | **0.11** (now) | 65% [51-76%] | 46% [24-69%] | 0.54 [0.40-0.71] | 278 |
+| Cross subject | 0.25 + 2 shared (kept) | 33% [6-79%] | 5% [0-47%] | 0.09 | 3 |
+
+- **Same subject.** 0.09, 0.10 and 0.11 all beat 0.12 in the paired
+  resamples (0.11: +0.10 F1, 95% interval +0.02 to +0.17); none is more
+  precise than 0.11, so 0.11 was chosen.
+- **Cross subject.** Every looser setting that linked 10 or more rated pairs
+  was right only 30-40% of the time, so the rule was kept. The fix there is
+  better keywords (TextRank, stemming), not a lower bar.
+- **Relink, dry run** on a local database of the same notes, uploaded
+  through the API: before the change 237 same-subject, 3 cross-subject and 56
+  rejected links after relinking; after it 278, 3 and 72 (as saved at upload:
+  265, 2 and 76).
 
 ## What to report
 
@@ -220,6 +269,10 @@ own.
   scored again; re-check the cross-subject rule after any such change.
 - **The sample notes were used while developing the rule.** Do not report
   numbers from them alone.
+- **The first run had one rater, an AI.** It judged consistently and without
+  seeing scores, but a person may draw "related" differently, especially
+  for revision sheets and for two methods of the same task. A second rater
+  (even on a 30-pair subset) would show how far that matters.
 
 ## Files
 

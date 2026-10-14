@@ -42,6 +42,13 @@ check(`cross subject below ${SIMILARITY_THRESHOLD} is not stored at all`,
   typeOf(classifyPair(mk("s1", { a: 1, b: 10 }, ["a"]), mk("s2", { a: 1, c: 10 }, ["a"]))) === "none");
 check("cross subject with no shared keyword is not stored",
   typeOf(classifyPair(mk("s1", half[0], ["x"]), mk("s2", half[1], ["y"]))) === "none");
+// The link evaluation (docs/LINK_EVALUATION.md) lowered the same-subject
+// threshold from 0.12 to 0.11. Two vectors with cosine exactly `sim`:
+const atSim = (sim) => [{ a: 1, b: Math.sqrt(1 / sim - 1) }, { a: 1, c: Math.sqrt(1 / sim - 1) }];
+check("same subject at 0.115 links (it did not under the earlier 0.12)",
+  typeOf(classifyPair(mk("s1", atSim(0.115)[0], ["a"]), mk("s1", atSim(0.115)[1], ["a"]))) === "same-subject");
+check("  ...while across subjects, sharing one keyword, the same pair is only rejected",
+  typeOf(classifyPair(mk("s1", atSim(0.115)[0], ["a"]), mk("s2", atSim(0.115)[1], ["a"]))) === "rejected");
 
 console.log("\n=== Realistic notes (real TF-IDF, built like routes/notes.js) ===");
 const SUBJECTS = {

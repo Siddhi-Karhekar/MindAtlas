@@ -4,7 +4,16 @@ import { cosineSimilarity } from "./tfidf.js";
 // Below this similarity score, two notes in the same subject are considered
 // unrelated and no edge is drawn - mirrors "Similarity scoring within
 // subject folder" in Diagram 2 of the architecture doc.
-export const SIMILARITY_THRESHOLD = 0.12;
+// Set by the link evaluation (docs/LINK_EVALUATION.md, 14 Oct 2026): 117
+// topics from real notes in 5 subjects, 123 same-subject pairs rated
+// related / not related without seeing scores. 0.12, set on sample notes,
+// found only about a third of the related pairs (recall 34%, precision 62%,
+// F1 0.44). At 0.11 recall is 46% and precision 65% (F1 0.54); the gain over
+// 0.12 held across resamples (+0.10 F1, 95% interval +0.02 to +0.17).
+// Lower thresholds scored as well on F1 but no more precisely, so the most
+// precise of them was taken. One rater (an AI, blind to the scores) - see
+// the document for that limit.
+export const SIMILARITY_THRESHOLD = 0.11;
 
 // Cross-subject pairs have to clear a stricter bar, because a word shared
 // across subjects is often the same spelling with a different meaning: "cell"
@@ -20,6 +29,12 @@ export const SIMILARITY_THRESHOLD = 0.12;
 // Notes that are genuinely about the same thing share several key terms
 // (Osmosis <-> Diffusion shared six), so requiring two is what separates a
 // real overlap from one ambiguous word.
+// The link evaluation (14 Oct 2026, 170 cross-subject pairs rated) kept both
+// numbers: every looser setting that linked 10 or more rated pairs was right
+// only 30-40% of the time, so loosening would add more wrong links than
+// right ones. Pairs sharing only "class" (IPv4 address classes, class-
+// imbalanced datasets) are typical. Better cross-subject links need better
+// keywords, not a lower bar.
 export const CROSS_SUBJECT_THRESHOLD = 0.25;
 export const CROSS_SUBJECT_MIN_SHARED = 2;
 
