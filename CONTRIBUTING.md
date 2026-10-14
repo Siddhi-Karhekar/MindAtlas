@@ -885,7 +885,10 @@ and were not clearly better (item 4).
        note outside its cluster, so clusters sharing the "Other clusters"
        grey can be told apart. Still three colours. A cluster with no shared
        keywords says "Linked more to each other than to the rest of this
-       subject".
+       subject". The page also works at phone width now: below 768px the
+       inspector sits under the graph, the legend is one line that scrolls,
+       and the controls are placed against the graph rather than the whole
+       page (until then the 340px inspector squeezed the graph to nothing).
      - **After deploy**: nothing to run - clusters are never stored.
      - **Tests**: `graphEngine.test.mjs` 79 checks (two groups joined by one
        weak link stay apart; the order of notes and links changes nothing on
