@@ -110,20 +110,29 @@ async function load() {
 
 // Adds the cache: the same sentence is embedded once, however many tests are
 // built from its note.
+// `alone`: embed each text on its own, so its vector depends on the text
+// only. With the 8-bit model a sentence's vector shifts a little with the
+// other sentences in its batch (alone and in a batch of four: cosine 0.995),
+// which does not matter for ranking a test's sentences, but does where
+// vectors are stored and compared with a fixed threshold (the knowledge
+// graph, noteEmbedding.js). Such vectors are cached apart from batched ones.
 function wrap(run, model) {
   return {
     model,
-    async embed(texts) {
+    async embed(texts, { alone = false } = {}) {
       const list = texts.map((t) => String(t || "").replace(/\s+/g, " ").trim().slice(0, 1200));
-      const missing = [...new Set(list.filter((t) => t && !cache.has(t)))];
+      const keyOf = (t) => (alone ? `\u0000alone ${t}` : t);
+      const missing = [...new Set(list.filter((t) => t && !cache.has(keyOf(t))))];
       if (missing.length) {
-        const vectors = await run(missing);
+        const vectors = [];
+        if (alone) for (const t of missing) vectors.push((await run([t]))[0]);
+        else vectors.push(...(await run(missing)));
         missing.forEach((t, i) => {
           if (cache.size >= CACHE_LIMIT) cache.delete(cache.keys().next().value);
-          cache.set(t, vectors[i]);
+          cache.set(keyOf(t), vectors[i]);
         });
       }
-      return list.map((t) => cache.get(t) || null);
+      return list.map((t) => cache.get(keyOf(t)) || null);
     },
   };
 }

@@ -16,6 +16,12 @@
 //
 // Run it after a change to the keyword or linking rules (tfidf.js,
 // graphEngine.js) is deployed, so notes saved before it follow it too.
+//
+// Cross-subject links by meaning need each topic's sentence embedding, made
+// by the optional model (`npm run semantic:install`). Where the model is
+// installed, the relink makes the missing ones and stores them, and the
+// server then uses the stored vectors even if it has no model itself. Where
+// it is not, those pairs are linked by TF-IDF, as before.
 
 import "dotenv/config";
 import fs from "fs";
@@ -23,6 +29,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { connectDB, disconnectDB } from "../src/db/index.js";
 import { findUserByEmail, findUsersSince } from "../src/models/User.js";
+import { getEmbedder, semanticStatus } from "../src/services/embeddings.js";
 import { relinkOwner } from "../src/services/relink.js";
 
 const BACKUP_MAX_AGE_HOURS = 24;
@@ -81,9 +88,16 @@ try {
   if (!owners[0] && email) stop(`No account with the email ${email}.`);
 
   console.log(write ? "\nRelinking - changes are written.\n" : "\nDry run - nothing is written. Add --yes to apply these changes.\n");
-  const total = { students: 0, notes: 0, keywordsChanged: 0, kept: 0, updated: 0, added: 0, dropped: 0, removedKept: 0, dangling: 0 };
+  // a batch job can wait for the model to load
+  const embedder = await getEmbedder({ waitMs: 180_000 });
+  console.log(
+    embedder
+      ? `Embedding model: ${embedder.model} - cross-subject pairs are linked by meaning.\n`
+      : `No embedding model (${semanticStatus().reason}) - cross-subject pairs are linked by TF-IDF, except where both notes already have a stored embedding.\n`
+  );
+  const total = { students: 0, notes: 0, keywordsChanged: 0, kept: 0, updated: 0, added: 0, dropped: 0, removedKept: 0, dangling: 0, embeddingsMade: 0, embeddingsDropped: 0 };
   for (const owner of owners) {
-    const r = await relinkOwner(owner._id, { dryRun: !write });
+    const r = await relinkOwner(owner._id, { dryRun: !write, embedder });
     if (r.notes === 0) continue;
     for (const k of Object.keys(total)) total[k] += k === "students" ? 1 : r[k];
     console.log(`${owner.email}: ${plural(r.notes, "note")} (${plural(r.topics, "topic")}), keywords change on ${r.keywordsChanged}`);
@@ -93,11 +107,16 @@ try {
       `  kept ${r.kept}, updated ${r.updated}, added ${r.added}, dropped ${r.dropped};` +
         ` removed by the student, left removed: ${r.removedKept}; links to deleted notes: ${r.dangling}`
     );
+    console.log(
+      `  embeddings: ${r.embedded} of ${plural(r.topics, "topic")}, ${r.embeddingsMade} ${write ? "made" : "to make"};` +
+        ` of deleted notes: ${r.embeddingsDropped}`
+    );
   }
   console.log(
     `\n${plural(total.students, "student")}, ${plural(total.notes, "note")}: keywords change on ${total.keywordsChanged};` +
       ` links kept ${total.kept}, updated ${total.updated}, added ${total.added}, dropped ${total.dropped},` +
-      ` removed by students ${total.removedKept}, to deleted notes ${total.dangling}.`
+      ` removed by students ${total.removedKept}, to deleted notes ${total.dangling};` +
+      ` embeddings ${write ? "made" : "to make"} ${total.embeddingsMade}, of deleted notes ${total.embeddingsDropped}.`
   );
 } catch (err) {
   console.error("Relink failed:", String(err.message).replace(/mongodb(\+srv)?:\/\/\S+/g, "[uri hidden]"));

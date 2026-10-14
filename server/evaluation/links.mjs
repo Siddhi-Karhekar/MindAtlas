@@ -58,7 +58,7 @@ import { getEmbedder, semanticStatus } from "../src/services/embeddings.js";
 import { decideEdge, LINK_RULE } from "../src/services/graphEngine.js";
 import {
   bootstrapDraws, CHOICE, choosePairs, chooseSetting, excerpt, gridSearch, isLink, loadTopics,
-  gridFor, pairLabels, raterAgreement, readRelated, rescorePairs, SAMPLING, scorePairs, stratumOf, stratumWeights, todaysFeatures,
+  gridFor, pairLabels, raterAgreement, readRelated, rescorePairs, SAMPLING, scorePairs, stratumOf, stratumWeights, todaysEdge,
 } from "./lib/links.js";
 import { parseCsv, seededRandom, shuffled, toCsv } from "./lib/stats.js";
 
@@ -378,10 +378,15 @@ function scoreRun({ dir, files, manifest, key, population, titles, sheetPairs },
   const { weightOf, unrepresented } = stratumWeights(labelled, manifest.strata);
   const items = labelled.map((it) => ({ ...it, sampleWeight: weightOf.get(it.stratum) }));
 
-  const rule = { ...LINK_RULE };
   const draws = bootstrapDraws(items, seededRandom(opts.seed ?? manifest.seed ?? 1), opts.reps);
   const measure = manifest.similarity || "tfidf";
-  const grid = gridSearch({ items, population, draws, current: rule, grid: gridFor(measure) });
+  // today's setting, as the thresholds of its rows: across subjects, a run on
+  // embeddings measures the graph's rule by meaning
+  const rule = measure === "embedding"
+    ? { ...LINK_RULE, crossSimilarity: LINK_RULE.crossMeaning, crossMinShared: LINK_RULE.crossMeaningMinShared }
+    : { ...LINK_RULE };
+  const today = (it) => todaysEdge(it, measure);
+  const grid = gridSearch({ items, population, draws, current: rule, grid: gridFor(measure), today });
   const same = chooseSetting(grid.same, grid.current.same, opts);
   const cross = chooseSetting(grid.cross, grid.current.cross, opts);
   const recommended = {
@@ -392,18 +397,17 @@ function scoreRun({ dir, files, manifest, key, population, titles, sheetPairs },
 
   // rated pairs the recommended rule decides differently: what a change
   // would actually do, pair by pair. A group whose setting is kept is decided
-  // as today, on TF-IDF similarity; a changed one on the similarity the run
-  // measures.
-  const recommendedEdge = (it) => decideEdge((it.sameSubject ? same.keep : cross.keep) ? todaysFeatures(it) : it, recommended);
+  // as today; a changed one on the similarity the run measures.
+  const recommendedEdge = (it) => ((it.sameSubject ? same.keep : cross.keep) ? today(it) : decideEdge(it, recommended));
   const changed = items
-    .filter((it) => isLink(decideEdge(todaysFeatures(it), rule)) !== isLink(recommendedEdge(it)))
+    .filter((it) => isLink(today(it)) !== isLink(recommendedEdge(it)))
     .map((it) => ({
       pair: it.pair,
       titles: titles.get(it.pair) || "",
       same_subject: it.sameSubject,
       similarity: Number(it.weight.toFixed(3)),
       shared: it.sharedKeywords.length,
-      now: isLink(decideEdge(todaysFeatures(it), rule)) ? "linked" : "not linked",
+      now: isLink(today(it)) ? "linked" : "not linked",
       recommended: isLink(recommendedEdge(it)) ? "linked" : "not linked",
       raters_say: it.label ? "related" : "not related",
     }));
@@ -516,7 +520,7 @@ export async function runLinkRescoring(options) {
   };
   const sharing = (pairs) => [1, 2, 3].map((n) => pairs.filter((p) => !p.sameSubject && p.sharedKeywords.length >= n).length);
   // today's rule decides on TF-IDF similarity, whatever the run measures
-  const todays = (p) => decideEdge(todaysFeatures(p), rule) || "none";
+  const todays = (p) => todaysEdge(p, measure) || "none";
   const linksByType = (pairs) => {
     const types = pairs.map(todays);
     return { same: types.filter((t) => t === "same-subject").length, cross: types.filter((t) => t === "cross-subject").length, rejected: types.filter((t) => t === "rejected").length };
@@ -654,6 +658,9 @@ const sameSetting = (a, b) => a && b && a.similarity === b.similarity && a.cross
 /** The results as tables that can go straight into a report or a PR. */
 export function resultsMarkdown(r) {
   const { current, recommended } = r.rule;
+  const crossNames = r.similarity === "embedding"
+    ? ["CROSS_SUBJECT_MEANING_THRESHOLD", "CROSS_SUBJECT_MEANING_MIN_SHARED"]
+    : ["CROSS_SUBJECT_THRESHOLD", "CROSS_SUBJECT_MIN_SHARED"];
   const lines = [
     "# Link evaluation: human ratings",
     "",
@@ -663,13 +670,13 @@ export function resultsMarkdown(r) {
     "## Recommendation",
     "",
     ...(r.similarity === "embedding"
-      ? [`Similarity measured: sentence embeddings (${r.model || "unknown model"}), the cosine of two topics' vectors (services/noteEmbedding.js). "Now" is today's rule, on TF-IDF similarity. A recommended threshold that differs from it is on embedding similarity: using it means the graph linking on embeddings.`, ""]
+      ? [`Similarity measured: sentence embeddings (${r.model || "unknown model"}), the cosine of two topics' vectors (services/noteEmbedding.js). "Now" is today's graph where notes have embeddings: same-subject links on TF-IDF similarity, cross-subject links by meaning. A same-subject threshold that differs from "now" is on embedding similarity: using it means linking those on embeddings too.`, ""]
       : []),
     "| Constant in graphEngine.js | Now | Recommended | Why |",
     "| --- | --- | --- | --- |",
     `| SIMILARITY_THRESHOLD | ${current.similarity} | ${recommended.similarity} | ${r.choice.same.keep ? "keep: " : ""}${r.choice.same.reason} |`,
-    `| CROSS_SUBJECT_THRESHOLD | ${current.crossSimilarity} | ${recommended.crossSimilarity} | ${r.choice.cross.keep ? "keep: " : ""}${r.choice.cross.reason} |`,
-    `| CROSS_SUBJECT_MIN_SHARED | ${current.crossMinShared} | ${recommended.crossMinShared} | (chosen with the cross-subject threshold) |`,
+    `| ${crossNames[0]} | ${current.crossSimilarity} | ${recommended.crossSimilarity} | ${r.choice.cross.keep ? "keep: " : ""}${r.choice.cross.reason} |`,
+    `| ${crossNames[1]} | ${current.crossMinShared} | ${recommended.crossMinShared} | (chosen with the cross-subject threshold) |`,
     "",
     `How it is chosen: settings linking fewer than ${r.choice.min_linked} rated pairs are not considered. A setting is as good as the best when its F1 is not clearly below the best one's: across the same resamples, the difference stays above -${r.choice.flat} at the 97.5th percentile. The current setting is kept if it is as good as the best; otherwise the most precise of those settings is recommended, because a wrong link costs more than a missing one, provided its precision is at least ${pct(r.choice.min_precision)} so that the links it adds are right more often than wrong.`,
     "",

@@ -97,6 +97,8 @@ function linksOf(edges, id) {
       edgeId: e.id,
       weight: e.weight,
       shared: e.sharedKeywords || [],
+      // embedding similarity, when the pair was decided by meaning
+      meaning: e.meaning ?? null,
     }))
     .sort((a, b) => b.weight - a.weight);
 }
@@ -181,12 +183,18 @@ function highlight(sentence, word) {
 }
 
 // Why an ambiguous cross-subject pair was not linked - mirrors classifyPair()
-// in server/src/services/graphEngine.js (two shared keywords AND similarity
-// of at least 0.25 are both required across subjects).
-function rejectReason(shared) {
-  if (shared.length === 1) return `Only “${shared[0]}” in common, likely with a different meaning`;
-  return `Shares ${shared.join(", ")}, but the notes are otherwise too different`;
+// in server/src/services/graphEngine.js (decideLink): across subjects, two
+// notes with embeddings need to be close in meaning; without them, two shared
+// keywords AND similarity of at least 0.25 are both required.
+function rejectReason(shared, meaning) {
+  const common = shared.length === 1 ? `Only “${shared[0]}” in common` : `Shares ${shared.join(", ")}`;
+  if (meaning !== null) return `${common}, but the notes are about different things`;
+  if (shared.length === 1) return `${common}, likely with a different meaning`;
+  return `${common}, but the notes are otherwise too different`;
 }
+
+// Why two notes in different subjects are linked.
+const crossReason = (nb) => (nb.meaning !== null ? `Close in meaning · shares ${nb.shared.join(", ")}` : `Shares ${nb.shared.join(", ")}`);
 
 export default function KnowledgeGraph() {
   const { subjectId } = useParams();
@@ -1207,7 +1215,7 @@ export default function KnowledgeGraph() {
                           >
                             <span className="font-label-sm text-label-sm text-tertiary uppercase tracking-wider">{ext.subjectName}</span>
                             <span className="font-ui-body text-ui-body text-on-surface">{clip(ext.title, 34)}</span>
-                            <span className="font-body-sm text-body-sm text-on-surface-variant">Shares {nb.shared.join(", ")}</span>
+                            <span className="font-body-sm text-body-sm text-on-surface-variant">{crossReason(nb)}</span>
                           </button>
                           <div className="p-space-2xs">
                             <UnlinkButton title={ext.title} busy={pending === nb.edgeId} onClick={() => correctLink(nb.edgeId, "remove", ext.title)} />
@@ -1235,7 +1243,7 @@ export default function KnowledgeGraph() {
                             <span className="font-ui-body text-ui-body text-on-surface-variant">
                               {ext.subjectName}: {clip(ext.title, 30)}
                             </span>
-                            <span className="font-body-sm text-body-sm text-outline">{rejectReason(nb.shared)}</span>
+                            <span className="font-body-sm text-body-sm text-outline">{rejectReason(nb.shared, nb.meaning)}</span>
                           </div>
                         </li>
                       );
@@ -1356,7 +1364,7 @@ export default function KnowledgeGraph() {
                             className="flex-1 min-w-0 flex flex-col items-start gap-0.5 px-space-sm py-space-xs rounded-l-lg hover:bg-surface-container-high transition-colors text-left"
                           >
                             <span className="font-ui-body text-ui-body text-on-surface">{clip(node.title, 34)}</span>
-                            <span className="font-body-sm text-body-sm text-on-surface-variant">Shares {nb.shared.join(", ")}</span>
+                            <span className="font-body-sm text-body-sm text-on-surface-variant">{crossReason(nb)}</span>
                           </button>
                           <div className="p-space-2xs">
                             <UnlinkButton title={node.title} busy={pending === nb.edgeId} onClick={() => correctLink(nb.edgeId, "remove", node.title)} />

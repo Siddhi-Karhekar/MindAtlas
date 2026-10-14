@@ -15,11 +15,11 @@ import { fileURLToPath } from "node:url";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { classifyPair, decideEdge, LINK_RULE, pairFeatures } from "../src/services/graphEngine.js";
+import { classifyPair, decideEdge, decideLink, LINK_RULE, pairFeatures } from "../src/services/graphEngine.js";
 import { computeTfidf } from "../src/services/tfidf.js";
 import {
   allStrata, bootstrapDraws, chooseSetting, collectSubjects, EMBEDDING_GRID, excerpt, GRID, gridSearch, loadTopics, pairFeaturesBy,
-  pairLabels, raterAgreement, readRelated, ruleMetrics, scorePairs, stratumOf, stratumWeights, todaysFeatures, waterFill,
+  pairLabels, raterAgreement, readRelated, ruleMetrics, scorePairs, stratumOf, stratumWeights, todaysEdge, waterFill,
 } from "../evaluation/lib/links.js";
 import { embedNoteText } from "../src/services/noteEmbedding.js";
 import { comparisonMarkdown, HOW_TO_RATE, runLinkGeneration, runLinkRescoring, runLinkScoring } from "../evaluation/links.mjs";
@@ -331,7 +331,11 @@ check("embedding strata are binned on their own scale",
   stratumOf(f(0.62, 0, true), "embedding") === "same 0.600-0.650" && stratumOf(f(0.2, 0, true), "embedding") === "same <0.300" &&
   stratumOf(f(0.72, 1, false), "embedding") === "cross 1 shared >=0.700" && stratumOf(f(0.66, 0, false), "embedding") === "cross 0 shared 0.650-0.700");
 check("  ...every one of them distinct", new Set(allStrata("embedding").map((x) => x.id)).size === allStrata("embedding").length);
-check("todaysFeatures puts the TF-IDF similarity back", todaysFeatures({ weight: 0.7, tfidfWeight: 0.2 }).weight === 0.2 && todaysFeatures({ weight: 0.3 }).weight === 0.3);
+check("today's decision on a TF-IDF run is the TF-IDF rule", todaysEdge(f(0.26, 2, false)) === "cross-subject" && todaysEdge(f(0.26, 1, false)) === "rejected");
+check("  ...and on an embedding run, across subjects, the rule by meaning on the measured similarity",
+  todaysEdge({ ...f(0.7, 1, false), tfidfWeight: 0.12 }, "embedding") === "cross-subject" &&
+  todaysEdge({ ...f(0.6, 1, false), tfidfWeight: 0.3 }, "embedding") === "rejected" &&
+  todaysEdge({ ...f(0.9, 0, true), tfidfWeight: 0.05 }, "embedding") === null);
 
 const embRun = path.join(tmp, "embedding-run");
 const embGen = await runLinkGeneration({ folder: NOTES_DIR, out: embRun, seed: 3, quiet: true, perBin: 3, similarity: "embedding", embedder: standIn });
@@ -341,10 +345,12 @@ check("the manifest says what was measured, and with which model", embGen.manife
 check("pairs are sampled by embedding similarity", embGen.manifest.strata.every((x) => allStrata("embedding").some((y) => y.id === x.id)) &&
   embKey.every((k) => k.stratum === stratumOf({ ...k, weight: Number(k.similarity), sameSubject: k.same_subject === "yes", sharedKeywords: k.shared_keywords.split(/\s+/).filter(Boolean) }, "embedding")));
 const bothRated = embKey.filter((k) => tfidfByRefs.has(refPair(k.ref_a, k.ref_b)));
-check("  ...while key.csv keeps each pair's TF-IDF similarity, and today's decision on it",
+check("  ...while key.csv keeps each pair's TF-IDF similarity, and today's decision: as without the model within a subject, by meaning across",
   bothRated.length > 0 && bothRated.every((k) => {
     const t = tfidfByRefs.get(refPair(k.ref_a, k.ref_b));
-    return k.tfidf_similarity === t.similarity && k.current === t.current;
+    const shared = k.shared_keywords.split(/\s+/).filter(Boolean);
+    const byMeaning = decideLink({ weight: Number(k.tfidf_similarity), sharedKeywords: shared, sameSubject: false, meaning: Number(k.similarity) }) || "none";
+    return k.tfidf_similarity === t.similarity && k.current === (k.same_subject === "yes" ? t.current : byMeaning);
   }), `${bothRated.length} pair(s) in both runs`);
 check("the rating sheet still shows no scores", !fs.readFileSync(path.join(embRun, "for-raters", "rating_sheet.csv"), "utf8").includes(embKey.find((k) => k.similarity.length > 4)?.similarity));
 const embSheet = parseCsv(fs.readFileSync(path.join(embRun, "for-raters", "rating_sheet.csv"), "utf8"));
@@ -354,10 +360,11 @@ const embResults = runLinkScoring({ dir: embRun, quiet: true, reps: 100, minLink
 check("scoring searches embedding thresholds", embResults.similarity === "embedding" &&
   embResults.grid.same.length === EMBEDDING_GRID.same.length && embResults.grid.cross.length === EMBEDDING_GRID.cross.length * EMBEDDING_GRID.minShared.length &&
   EMBEDDING_GRID.minShared.includes(0));
-const embItems = embKey.map((k) => ({ sameSubject: k.same_subject === "yes", weight: Number(k.tfidf_similarity), sharedKeywords: k.shared_keywords.split(/\s+/).filter(Boolean) }));
-check("  ...against today's rule scored on TF-IDF similarity",
-  embResults.current.same.linked === embItems.filter((it) => it.sameSubject && decideEdge(it) === "same-subject").length &&
-  embResults.current.cross.linked === embItems.filter((it) => !it.sameSubject && decideEdge(it) === "cross-subject").length);
+const embItems = embKey.map((k) => ({ sameSubject: k.same_subject === "yes", weight: Number(k.tfidf_similarity), meaning: Number(k.similarity), sharedKeywords: k.shared_keywords.split(/\s+/).filter(Boolean) }));
+check("  ...against today's rule: same subject on TF-IDF similarity, across subjects by meaning",
+  embResults.current.same.linked === embItems.filter((it) => it.sameSubject && decideLink(it) === "same-subject").length &&
+  embResults.current.cross.linked === embItems.filter((it) => !it.sameSubject && decideLink(it) === "cross-subject").length &&
+  embResults.rule.current.crossSimilarity === LINK_RULE.crossMeaning);
 check("  ...and a rater who links at embedding 0.6 is matched exactly there", embResults.grid.same.find((r) => r.similarity === 0.6)?.f1 === 1 && embResults.choice.same.best_f1 === 1,
   JSON.stringify(embResults.grid.same.filter((r) => r.f1 === 1).map((r) => r.similarity)));
 check("results.md says which similarity was measured", fs.readFileSync(path.join(embRun, "results.md"), "utf8").includes("Similarity measured: sentence embeddings (stand-in)"));

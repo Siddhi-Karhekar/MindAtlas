@@ -1,4 +1,6 @@
 import { upsertEdge } from "../models/GraphEdge.js";
+import { cosine, getEmbedder } from "./embeddings.js";
+import { withEmbeddings } from "./noteEmbedding.js";
 import { cosineSimilarity, sameWord } from "./tfidf.js";
 
 // Below this similarity score, two notes in the same subject are considered
@@ -41,11 +43,32 @@ export const SIMILARITY_THRESHOLD = 0.11;
 export const CROSS_SUBJECT_THRESHOLD = 0.25;
 export const CROSS_SUBJECT_MIN_SHARED = 2;
 
-// The three numbers above as one rule, the form decideEdge() takes.
+// Across subjects, when both notes have a sentence embedding (the optional
+// MiniLM model, services/noteEmbedding.js), the pair is linked by meaning
+// instead: embedding similarity of at least CROSS_SUBJECT_MEANING_THRESHOLD
+// and at least CROSS_SUBJECT_MEANING_MIN_SHARED shared top TF-IDF term.
+// Set by the link evaluation's run 2 (docs/LINK_EVALUATION.md, "Sentence
+// embeddings"; 14 Oct 2026): 153 new pairs sampled by embedding similarity
+// and rated blind, with the decision rule written down before rating. The
+// TF-IDF rule found 8% of the related cross-subject pairs (F1 0.15); this
+// setting finds 29% at 58% precision (95% interval 29-82%; F1 0.39), a gain
+// that held across resamples (+0.02 to +0.50). On run 1's ratings the same
+// setting was right 48% of the time, so expect about half of these links to
+// be right: data pre-processing in DEDV and in ML is what the subjects truly
+// share; Decision trees <-> Data reduction is a typical wrong one. Same-
+// subject links stay on TF-IDF: embeddings were not clearly better there in
+// either run. Without the model, or for a note saved without it, the TF-IDF
+// rule above applies.
+export const CROSS_SUBJECT_MEANING_THRESHOLD = 0.68;
+export const CROSS_SUBJECT_MEANING_MIN_SHARED = 1;
+
+// The numbers above as one rule, the form decideEdge() and decideLink() take.
 export const LINK_RULE = Object.freeze({
   similarity: SIMILARITY_THRESHOLD,
   crossSimilarity: CROSS_SUBJECT_THRESHOLD,
   crossMinShared: CROSS_SUBJECT_MIN_SHARED,
+  crossMeaning: CROSS_SUBJECT_MEANING_THRESHOLD,
+  crossMeaningMinShared: CROSS_SUBJECT_MEANING_MIN_SHARED,
 });
 
 // The words linking compares: a note's 12 highest TF-IDF terms, read from
@@ -79,9 +102,11 @@ export function linkTerms(note) {
 
 /**
  * What the linking rule looks at for two notes: their similarity, the top
- * TF-IDF terms they share (linkTerms), and whether they are in the same
- * subject. `sharedKeywords` keeps its name: edges store it, and the graph
- * page shows it as what two notes have in common.
+ * TF-IDF terms they share (linkTerms), whether they are in the same subject,
+ * and `meaning` - the similarity of their sentence embeddings, when both
+ * have one from the same model (noteEmbedding.js, withEmbeddings), else
+ * null. `sharedKeywords` keeps its name: edges store it, and the graph page
+ * shows it as what two notes have in common.
  */
 export function pairFeatures(a, b) {
   const termsOfB = linkTerms(b);
@@ -89,6 +114,7 @@ export function pairFeatures(a, b) {
     weight: cosineSimilarity(a.vector, b.vector),
     sharedKeywords: linkTerms(a).filter((k) => termsOfB.includes(k)),
     sameSubject: String(a.subjectId) === String(b.subjectId),
+    meaning: a.embedding && b.embedding && a.embeddingModel === b.embeddingModel ? cosine(a.embedding, b.embedding) : null,
   };
 }
 
@@ -103,7 +129,8 @@ export function pairFeatures(a, b) {
  *                     considered and turned down.
  * Kept apart from pairFeatures() so the link evaluation
  * (evaluation/links.mjs) can try other thresholds on the same pairs with
- * exactly this code.
+ * exactly this code: it reads only `weight`, so the evaluation can put
+ * another similarity there.
  */
 export function decideEdge({ weight, sharedKeywords, sameSubject }, rule = LINK_RULE) {
   if (sameSubject) return weight >= rule.similarity ? "same-subject" : null;
@@ -113,14 +140,34 @@ export function decideEdge({ weight, sharedKeywords, sameSubject }, rule = LINK_
 }
 
 /**
+ * The edge the graph draws for a pair's features (pairFeatures): decideEdge,
+ * except that a cross-subject pair whose notes both have an embedding is
+ * linked by meaning - `meaning` of at least rule.crossMeaning and at least
+ * rule.crossMeaningMinShared shared terms - in place of the TF-IDF test. A
+ * pair it does not link is still "rejected" when it shares a term and its
+ * TF-IDF similarity would have linked it within a subject, as before.
+ */
+export function decideLink(features, rule = LINK_RULE) {
+  const { meaning, sameSubject, sharedKeywords, weight } = features;
+  if (sameSubject || meaning === null || meaning === undefined) return decideEdge(features, rule);
+  if (sharedKeywords.length >= rule.crossMeaningMinShared && meaning >= rule.crossMeaning) return "cross-subject";
+  return sharedKeywords.length > 0 && weight >= rule.similarity ? "rejected" : null;
+}
+
+/**
  * Decide what edge, if any, belongs between two notes under the current
  * rule. Pure - no database - so the linking rules can be unit tested on
- * their own. Returns { edgeType, weight, sharedKeywords }, or null.
+ * their own. Returns { edgeType, weight, sharedKeywords, meaning }, or null;
+ * `meaning` is the embedding similarity of a cross-subject pair that has
+ * one, else null.
  */
 export function classifyPair(a, b) {
   const features = pairFeatures(a, b);
-  const edgeType = decideEdge(features);
-  return edgeType ? { edgeType, weight: Number(features.weight.toFixed(4)), sharedKeywords: features.sharedKeywords } : null;
+  const edgeType = decideLink(features);
+  if (!edgeType) return null;
+  // recorded only where it decides anything: across subjects
+  const meaning = features.sameSubject || features.meaning === null ? null : Number(features.meaning.toFixed(4));
+  return { edgeType, weight: Number(features.weight.toFixed(4)), sharedKeywords: features.sharedKeywords, meaning };
 }
 
 /**
@@ -221,11 +268,14 @@ export async function updateGraphForNote(newNote, otherNotes) {
   const storedEdges = [];
   if (isSplitParent(newNote)) return storedEdges;
 
-  for (const other of otherNotes) {
-    if (String(other._id) === String(newNote._id)) continue;
-    if (isSplitParent(other)) continue;
+  // The note's embedding, made now when the optional model is ready - a save
+  // never waits for it to load; a note saved without one is linked by TF-IDF
+  // until the next relink - and the others' stored ones.
+  const others = otherNotes.filter((o) => String(o._id) !== String(newNote._id) && !isSplitParent(o));
+  const { notes: [subject, ...rest] } = await withEmbeddings([newNote, ...others], { embedder: await getEmbedder(), compute: [newNote] });
 
-    const pair = classifyPair(newNote, other);
+  for (const other of rest) {
+    const pair = classifyPair(subject, other);
     if (!pair) continue;
 
     // One undirected edge per pair: the lower id is always the source.

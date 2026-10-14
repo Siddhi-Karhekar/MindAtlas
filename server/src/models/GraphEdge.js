@@ -60,9 +60,10 @@ export async function setEdgeCorrection(id, correction) {
  * The fields the linker owns on an edge - everything except the student's
  * `correction`. upsertEdge writes exactly these, and the relink tool
  * (services/relink.js) compares a stored edge against them to tell whether
- * the pair needs rewriting.
+ * the pair needs rewriting. `meaning` is the two notes' embedding similarity
+ * when both had one (graphEngine.js, decideLink), else null.
  */
-export function edgeFields({ sourceNoteId, targetNoteId, sourceSubjectId, targetSubjectId, edgeType, weight, sharedKeywords }) {
+export function edgeFields({ sourceNoteId, targetNoteId, sourceSubjectId, targetSubjectId, edgeType, weight, sharedKeywords, meaning = null }) {
   return {
     subjectId: edgeType === "same-subject" ? sourceSubjectId : null,
     sourceSubjectId,
@@ -72,6 +73,7 @@ export function edgeFields({ sourceNoteId, targetNoteId, sourceSubjectId, target
     edgeType,
     weight,
     sharedKeywords,
+    meaning,
   };
 }
 
@@ -120,4 +122,5 @@ export const toApiEdge = (e) => ({
   weight: e.weight,
   sharedKeywords: e.sharedKeywords,
   edgeType: e.edgeType || "same-subject",
+  meaning: e.meaning ?? null,
 });

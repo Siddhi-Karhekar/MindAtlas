@@ -86,7 +86,11 @@ member's section of §3.
    were not clearly better keywords; keywords now count singular and plural
    as one word instead (see §3). Member 4 relinks the live site once both
    are deployed.
-5. MiniLM sentence embeddings (backlog item 1).
+5. ~~MiniLM sentence embeddings (backlog item 1).~~ Done
+   (`graph/minilm-embeddings`): cross-subject pairs are linked by meaning
+   where both notes have an embedding; same-subject links stay on TF-IDF (see
+   §3). Live only once Member 4 installs the model there, or runs the relink
+   where it is installed.
 6. Louvain/Leiden clustering, and feeding link corrections back into the
    linking rule (backlog item 2).
 
@@ -785,10 +789,55 @@ and were not clearly better (item 4).
    - **After deploy** (Member 4): `npm run db:backup`, then
      `npm run relink -- --live --all` (dry run), then the same with `--yes`.
      Run once, after both item 4 PRs are deployed.
-5. **MiniLM sentence embeddings** (backlog item 1). The next thing to try
-   for cross-subject links: "class" in IPv4 address classes and in
-   class-imbalanced data is a question of meaning, which no ranking of single
-   words settles.
+5. ~~**MiniLM sentence embeddings**~~ **Done** (14 Oct,
+   `graph/minilm-embeddings`). Cross-subject links by meaning; same-subject
+   links unchanged. Evidence: `docs/LINK_EVALUATION.md`, "Sentence
+   embeddings".
+   - **Measured first.** `npm run eval:links -- generate <notes> --similarity
+     embedding` samples pairs by embedding similarity, and `score` searches
+     thresholds on it against today's rule. On run 1's ratings the choice rule
+     changed nothing (cross-subject precision just under 50%), so run 2 rated
+     153 new pairs sampled by embedding similarity, blind (a fresh Claude
+     agent given only the rater folder), with the decision rule written down
+     first (`PLAN.md` in the run folder; code at `9ef90a1`).
+   - **Result.** Same subject: kept on TF-IDF (embeddings not clearly better).
+     Cross subject: embedding similarity >= 0.68 with >= 1 shared top TF-IDF
+     word: 58% precision, 29% recall, F1 0.39 against 0.15 today (run 1: 48%,
+     33%, 0.39 against 0.09). About half of these links will be right; they
+     are mostly DEDV and ML data pre-processing. On the evaluation notes, 13
+     cross-subject links instead of 3.
+   - **What changed**:
+     - `services/noteEmbedding.js`: a topic's vector is the normalised mean of
+       its sentences' vectors; `withEmbeddings` attaches stored ones, making
+       and storing those missing when the model is ready.
+     - `models/NoteEmbedding.js` (new collection `note_embeddings`): one row
+       per note with the model's name and a fingerprint of the text, so a
+       vector from older text or another model is never used.
+     - `graphEngine.js`: `decideLink` - across subjects, two notes with
+       embeddings are linked by meaning (`CROSS_SUBJECT_MEANING_THRESHOLD`
+       0.68, `CROSS_SUBJECT_MEANING_MIN_SHARED` 1), otherwise by the TF-IDF
+       rule as before. Saving a note embeds it if the model is ready (a save
+       never waits for the model to load). Edges record `meaning`.
+     - `relink.js` / `npm run relink`: makes the missing embeddings (waiting
+       for the model), reuses stored ones, and deletes those of deleted notes.
+       Stored vectors are used even where the model is not installed.
+     - `embeddings.js` (Member 3's, one option added): `embed(texts, { alone:
+       true })` embeds each sentence on its own. Batched, the 8-bit model
+       gives a sentence a slightly different vector depending on its batch, so
+       a stored vector would have depended on what was embedded before it.
+     - Deleting a note, a subject or an account deletes its embeddings
+       (`noteLifecycle.js`, `Subject.js`, `User.js`: one line each).
+     - Graph page: a cross-subject link made by meaning says "Close in
+       meaning · shares ..."; a pair turned down by meaning says the notes are
+       about different things.
+   - **Without the model** (a default install, CI, the live site today)
+     nothing changes. Member 4's call: install the model on the live server
+     (about 160 MB more memory), or run `npm run relink -- --live` from a
+     machine where it is installed so existing notes get their vectors; notes
+     saved after that are linked by TF-IDF until the next relink.
+   - **Tests**: `graphEngine.test.mjs` and `relink.test.mjs` run with a
+     stand-in model (no download in CI) and with the model switched off
+     otherwise, so local runs match CI.
 6. **Louvain/Leiden clustering and the correction feedback loop** (backlog
    item 2).
 7. Optional, from the Digital Second Brain prototype: search across all

@@ -8,7 +8,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { cosine } from "../../src/services/embeddings.js";
-import { decideEdge, LINK_RULE, pairFeatures } from "../../src/services/graphEngine.js";
+import { decideEdge, decideLink, LINK_RULE, pairFeatures } from "../../src/services/graphEngine.js";
 import { embedNoteText } from "../../src/services/noteEmbedding.js";
 import { freshTerms } from "../../src/services/relink.js";
 import { collectFiles, notesFromFile } from "./ingest.js";
@@ -96,7 +96,7 @@ export async function loadTopics(folder, { embedder = null } = {}) {
  * (weight, sharedKeywords, sameSubject), with `weight` the similarity the run
  * measures - TF-IDF, or the cosine of the topics' sentence embeddings - and
  * the TF-IDF similarity always kept as `tfidfWeight`, because today's rule
- * decides on it (todaysFeatures).
+ * needs it (todaysEdge).
  */
 export function pairFeaturesBy(a, b, measure = "tfidf") {
   const features = pairFeatures(a, b);
@@ -106,8 +106,21 @@ export function pairFeaturesBy(a, b, measure = "tfidf") {
   return { ...features, tfidfWeight: features.weight, weight: cosine(a.embedding, b.embedding) };
 }
 
-/** A pair's features as today's rule sees them: its TF-IDF similarity. */
-export const todaysFeatures = (it) => (it.tfidfWeight === undefined ? it : { ...it, weight: it.tfidfWeight });
+/**
+ * What the graph decides today for a pair, from its features in a run on
+ * `measure`: graphEngine's decideLink on its TF-IDF similarity, with its
+ * embedding similarity as `meaning` when the run measured that - so across
+ * subjects, the rule by meaning that the graph uses wherever both notes have
+ * an embedding. A run on TF-IDF measures the graph without the model.
+ */
+export function todaysEdge(it, measure = "tfidf") {
+  return decideLink({
+    weight: it.tfidfWeight ?? it.weight,
+    sharedKeywords: it.sharedKeywords,
+    sameSubject: it.sameSubject,
+    meaning: measure === "embedding" ? it.weight : null,
+  });
+}
 
 /**
  * Every pair of `topics`, with what the linking rule looks at
@@ -119,7 +132,7 @@ export function scorePairs(topics, { measure = "tfidf" } = {}) {
   for (let i = 0; i < topics.length; i++) {
     for (let j = i + 1; j < topics.length; j++) {
       const features = pairFeaturesBy(topics[i], topics[j], measure);
-      pairs.push({ a: i, b: j, ...features, current: decideEdge(todaysFeatures(features)) });
+      pairs.push({ a: i, b: j, ...features, current: todaysEdge(features, measure) });
     }
   }
   return pairs;
@@ -161,7 +174,7 @@ export function rescorePairs(keyRows, topics, { measure = "tfidf" } = {}) {
       continue;
     }
     largestChange = Math.max(largestChange, Math.abs(features.weight - Number(row.similarity)));
-    key.push({ pair: row.pair, stratum: row.stratum, ...features, current: decideEdge(todaysFeatures(features)) });
+    key.push({ pair: row.pair, stratum: row.stratum, ...features, current: todaysEdge(features, measure) });
   }
   return { key, unmatched, largestChange };
 }
@@ -395,7 +408,7 @@ const weightedWilson = (share, ws) => {
  * of rated pairs, unweighted. F1 = 2TP / (linked + related), so it is 0 when
  * nothing is linked, and null when no pair is related.
  */
-export function ruleMetrics(items, rule) {
+export function ruleMetrics(items, rule, decide = (it) => decideEdge(it, rule)) {
   let tp = 0;
   let pp = 0;
   let rel = 0;
@@ -403,7 +416,7 @@ export function ruleMetrics(items, rule) {
   const linkedW = [];
   const relatedW = [];
   for (const it of items) {
-    const linked = isLink(decideEdge(it, rule));
+    const linked = isLink(decide(it));
     if (linked) {
       pp += it.sampleWeight;
       linkedW.push(it.sampleWeight);
@@ -453,8 +466,8 @@ export function bootstrapDraws(items, random, reps = 1000) {
  * draw has no related pair) and their 95% percentile interval (`ci`, null
  * when too few draws have a related pair).
  */
-export function f1Bootstrap(items, draws, rule) {
-  const linked = items.map((it) => isLink(decideEdge(it, rule)));
+export function f1Bootstrap(items, draws, rule, decide = (it) => decideEdge(it, rule)) {
+  const linked = items.map((it) => isLink(decide(it)));
   const f1s = draws.map((draw) => {
     let tp = 0;
     let pp = 0;
@@ -489,14 +502,14 @@ export const gridFor = (measure = "tfidf") => (measure === "embedding" ? EMBEDDI
  * `crossSimilarity` x `crossMinShared`, each on its own group of pairs.
  * `population` is every pair (scorePairs), for `links`: how many links the
  * setting makes across all the notes, exactly rather than estimated.
- * `grid` is GRID, or EMBEDDING_GRID for a run on embedding similarity; the
- * current rule is always scored on the pairs as today's rule sees them
- * (todaysFeatures), so a setting on another similarity is compared with
- * what the graph does now, on the same draws.
+ * `grid` is GRID, or EMBEDDING_GRID for a run on embedding similarity. The
+ * current setting is scored by `today` (the graph's own decision, todaysEdge),
+ * so a setting on another similarity is compared with what the graph does
+ * now, on the same draws; `current` gives its rows' thresholds.
  * Returns { same: rows, cross: rows, current: { same, cross } }; each row
  * also carries its F1 in every bootstrap draw (`f1Draws`, not enumerable).
  */
-export function gridSearch({ items, population, draws, current = LINK_RULE, grid = GRID }) {
+export function gridSearch({ items, population, draws, current = LINK_RULE, grid = GRID, today = (it) => todaysEdge(it) }) {
   const sameItems = items.filter((it) => it.sameSubject);
   const crossItems = items.filter((it) => !it.sameSubject);
   const samePop = population.filter((p) => p.sameSubject);
@@ -509,25 +522,24 @@ export function gridSearch({ items, population, draws, current = LINK_RULE, grid
   };
   const sameDraws = remap(sameItems);
   const crossDraws = remap(crossItems);
-  const row = (group, groupDraws, pop, rule) => {
-    const spread = f1Bootstrap(group, groupDraws, rule);
+  const row = (group, groupDraws, pop, rule, decide = (it) => decideEdge(it, rule)) => {
+    const spread = f1Bootstrap(group, groupDraws, rule, decide);
     const out = {
       similarity: rule.similarity,
       crossSimilarity: rule.crossSimilarity,
       crossMinShared: rule.crossMinShared,
-      links: pop.filter((p) => isLink(decideEdge(p, rule))).length,
-      ...ruleMetrics(group, rule),
+      links: pop.filter((p) => isLink(decide(p))).length,
+      ...ruleMetrics(group, rule, decide),
       f1_ci: spread.ci,
     };
     // for chooseSetting's paired comparison; kept out of results.json
     Object.defineProperty(out, "f1Draws", { value: spread.draws, enumerable: false });
     return out;
   };
-  const today = (list) => list.map(todaysFeatures);
   return {
     same: grid.same.map((t) => row(sameItems, sameDraws, samePop, { ...current, similarity: t })),
     cross: grid.minShared.flatMap((k) => grid.cross.map((t) => row(crossItems, crossDraws, crossPop, { ...current, crossSimilarity: t, crossMinShared: k }))),
-    current: { same: row(today(sameItems), sameDraws, today(samePop), current), cross: row(today(crossItems), crossDraws, today(crossPop), current) },
+    current: { same: row(sameItems, sameDraws, samePop, current, today), cross: row(crossItems, crossDraws, crossPop, current, today) },
   };
 }
 

@@ -4,15 +4,21 @@
 // relinking exists for: keywords that depend on the order notes were added,
 // cross-subject links missing because the notes predate cross-subject linking,
 // a row from before edges had a type, a link the rule no longer makes, a link
-// to a deleted note, and links the student removed.
+// to a deleted note, and links the student removed. Then, with a stand-in
+// for the embedding model, the embeddings a relink makes, reuses and drops.
 process.env.MONGODB_URI = ""; // always the in-memory store, never a real cluster
 process.env.DB_FILE = "memory"; // a throwaway database: never write server/data/ from a test
+// No embedding model unless a test asks for one, so results do not depend on
+// whether the optional model is installed on this machine.
+process.env.SEMANTIC_MODEL = "off";
 
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { connectDB, getCollection } from "../src/db/index.js";
 import { setEdgeCorrection } from "../src/models/GraphEdge.js";
 import { createNote, findNotesByOwner, findNotesBySubject, isSplitParent } from "../src/models/Note.js";
+import { findEmbeddingsByOwner, saveEmbedding } from "../src/models/NoteEmbedding.js";
+import { setEmbedderForTests } from "../src/services/embeddings.js";
 import { updateGraphForNote } from "../src/services/graphEngine.js";
 import { desiredEdges, freshTerms, relinkOwner } from "../src/services/relink.js";
 import { computeTfidf } from "../src/services/tfidf.js";
@@ -171,6 +177,49 @@ const fresh = freshTerms(notes);
 check("freshTerms matches what was stored", notes.every((n) => JSON.stringify(fresh.get(String(n._id)).keywords) === JSON.stringify(n.keywords)));
 const nobody = await relinkOwner("c".repeat(24));
 check("a student with no notes is a no-op", nobody.notes === 0 && nobody.added === 0 && nobody.dropped === 0);
+
+console.log("\n=== Embeddings (a stand-in model) ===");
+// Notes saved without the model, then relinked with it.
+const DAN = "d".repeat(24);
+const WORDS = ["missing", "outlier", "impute", "router", "packet"];
+const standIn = (texts) => texts.map((t) => {
+  const v = [...WORDS.map((w) => (t.toLowerCase().includes(w) ? 1 : 0)), 0.15];
+  const n = Math.hypot(...v);
+  return v.map((x) => x / n);
+});
+for (const [subjectId, title, text] of [
+  ["dedv", "Data cleaning", "Data cleaning fills missing values. Outliers are removed. Missing values can be imputed."],
+  ["ml", "Pre-processing", "Pre-processing handles missing values and outliers. Missing values are imputed; outliers are clipped."],
+  ["net", "Routing", "A router forwards each packet. Missing routes send the packet to the default gateway."],
+]) {
+  const { vector, keywords } = computeTfidf(text, []);
+  const n = await createNote({ ownerId: DAN, subjectId, title, sourceType: "typed", rawText: text, keywords, vector, ocrFailed: false });
+  await updateGraphForNote(n, await findNotesByOwner(DAN));
+}
+const danNotes = await findNotesByOwner(DAN);
+await saveEmbedding({ noteId: "f".repeat(24), ownerId: DAN, model: "test-double", textHash: "x", vector: [1] }); // of a deleted note
+process.env.SEMANTIC_MODEL = "";
+setEmbedderForTests(standIn);
+const without = await relinkOwner(DAN, { dryRun: true, embedder: null });
+check("without the model, a relink makes no embeddings", without.embeddingModel === null && without.embedded === 0 && without.embeddingsMade === 0);
+const embDry = await relinkOwner(DAN, { dryRun: true });
+check("a dry run with the model says what it would make, and saves nothing",
+  embDry.embeddingModel === "test-double" && embDry.embeddingsMade === 3 && embDry.embeddingsDropped === 1 &&
+  (await findEmbeddingsByOwner(DAN)).length === 1, JSON.stringify({ made: embDry.embeddingsMade, dropped: embDry.embeddingsDropped }));
+const embRun = await relinkOwner(DAN);
+const danEmb = await findEmbeddingsByOwner(DAN);
+check("a relink makes and stores every topic's embedding, and drops a deleted note's",
+  embRun.embedded === 3 && danEmb.length === 3 && danEmb.every((r) => danNotes.some((n) => String(n._id) === r.noteId)));
+const danLink = (await edges().find({})).find((e) => e.edgeType === "cross-subject" &&
+  [e.sourceNoteId, e.targetNoteId].map(String).sort().join() === danNotes.filter((n) => n.title !== "Routing").map((n) => String(n._id)).sort().join());
+check("  ...and links the notes on one idea by meaning", danLink?.meaning >= 0.68, JSON.stringify(danLink && { meaning: danLink.meaning }));
+const embAgain = await relinkOwner(DAN);
+check("running it again makes no embedding and changes nothing",
+  embAgain.embeddingsMade === 0 && embAgain.embeddingsDropped === 0 && embAgain.updated === 0 && embAgain.added === 0 && embAgain.dropped === 0);
+setEmbedderForTests(null);
+process.env.SEMANTIC_MODEL = "off";
+const noModelNow = await relinkOwner(DAN, { dryRun: true });
+check("stored embeddings are used even when the model is not there", noModelNow.embedded === 3 && noModelNow.updated === 0 && noModelNow.dropped === 0);
 
 console.log("\n=== Command line (scripts/relink.mjs) ===");
 const cwd = fileURLToPath(new URL("..", import.meta.url));
