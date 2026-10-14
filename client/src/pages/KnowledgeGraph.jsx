@@ -487,6 +487,16 @@ export default function KnowledgeGraph() {
     nodeById.has(id) ? matches(nodeById.get(id)) : externalById.has(id) && matchesExternal(externalById.get(id));
   const visibleCount = graph ? graph.nodes.filter(matches).length : 0;
 
+  // In the Clusters view, selecting a topic in a cluster fades everything
+  // outside that cluster, so a cluster without a colour of its own (the
+  // "Other clusters" grey) can still be told apart from its neighbours. Its
+  // own links to other notes stay drawn, as for any selected note.
+  const focusCluster = byCluster && selected && !selectedIsDoc && selectedCluster?.size > 1 ? selectedCluster.id : null;
+  const inFocus = (n) => focusCluster === null || n?.clusterId === focusCluster;
+  const crossLinked = new Set(crossNeighbours.map((nb) => nb.id));
+  const outOfFocus = (e, touches) =>
+    focusCluster !== null && !touches && !(inFocus(nodeById.get(String(e.source))) && inFocus(nodeById.get(String(e.target))));
+
   const tone = (deg) =>
     deg >= 3 ? { dot: "bg-tertiary", label: "Hub" } : deg >= 1 ? { dot: "bg-secondary", label: "Linked" } : { dot: "bg-primary-container", label: "Isolated" };
 
@@ -527,460 +537,470 @@ export default function KnowledgeGraph() {
   }
 
   return (
-    <div className="relative w-full h-[calc(100vh-6.5rem)] rounded-xl overflow-hidden bg-surface-container-low shadow-inner flex select-none">
-      <div
-        ref={viewportRef}
-        data-testid="graph-viewport"
-        className="relative flex-1 h-full overflow-hidden cursor-grab active:cursor-grabbing touch-none"
-        onPointerDown={(e) => onPointerDown(e, null)}
-        onPointerMove={onPointerMove}
-        onPointerUp={onPointerUp}
-        onPointerCancel={onPointerUp}
-      >
+    // Side by side from 768px; below that the inspector sits under the graph.
+    // The canvas and the controls over it share one box, so the controls are
+    // placed against the canvas, never against the inspector.
+    <div className="relative w-full h-[calc(100vh-6.5rem)] rounded-xl overflow-hidden bg-surface-container-low shadow-inner flex flex-col md:flex-row select-none">
+      <div className="relative flex-1 min-h-0 min-w-0">
         <div
-          className="absolute inset-0 opacity-25 pointer-events-none"
-          style={{ backgroundImage: "radial-gradient(var(--c-outline) 0.75px, transparent 0.75px)", backgroundSize: "24px 24px" }}
-        ></div>
-
-        <div
-          className={`absolute left-0 top-0 origin-top-left ${map ? "hidden" : ""}`}
-          style={{ width: W, height: H, transform: `translate(${view.x}px, ${view.y}px) scale(${view.k})` }}
+          ref={viewportRef}
+          data-testid="graph-viewport"
+          className="relative w-full h-full overflow-hidden cursor-grab active:cursor-grabbing touch-none"
+          onPointerDown={(e) => onPointerDown(e, null)}
+          onPointerMove={onPointerMove}
+          onPointerUp={onPointerUp}
+          onPointerCancel={onPointerUp}
         >
-          <svg className="absolute left-0 top-0 pointer-events-none" width={W} height={H} style={{ overflow: "visible" }}>
-            {containsEdges.map((e) => {
-              const a = pos.get(String(e.source));
-              const b = pos.get(String(e.target));
-              if (!a || !b) return null;
-              const touches = String(e.source) === selectedId || String(e.target) === selectedId;
-              const dim = q || filter !== "all" ? !(matches(nodeById.get(String(e.source))) && matches(nodeById.get(String(e.target)))) : false;
-              return (
-                <line
-                  key={e.id}
-                  data-edge-type="contains"
-                  x1={a[0]}
-                  y1={a[1]}
-                  x2={b[0]}
-                  y2={b[1]}
-                  style={{
-                    stroke: "var(--c-primary)",
-                    opacity: `calc(var(--graph-subtopic-line-boost) * ${dim ? 0.05 : touches ? 0.55 : 0.18})`,
-                  }}
-                  strokeWidth={touches ? 2 : 1.25}
-                />
-              );
-            })}
-            {graph.edges.map((e) => {
-              const a = pos.get(String(e.source));
-              const b = pos.get(String(e.target));
-              if (!a || !b) return null;
-              const touches = String(e.source) === selectedId || String(e.target) === selectedId;
-              const dim = q || filter !== "all" ? !(matches(nodeById.get(String(e.source))) && matches(nodeById.get(String(e.target)))) : false;
-              return (
-                <line
-                  key={e.id}
-                  x1={a[0]}
-                  y1={a[1]}
-                  x2={b[0]}
-                  y2={b[1]}
-                  style={{ stroke: touches ? "var(--c-secondary)" : "var(--c-graph-link)" }}
-                  strokeWidth={1 + (e.weight || 0.3) * 4}
-                  strokeDasharray={touches ? undefined : "4 3"}
-                  opacity={dim ? 0.08 : touches ? 0.85 : 0.4}
-                />
-              );
-            })}
-            {crossEdges.map((e) => {
-              const a = pos.get(String(e.source));
-              const b = pos.get(String(e.target));
-              if (!a || !b) return null;
-              const touches = String(e.source) === selectedId || String(e.target) === selectedId;
-              const dim = q || filter !== "all" ? !(matchesAny(String(e.source)) && matchesAny(String(e.target))) : false;
-              // Amber marks other subjects, except in the Clusters view, where
-              // colour means cluster only and these go neutral.
-              return (
-                <line
-                  key={e.id}
-                  data-testid="graph-cross-edge"
-                  x1={a[0]}
-                  y1={a[1]}
-                  x2={b[0]}
-                  y2={b[1]}
-                  style={{ stroke: byCluster ? "var(--c-graph-link)" : "var(--c-tertiary)" }}
-                  strokeWidth={1 + (e.weight || 0.3) * 4}
-                  strokeDasharray="1 6"
-                  strokeLinecap="round"
-                  opacity={dim ? 0.08 : touches ? 0.9 : 0.55}
-                />
-              );
-            })}
-          </svg>
-
-          {graph.nodes.map((n) => {
-            const id = String(n.id);
-            const p = pos.get(id);
-            if (!p) return null;
-            const deg = degree.get(id) || 0;
-            const t = tone(deg);
-            const cluster = clusterById.get(n.clusterId);
-            const inCluster = cluster?.size > 1;
-            const sw = byCluster ? clusterSwatch(cluster) : { className: t.dot };
-            const isSel = id === selectedId;
-            const dim = !matches(n);
-            if (isSplitParent(n)) {
-              return (
-                <div
-                  key={id}
-                  data-testid="graph-node"
-                  data-node-kind="document"
-                  onPointerDown={(e) => onPointerDown(e, id)}
-                  title={`${n.title} — ${n.childCount} subtopics`}
-                  className={`absolute -translate-x-1/2 -translate-y-1/2 flex items-center gap-space-xs py-space-xs px-space-md rounded-lg cursor-pointer shadow-lg transition-transform hover:scale-105 ${
-                    isSel ? "z-20 bg-primary text-on-primary ring-2 ring-secondary" : "z-10 bg-primary-container text-on-primary-container"
-                  }`}
-                  style={{ left: p[0], top: p[1], opacity: dim ? 0.3 : 1 }}
-                >
-                  <Icon name="description" className="text-base" />
-                  <span className="font-ui-title text-ui-title font-semibold whitespace-nowrap">{clip(n.title, 28)}</span>
-                  <span className="font-label-sm text-label-sm px-1.5 py-0.5 rounded bg-surface/30">{n.childCount}</span>
-                </div>
-              );
-            }
-            return isSel ? (
-              <div
-                key={id}
-                data-testid="graph-node"
-                onPointerDown={(e) => onPointerDown(e, id)}
-                className="absolute z-20 -translate-x-1/2 -translate-y-1/2 flex items-center gap-space-sm p-space-sm pl-space-md pr-space-lg rounded-full bg-surface shadow-xl cursor-pointer ring-2 ring-secondary"
-                style={{ left: p[0], top: p[1], opacity: dim ? 0.3 : 1 }}
-              >
-                <div className="relative flex items-center justify-center w-8 h-8 rounded-full bg-secondary text-on-secondary">
-                  <Icon name="hub" className="text-sm" />
-                  <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-tertiary-fixed border-2 border-surface"></span>
-                </div>
-                <div className="flex flex-col text-left">
-                  <span className="font-ui-title text-ui-title text-on-surface leading-tight whitespace-nowrap">{clip(n.title, 30)}</span>
-                  <span className="font-label-sm text-label-sm text-secondary uppercase tracking-widest">
-                    Selected •{" "}
-                    {byCluster ? (inCluster ? `Cluster ${cluster.id}` : "No cluster") : `${deg} ${deg === 1 ? "link" : "links"}`}
-                  </span>
-                </div>
-              </div>
-            ) : (
-              <div
-                key={id}
-                data-testid="graph-node"
-                onPointerDown={(e) => onPointerDown(e, id)}
-                title={n.title}
-                className="absolute z-10 -translate-x-1/2 -translate-y-1/2 flex items-center gap-space-xs p-space-xs px-space-md rounded-full bg-surface-container shadow-md cursor-pointer hover:scale-105 transition-transform"
-                style={{ left: p[0], top: p[1], opacity: dim ? 0.3 : 1 }}
-              >
-                <div data-testid="graph-node-dot" className={`w-3.5 h-3.5 rounded-full ${sw.className || ""}`} style={sw.style}></div>
-                <span className="font-ui-body text-ui-body text-on-surface whitespace-nowrap">{clip(n.title, 26)}</span>
-                {/* In the Clusters view the badge names the cluster, so identity never rests on colour alone. */}
-                {(!byCluster || inCluster) && (
-                  <span className="font-label-sm text-label-sm text-on-surface-variant bg-surface-container-high px-1.5 py-0.5 rounded">
-                    {byCluster ? `C${cluster.id}` : deg}
-                  </span>
-                )}
-              </div>
-            );
-          })}
-
-          {drawnExternal.map((n) => {
-            const id = String(n.id);
-            const p = pos.get(id);
-            if (!p) return null;
-            const isSel = id === selectedId;
-            const dim = !matchesExternal(n);
-            return (
-              <div
-                key={id}
-                data-testid="graph-external-node"
-                onPointerDown={(e) => onPointerDown(e, id)}
-                title={`${n.subjectName}: ${n.title}`}
-                className={`absolute -translate-x-1/2 -translate-y-1/2 flex flex-col items-start px-space-md py-space-xs rounded-2xl border border-dashed cursor-pointer transition-transform ${
-                  isSel
-                    ? `z-20 bg-surface ring-2 shadow-xl ${byCluster ? "border-outline ring-outline" : "border-tertiary ring-tertiary"}`
-                    : "z-10 bg-surface-container-lowest/80 border-outline shadow-sm hover:scale-105"
-                }`}
-                style={{ left: p[0], top: p[1], opacity: dim ? 0.3 : isSel ? 1 : 0.85 }}
-              >
-                <span
-                  className={`font-label-sm text-label-sm uppercase tracking-widest leading-tight whitespace-nowrap ${
-                    byCluster ? "text-on-surface-variant" : "text-tertiary"
-                  }`}
-                >
-                  {clip(n.subjectName, 24)}
-                </span>
-                <span className="font-ui-body text-ui-body text-on-surface-variant leading-tight whitespace-nowrap">{clip(n.title, 26)}</span>
-              </div>
-            );
-          })}
-        </div>
-
-        {map && (
           <div
-            data-testid="keyword-map"
-            className="absolute left-0 top-0 origin-top-left"
+            className="absolute inset-0 opacity-25 pointer-events-none"
+            style={{ backgroundImage: "radial-gradient(var(--c-outline) 0.75px, transparent 0.75px)", backgroundSize: "24px 24px" }}
+          ></div>
+
+          <div
+            className={`absolute left-0 top-0 origin-top-left ${map ? "hidden" : ""}`}
             style={{ width: W, height: H, transform: `translate(${view.x}px, ${view.y}px) scale(${view.k})` }}
           >
             <svg className="absolute left-0 top-0 pointer-events-none" width={W} height={H} style={{ overflow: "visible" }}>
-              {mapKeywords.map((k) => {
-                const [x1, y1] = mapPos.get("root");
-                const [x2, y2] = mapPos.get(`kw:${k.keyword}`);
-                const open = k.keyword === map.keyword;
+              {containsEdges.map((e) => {
+                const a = pos.get(String(e.source));
+                const b = pos.get(String(e.target));
+                if (!a || !b) return null;
+                const touches = String(e.source) === selectedId || String(e.target) === selectedId;
+                const dim =
+                  (q || filter !== "all" ? !(matches(nodeById.get(String(e.source))) && matches(nodeById.get(String(e.target)))) : false) ||
+                  outOfFocus(e, touches);
                 return (
                   <line
-                    key={k.keyword}
-                    x1={x1}
-                    y1={y1}
-                    x2={x2}
-                    y2={y2}
-                    style={{ stroke: open ? "var(--c-secondary)" : "var(--c-graph-link)" }}
-                    strokeWidth={open ? 2.5 : 1 + k.weight * 2}
-                    opacity={open ? 0.9 : 0.5}
+                    key={e.id}
+                    data-edge-type="contains"
+                    x1={a[0]}
+                    y1={a[1]}
+                    x2={b[0]}
+                    y2={b[1]}
+                    style={{
+                      stroke: "var(--c-primary)",
+                      opacity: `calc(var(--graph-subtopic-line-boost) * ${dim ? 0.05 : touches ? 0.55 : 0.18})`,
+                    }}
+                    strokeWidth={touches ? 2 : 1.25}
                   />
                 );
               })}
-              {mapOpen?.subKeywords.map((s) => {
-                const [x1, y1] = mapPos.get(`kw:${mapOpen.keyword}`);
-                const [x2, y2] = mapPos.get(`sub:${s}`);
+              {graph.edges.map((e) => {
+                const a = pos.get(String(e.source));
+                const b = pos.get(String(e.target));
+                if (!a || !b) return null;
+                const touches = String(e.source) === selectedId || String(e.target) === selectedId;
+                const dim =
+                  (q || filter !== "all" ? !(matches(nodeById.get(String(e.source))) && matches(nodeById.get(String(e.target)))) : false) ||
+                  outOfFocus(e, touches);
                 return (
-                  <line key={s} x1={x1} y1={y1} x2={x2} y2={y2} style={{ stroke: "var(--c-secondary)" }} strokeWidth={1.5} strokeDasharray="4 3" opacity={0.7} />
+                  <line
+                    key={e.id}
+                    x1={a[0]}
+                    y1={a[1]}
+                    x2={b[0]}
+                    y2={b[1]}
+                    style={{ stroke: touches ? "var(--c-secondary)" : "var(--c-graph-link)" }}
+                    strokeWidth={1 + (e.weight || 0.3) * 4}
+                    strokeDasharray={touches ? undefined : "4 3"}
+                    opacity={dim ? 0.08 : touches ? 0.85 : 0.4}
+                  />
+                );
+              })}
+              {crossEdges.map((e) => {
+                const a = pos.get(String(e.source));
+                const b = pos.get(String(e.target));
+                if (!a || !b) return null;
+                const touches = String(e.source) === selectedId || String(e.target) === selectedId;
+                const dim = (q || filter !== "all" ? !(matchesAny(String(e.source)) && matchesAny(String(e.target))) : false) || (focusCluster !== null && !touches);
+                // Amber marks other subjects, except in the Clusters view, where
+                // colour means cluster only and these go neutral.
+                return (
+                  <line
+                    key={e.id}
+                    data-testid="graph-cross-edge"
+                    x1={a[0]}
+                    y1={a[1]}
+                    x2={b[0]}
+                    y2={b[1]}
+                    style={{ stroke: byCluster ? "var(--c-graph-link)" : "var(--c-tertiary)" }}
+                    strokeWidth={1 + (e.weight || 0.3) * 4}
+                    strokeDasharray="1 6"
+                    strokeLinecap="round"
+                    opacity={dim ? 0.08 : touches ? 0.9 : 0.55}
+                  />
                 );
               })}
             </svg>
 
-            <div
-              className="absolute z-20 -translate-x-1/2 -translate-y-1/2 flex items-center gap-space-sm p-space-sm pl-space-md pr-space-lg rounded-full bg-surface shadow-xl ring-2 ring-secondary"
-              style={{ left: mapPos.get("root")[0], top: mapPos.get("root")[1] }}
-            >
-              <div className="flex items-center justify-center w-8 h-8 rounded-full bg-secondary text-on-secondary">
-                <Icon name="account_tree" className="text-sm" />
-              </div>
-              <div className="flex flex-col text-left">
-                <span className="font-ui-title text-ui-title text-on-surface leading-tight whitespace-nowrap">{clip(mapTitle, 30)}</span>
-                <span className="font-label-sm text-label-sm text-secondary uppercase tracking-widest">
-                  {map.data ? `${mapKeywords.length} keywords` : "Loading…"}
-                </span>
-              </div>
-            </div>
-
-            {mapKeywords.map((k) => {
-              const [x, y] = mapPos.get(`kw:${k.keyword}`);
-              const open = k.keyword === map.keyword;
-              // Stopping pointerdown makes a click open the keyword instead of starting a pan.
-              return (
-                <button
-                  type="button"
-                  key={k.keyword}
-                  data-testid="map-keyword"
-                  aria-pressed={open}
-                  onPointerDown={(e) => e.stopPropagation()}
-                  onClick={() => toggleMapKeyword(k.keyword)}
-                  title={`${k.keyword}: click to see the words it appears with`}
-                  className={`absolute z-10 -translate-x-1/2 -translate-y-1/2 px-space-md py-space-xs rounded-full shadow-md whitespace-nowrap font-ui-body transition-colors ${
-                    open ? "bg-secondary text-on-secondary" : "bg-surface-container text-on-surface hover:bg-surface-container-high"
-                  }`}
-                  style={{ left: x, top: y, fontSize: 12 + Math.round(k.weight * 6) }}
-                >
-                  {k.keyword}
-                </button>
-              );
-            })}
-
-            {mapOpen?.subKeywords.map((s) => {
-              const [x, y] = mapPos.get(`sub:${s}`);
-              return (
-                <span
-                  key={s}
-                  data-testid="map-related"
-                  className="absolute z-10 -translate-x-1/2 -translate-y-1/2 px-space-sm py-0.5 rounded-full border border-dashed border-secondary bg-surface-container-lowest text-on-surface-variant font-label-md text-label-md whitespace-nowrap"
-                  style={{ left: x, top: y }}
-                >
-                  {s}
-                </span>
-              );
-            })}
-          </div>
-        )}
-      </div>
-
-      <header className="absolute top-space-base left-space-base right-[23.5rem] z-30 flex items-center justify-between gap-space-md pointer-events-none flex-wrap">
-        {map ? (
-          <div className="flex items-center gap-space-sm p-space-xs pr-space-md bg-surface/90 backdrop-blur-md rounded-full shadow-lg pointer-events-auto">
-            <button type="button" onClick={closeMap} className={`${chip(false)} flex items-center gap-1`}>
-              <Icon name="arrow_back" className="text-sm" />
-              Back to graph
-            </button>
-            <span className="font-ui-body text-ui-body text-on-surface-variant whitespace-nowrap">Keyword map · {clip(mapTitle, 40)}</span>
-          </div>
-        ) : (
-          <div className="flex items-center gap-space-sm p-space-xs pl-space-md pr-space-xs bg-surface/90 backdrop-blur-md rounded-full shadow-lg pointer-events-auto">
-            <Icon name="search" className="text-primary text-base" />
-            <input
-              aria-label="Search notes"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              className="w-48 bg-transparent font-ui-body text-ui-body text-on-surface placeholder:text-outline focus:outline-none"
-              placeholder="Search a note or keyword..."
-              type="text"
-            />
-            <div className="h-4 w-px bg-outline-variant/60 mx-space-xs"></div>
-            <div className="flex items-center gap-space-2xs">
-              <button type="button" className={chip(filter === "all")} onClick={() => setFilter("all")}>All Notes</button>
-              <button type="button" className={chip(filter === "linked")} onClick={() => setFilter("linked")}>Linked</button>
-              <button type="button" className={chip(filter === "isolated")} onClick={() => setFilter("isolated")}>Isolated</button>
-            </div>
-          </div>
-        )}
-        <div className="flex items-center gap-space-2xs p-space-xs bg-surface/90 backdrop-blur-md rounded-full shadow-lg pointer-events-auto">
-          <button type="button" onClick={() => zoomBy(1.2)} title="Zoom in" aria-label="Zoom in" className="w-8 h-8 flex items-center justify-center rounded-full hover:bg-surface-container text-on-surface transition-colors">
-            <Icon name="add" className="text-base" />
-          </button>
-          <button type="button" onClick={() => zoomBy(1 / 1.2)} title="Zoom out" aria-label="Zoom out" className="w-8 h-8 flex items-center justify-center rounded-full hover:bg-surface-container text-on-surface transition-colors">
-            <Icon name="remove" className="text-base" />
-          </button>
-          <div className="h-4 w-px bg-outline-variant/60"></div>
-          <button type="button" onClick={fit} title="Reset viewport" className="px-space-sm h-8 flex items-center justify-center rounded-full hover:bg-surface-container text-on-surface font-label-md text-label-md transition-colors">
-            Reset
-          </button>
-        </div>
-      </header>
-
-      {notice && (
-        <div
-          role="status"
-          data-testid="graph-notice"
-          className="absolute top-[4.25rem] left-space-base z-30 flex items-center gap-space-sm px-space-md py-space-xs rounded-full bg-inverse-surface text-inverse-on-surface shadow-lg pointer-events-auto"
-        >
-          <Icon name={notice.error ? "error" : notice.undoEdgeId ? "link_off" : "link"} className="text-sm" />
-          <span className="font-ui-body text-ui-body">{notice.text}</span>
-          {notice.undoEdgeId && (
-            <button
-              type="button"
-              disabled={pending === notice.undoEdgeId}
-              onClick={() => correctLink(notice.undoEdgeId, "restore", notice.label)}
-              className="font-label-md text-label-md font-semibold text-inverse-primary hover:underline disabled:opacity-40"
-            >
-              Undo
-            </button>
-          )}
-        </div>
-      )}
-
-      {map && (
-        <div
-          data-testid="map-legend"
-          className="absolute bottom-space-base left-space-base right-[23.5rem] z-30 w-fit flex items-center gap-x-space-md gap-y-space-xs p-space-xs px-space-md bg-surface/90 backdrop-blur-md rounded-xl shadow-md pointer-events-auto flex-wrap"
-        >
-          <div className="flex items-center gap-space-xs">
-            <span className="w-2.5 h-2.5 rounded-full bg-secondary"></span>
-            <span className="font-label-sm text-label-sm text-on-surface-variant">Keyword (bigger = matters more to this note)</span>
-          </div>
-          <div className="flex items-center gap-space-xs">
-            <span className="w-2.5 h-2.5 rounded-full border border-dashed border-secondary"></span>
-            <span className="font-label-sm text-label-sm text-on-surface-variant">Appears with</span>
-          </div>
-          <div className="h-3 w-px bg-outline-variant/60"></div>
-          <span className="font-label-sm text-label-sm text-secondary font-semibold">Click a keyword to open it</span>
-        </div>
-      )}
-
-      {!map && (
-        <div
-          data-testid="graph-legend"
-          className="absolute bottom-space-base left-space-base right-[23.5rem] z-30 w-fit flex items-center gap-x-space-md gap-y-space-xs p-space-xs px-space-md bg-surface/90 backdrop-blur-md rounded-xl shadow-md pointer-events-auto flex-wrap"
-        >
-          {hasClusters && (
-            <>
-              <div className="flex items-center gap-space-2xs" role="group" aria-label="Colour notes by">
-                <span className="font-label-sm text-label-sm text-on-surface-variant mr-space-2xs">Colour by</span>
-                <button type="button" aria-pressed={!byCluster} className={chip(!byCluster)} onClick={() => setColorBy("links")}>
-                  Links
-                </button>
-                <button type="button" aria-pressed={byCluster} className={chip(byCluster)} onClick={() => setColorBy("clusters")}>
-                  Clusters
-                </button>
-              </div>
-              <div className="h-3 w-px bg-outline-variant/60"></div>
-            </>
-          )}
-          {byCluster ? (
-            <>
-              {realClusters.slice(0, CLUSTER_COLOURS).map((c) => {
-                const sw = clusterSwatch(c);
+            {graph.nodes.map((n) => {
+              const id = String(n.id);
+              const p = pos.get(id);
+              if (!p) return null;
+              const deg = degree.get(id) || 0;
+              const t = tone(deg);
+              const cluster = clusterById.get(n.clusterId);
+              const inCluster = cluster?.size > 1;
+              const sw = byCluster ? clusterSwatch(cluster) : { className: t.dot };
+              const isSel = id === selectedId;
+              const dim = !matches(n) || !inFocus(n);
+              if (isSplitParent(n)) {
                 return (
-                  <div key={c.id} className="flex items-center gap-space-xs" data-testid="legend-cluster">
-                    <span className={`w-2.5 h-2.5 rounded-full ${sw.className || ""}`} style={sw.style}></span>
-                    <span className="font-label-sm text-label-sm text-on-surface-variant">
-                      C{c.id}
-                      {c.keywords.length ? ` · ${clip(c.keywords.slice(0, 2).join(", "), 24)}` : ""} ({c.size})
-                    </span>
+                  <div
+                    key={id}
+                    data-testid="graph-node"
+                    data-node-kind="document"
+                    onPointerDown={(e) => onPointerDown(e, id)}
+                    title={`${n.title} — ${n.childCount} subtopics`}
+                    className={`absolute -translate-x-1/2 -translate-y-1/2 flex items-center gap-space-xs py-space-xs px-space-md rounded-lg cursor-pointer shadow-lg transition-transform hover:scale-105 ${
+                      isSel ? "z-20 bg-primary text-on-primary ring-2 ring-secondary" : "z-10 bg-primary-container text-on-primary-container"
+                    }`}
+                    style={{ left: p[0], top: p[1], opacity: dim ? 0.3 : 1 }}
+                  >
+                    <Icon name="description" className="text-base" />
+                    <span className="font-ui-title text-ui-title font-semibold whitespace-nowrap">{clip(n.title, 28)}</span>
+                    <span className="font-label-sm text-label-sm px-1.5 py-0.5 rounded bg-surface/30">{n.childCount}</span>
                   </div>
                 );
-              })}
-              {realClusters.length > CLUSTER_COLOURS && (
-                <div className="flex items-center gap-space-xs">
-                  <span className="w-2.5 h-2.5 rounded-full bg-outline"></span>
-                  <span className="font-label-sm text-label-sm text-on-surface-variant">
-                    Other clusters ({realClusters.length - CLUSTER_COLOURS})
+              }
+              return isSel ? (
+                <div
+                  key={id}
+                  data-testid="graph-node"
+                  onPointerDown={(e) => onPointerDown(e, id)}
+                  className="absolute z-20 -translate-x-1/2 -translate-y-1/2 flex items-center gap-space-sm p-space-sm pl-space-md pr-space-lg rounded-full bg-surface shadow-xl cursor-pointer ring-2 ring-secondary"
+                  style={{ left: p[0], top: p[1], opacity: dim ? 0.3 : 1 }}
+                >
+                  <div className="relative flex items-center justify-center w-8 h-8 rounded-full bg-secondary text-on-secondary">
+                    <Icon name="hub" className="text-sm" />
+                    <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-tertiary-fixed border-2 border-surface"></span>
+                  </div>
+                  <div className="flex flex-col text-left">
+                    <span className="font-ui-title text-ui-title text-on-surface leading-tight whitespace-nowrap">{clip(n.title, 30)}</span>
+                    <span className="font-label-sm text-label-sm text-secondary uppercase tracking-widest">
+                      Selected •{" "}
+                      {byCluster ? (inCluster ? `Cluster ${cluster.id}` : "No cluster") : `${deg} ${deg === 1 ? "link" : "links"}`}
+                    </span>
+                  </div>
+                </div>
+              ) : (
+                <div
+                  key={id}
+                  data-testid="graph-node"
+                  onPointerDown={(e) => onPointerDown(e, id)}
+                  title={n.title}
+                  className="absolute z-10 -translate-x-1/2 -translate-y-1/2 flex items-center gap-space-xs p-space-xs px-space-md rounded-full bg-surface-container shadow-md cursor-pointer hover:scale-105 transition-transform"
+                  style={{ left: p[0], top: p[1], opacity: dim ? 0.3 : 1 }}
+                >
+                  <div data-testid="graph-node-dot" className={`w-3.5 h-3.5 rounded-full ${sw.className || ""}`} style={sw.style}></div>
+                  <span className="font-ui-body text-ui-body text-on-surface whitespace-nowrap">{clip(n.title, 26)}</span>
+                  {/* In the Clusters view the badge names the cluster, so identity never rests on colour alone. */}
+                  {(!byCluster || inCluster) && (
+                    <span className="font-label-sm text-label-sm text-on-surface-variant bg-surface-container-high px-1.5 py-0.5 rounded">
+                      {byCluster ? `C${cluster.id}` : deg}
+                    </span>
+                  )}
+                </div>
+              );
+            })}
+
+            {drawnExternal.map((n) => {
+              const id = String(n.id);
+              const p = pos.get(id);
+              if (!p) return null;
+              const isSel = id === selectedId;
+              const dim = !matchesExternal(n) || (focusCluster !== null && !crossLinked.has(id));
+              return (
+                <div
+                  key={id}
+                  data-testid="graph-external-node"
+                  onPointerDown={(e) => onPointerDown(e, id)}
+                  title={`${n.subjectName}: ${n.title}`}
+                  className={`absolute -translate-x-1/2 -translate-y-1/2 flex flex-col items-start px-space-md py-space-xs rounded-2xl border border-dashed cursor-pointer transition-transform ${
+                    isSel
+                      ? `z-20 bg-surface ring-2 shadow-xl ${byCluster ? "border-outline ring-outline" : "border-tertiary ring-tertiary"}`
+                      : "z-10 bg-surface-container-lowest/80 border-outline shadow-sm hover:scale-105"
+                  }`}
+                  style={{ left: p[0], top: p[1], opacity: dim ? 0.3 : isSel ? 1 : 0.85 }}
+                >
+                  <span
+                    className={`font-label-sm text-label-sm uppercase tracking-widest leading-tight whitespace-nowrap ${
+                      byCluster ? "text-on-surface-variant" : "text-tertiary"
+                    }`}
+                  >
+                    {clip(n.subjectName, 24)}
+                  </span>
+                  <span className="font-ui-body text-ui-body text-on-surface-variant leading-tight whitespace-nowrap">{clip(n.title, 26)}</span>
+                </div>
+              );
+            })}
+          </div>
+
+          {map && (
+            <div
+              data-testid="keyword-map"
+              className="absolute left-0 top-0 origin-top-left"
+              style={{ width: W, height: H, transform: `translate(${view.x}px, ${view.y}px) scale(${view.k})` }}
+            >
+              <svg className="absolute left-0 top-0 pointer-events-none" width={W} height={H} style={{ overflow: "visible" }}>
+                {mapKeywords.map((k) => {
+                  const [x1, y1] = mapPos.get("root");
+                  const [x2, y2] = mapPos.get(`kw:${k.keyword}`);
+                  const open = k.keyword === map.keyword;
+                  return (
+                    <line
+                      key={k.keyword}
+                      x1={x1}
+                      y1={y1}
+                      x2={x2}
+                      y2={y2}
+                      style={{ stroke: open ? "var(--c-secondary)" : "var(--c-graph-link)" }}
+                      strokeWidth={open ? 2.5 : 1 + k.weight * 2}
+                      opacity={open ? 0.9 : 0.5}
+                    />
+                  );
+                })}
+                {mapOpen?.subKeywords.map((s) => {
+                  const [x1, y1] = mapPos.get(`kw:${mapOpen.keyword}`);
+                  const [x2, y2] = mapPos.get(`sub:${s}`);
+                  return (
+                    <line key={s} x1={x1} y1={y1} x2={x2} y2={y2} style={{ stroke: "var(--c-secondary)" }} strokeWidth={1.5} strokeDasharray="4 3" opacity={0.7} />
+                  );
+                })}
+              </svg>
+
+              <div
+                className="absolute z-20 -translate-x-1/2 -translate-y-1/2 flex items-center gap-space-sm p-space-sm pl-space-md pr-space-lg rounded-full bg-surface shadow-xl ring-2 ring-secondary"
+                style={{ left: mapPos.get("root")[0], top: mapPos.get("root")[1] }}
+              >
+                <div className="flex items-center justify-center w-8 h-8 rounded-full bg-secondary text-on-secondary">
+                  <Icon name="account_tree" className="text-sm" />
+                </div>
+                <div className="flex flex-col text-left">
+                  <span className="font-ui-title text-ui-title text-on-surface leading-tight whitespace-nowrap">{clip(mapTitle, 30)}</span>
+                  <span className="font-label-sm text-label-sm text-secondary uppercase tracking-widest">
+                    {map.data ? `${mapKeywords.length} keywords` : "Loading…"}
                   </span>
                 </div>
-              )}
-              {graph.clusters.some((c) => c.size === 1) && (
-                <div className="flex items-center gap-space-xs">
-                  <span className="w-2.5 h-2.5 rounded-full border-2 border-outline"></span>
-                  <span className="font-label-sm text-label-sm text-on-surface-variant">No cluster</span>
-                </div>
-              )}
-            </>
-          ) : (
-            <>
-              <div className="flex items-center gap-space-xs">
-                <span className="w-2.5 h-2.5 rounded-full bg-tertiary"></span>
-                <span className="font-label-sm text-label-sm text-on-surface-variant">Hub (3+ links)</span>
               </div>
-              <div className="flex items-center gap-space-xs">
-                <span className="w-2.5 h-2.5 rounded-full bg-secondary"></span>
-                <span className="font-label-sm text-label-sm text-on-surface-variant">Linked (1–2)</span>
-              </div>
-              <div className="flex items-center gap-space-xs">
-                <span className="w-2.5 h-2.5 rounded-full bg-primary-container"></span>
-                <span className="font-label-sm text-label-sm text-on-surface-variant">Isolated</span>
-              </div>
-            </>
-          )}
-          {docCount > 0 && (
-            <div className="flex items-center gap-space-xs">
-              <span className="w-3 h-2.5 rounded-sm bg-primary-container"></span>
-              <span className="font-label-sm text-label-sm text-on-surface-variant">Document → subtopics</span>
-            </div>
-          )}
-          {drawnExternal.length > 0 && (
-            <div className="flex items-center gap-space-xs">
-              <span className={`w-2.5 h-2.5 rounded-full border border-dashed ${byCluster ? "border-outline" : "border-tertiary"}`}></span>
-              <span className="font-label-sm text-label-sm text-on-surface-variant">Other subject</span>
-            </div>
-          )}
-          <div className="h-3 w-px bg-outline-variant/60"></div>
-          <span className="font-label-sm text-label-sm text-secondary font-semibold">
-            {visibleCount === graph.nodes.length
-              ? `${
-                  docCount
-                    ? `${topicCount} ${topicCount === 1 ? "topic" : "topics"} in ${docCount} ${docCount === 1 ? "document" : "documents"} + notes`
-                    : `${graph.nodes.length} ${graph.nodes.length === 1 ? "note" : "notes"}`
-                } · ${
-                  byCluster
-                    ? `${realClusters.length} ${realClusters.length === 1 ? "cluster" : "clusters"}`
-                    : `${graph.edges.length} ${graph.edges.length === 1 ? "connection" : "connections"}`
-                }${crossEdges.length ? ` · ${crossEdges.length} across subjects` : ""}`
-              : `${visibleCount} of ${graph.nodes.length} notes shown`}
-          </span>
-        </div>
-      )}
 
-      <aside className="w-[340px] h-full bg-surface shadow-2xl flex flex-col justify-between overflow-y-auto z-40 shrink-0" id="inspector-panel">
+              {mapKeywords.map((k) => {
+                const [x, y] = mapPos.get(`kw:${k.keyword}`);
+                const open = k.keyword === map.keyword;
+                // Stopping pointerdown makes a click open the keyword instead of starting a pan.
+                return (
+                  <button
+                    type="button"
+                    key={k.keyword}
+                    data-testid="map-keyword"
+                    aria-pressed={open}
+                    onPointerDown={(e) => e.stopPropagation()}
+                    onClick={() => toggleMapKeyword(k.keyword)}
+                    title={`${k.keyword}: click to see the words it appears with`}
+                    className={`absolute z-10 -translate-x-1/2 -translate-y-1/2 px-space-md py-space-xs rounded-full shadow-md whitespace-nowrap font-ui-body transition-colors ${
+                      open ? "bg-secondary text-on-secondary" : "bg-surface-container text-on-surface hover:bg-surface-container-high"
+                    }`}
+                    style={{ left: x, top: y, fontSize: 12 + Math.round(k.weight * 6) }}
+                  >
+                    {k.keyword}
+                  </button>
+                );
+              })}
+
+              {mapOpen?.subKeywords.map((s) => {
+                const [x, y] = mapPos.get(`sub:${s}`);
+                return (
+                  <span
+                    key={s}
+                    data-testid="map-related"
+                    className="absolute z-10 -translate-x-1/2 -translate-y-1/2 px-space-sm py-0.5 rounded-full border border-dashed border-secondary bg-surface-container-lowest text-on-surface-variant font-label-md text-label-md whitespace-nowrap"
+                    style={{ left: x, top: y }}
+                  >
+                    {s}
+                  </span>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        <header className="absolute top-space-base left-space-base right-space-base z-30 flex items-center justify-between gap-space-sm md:gap-space-md pointer-events-none flex-wrap">
+          {map ? (
+            <div className="flex items-center gap-space-sm p-space-xs pr-space-md bg-surface/90 backdrop-blur-md rounded-full shadow-lg pointer-events-auto min-w-0 max-w-full">
+              <button type="button" onClick={closeMap} className={`${chip(false)} flex items-center gap-1 shrink-0`}>
+                <Icon name="arrow_back" className="text-sm" />
+                Back to graph
+              </button>
+              <span className="font-ui-body text-ui-body text-on-surface-variant whitespace-nowrap truncate min-w-0">Keyword map · {clip(mapTitle, 40)}</span>
+            </div>
+          ) : (
+            <div className="flex flex-wrap items-center gap-space-sm p-space-xs pl-space-md pr-space-xs bg-surface/90 backdrop-blur-md rounded-3xl md:rounded-full shadow-lg pointer-events-auto">
+              <Icon name="search" className="text-primary text-base" />
+              <input
+                aria-label="Search notes"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                className="w-36 md:w-48 bg-transparent font-ui-body text-ui-body text-on-surface placeholder:text-outline focus:outline-none"
+                placeholder="Search a note or keyword..."
+                type="text"
+              />
+              <div className="hidden md:block h-4 w-px bg-outline-variant/60 mx-space-xs"></div>
+              <div className="flex items-center gap-space-2xs">
+                <button type="button" className={chip(filter === "all")} onClick={() => setFilter("all")}>All Notes</button>
+                <button type="button" className={chip(filter === "linked")} onClick={() => setFilter("linked")}>Linked</button>
+                <button type="button" className={chip(filter === "isolated")} onClick={() => setFilter("isolated")}>Isolated</button>
+              </div>
+            </div>
+          )}
+          <div className="flex items-center gap-space-2xs p-space-xs bg-surface/90 backdrop-blur-md rounded-full shadow-lg pointer-events-auto">
+            <button type="button" onClick={() => zoomBy(1.2)} title="Zoom in" aria-label="Zoom in" className="w-8 h-8 flex items-center justify-center rounded-full hover:bg-surface-container text-on-surface transition-colors">
+              <Icon name="add" className="text-base" />
+            </button>
+            <button type="button" onClick={() => zoomBy(1 / 1.2)} title="Zoom out" aria-label="Zoom out" className="w-8 h-8 flex items-center justify-center rounded-full hover:bg-surface-container text-on-surface transition-colors">
+              <Icon name="remove" className="text-base" />
+            </button>
+            <div className="h-4 w-px bg-outline-variant/60"></div>
+            <button type="button" onClick={fit} title="Reset viewport" className="px-space-sm h-8 flex items-center justify-center rounded-full hover:bg-surface-container text-on-surface font-label-md text-label-md transition-colors">
+              Reset
+            </button>
+          </div>
+        </header>
+
+        {notice && (
+          <div
+            role="status"
+            data-testid="graph-notice"
+            className="absolute top-[4.25rem] left-space-base z-30 flex items-center gap-space-sm px-space-md py-space-xs rounded-full bg-inverse-surface text-inverse-on-surface shadow-lg pointer-events-auto max-md:top-auto max-md:bottom-[3.75rem] max-md:right-space-base max-md:rounded-2xl"
+          >
+            <Icon name={notice.error ? "error" : notice.undoEdgeId ? "link_off" : "link"} className="text-sm" />
+            <span className="font-ui-body text-ui-body">{notice.text}</span>
+            {notice.undoEdgeId && (
+              <button
+                type="button"
+                disabled={pending === notice.undoEdgeId}
+                onClick={() => correctLink(notice.undoEdgeId, "restore", notice.label)}
+                className="font-label-md text-label-md font-semibold text-inverse-primary hover:underline disabled:opacity-40"
+              >
+                Undo
+              </button>
+            )}
+          </div>
+        )}
+
+        {map && (
+          <div
+            data-testid="map-legend"
+            className="absolute bottom-space-base left-space-base right-space-base z-30 w-fit flex items-center gap-x-space-md gap-y-space-xs p-space-xs px-space-md bg-surface/90 backdrop-blur-md rounded-xl shadow-md pointer-events-auto flex-wrap max-md:w-auto max-md:flex-nowrap max-md:overflow-x-auto max-md:[&>*]:shrink-0"
+          >
+            <div className="flex items-center gap-space-xs">
+              <span className="w-2.5 h-2.5 rounded-full bg-secondary"></span>
+              <span className="font-label-sm text-label-sm text-on-surface-variant">Keyword (bigger = matters more to this note)</span>
+            </div>
+            <div className="flex items-center gap-space-xs">
+              <span className="w-2.5 h-2.5 rounded-full border border-dashed border-secondary"></span>
+              <span className="font-label-sm text-label-sm text-on-surface-variant">Appears with</span>
+            </div>
+            <div className="h-3 w-px bg-outline-variant/60"></div>
+            <span className="font-label-sm text-label-sm text-secondary font-semibold">Click a keyword to open it</span>
+          </div>
+        )}
+
+        {!map && (
+          <div
+            data-testid="graph-legend"
+            className="absolute bottom-space-base left-space-base right-space-base z-30 w-fit flex items-center gap-x-space-md gap-y-space-xs p-space-xs px-space-md bg-surface/90 backdrop-blur-md rounded-xl shadow-md pointer-events-auto flex-wrap max-md:w-auto max-md:flex-nowrap max-md:overflow-x-auto max-md:[&>*]:shrink-0"
+          >
+            {hasClusters && (
+              <>
+                <div className="flex items-center gap-space-2xs" role="group" aria-label="Colour notes by">
+                  <span className="font-label-sm text-label-sm text-on-surface-variant mr-space-2xs">Colour by</span>
+                  <button type="button" aria-pressed={!byCluster} className={chip(!byCluster)} onClick={() => setColorBy("links")}>
+                    Links
+                  </button>
+                  <button type="button" aria-pressed={byCluster} className={chip(byCluster)} onClick={() => setColorBy("clusters")}>
+                    Clusters
+                  </button>
+                </div>
+                <div className="h-3 w-px bg-outline-variant/60"></div>
+              </>
+            )}
+            {byCluster ? (
+              <>
+                {realClusters.slice(0, CLUSTER_COLOURS).map((c) => {
+                  const sw = clusterSwatch(c);
+                  return (
+                    <div key={c.id} className="flex items-center gap-space-xs" data-testid="legend-cluster">
+                      <span className={`w-2.5 h-2.5 rounded-full ${sw.className || ""}`} style={sw.style}></span>
+                      <span className="font-label-sm text-label-sm text-on-surface-variant">
+                        C{c.id}
+                        {c.keywords.length ? ` · ${clip(c.keywords.slice(0, 2).join(", "), 24)}` : ""} ({c.size})
+                      </span>
+                    </div>
+                  );
+                })}
+                {realClusters.length > CLUSTER_COLOURS && (
+                  <div className="flex items-center gap-space-xs">
+                    <span className="w-2.5 h-2.5 rounded-full bg-outline"></span>
+                    <span className="font-label-sm text-label-sm text-on-surface-variant">
+                      Other clusters ({realClusters.length - CLUSTER_COLOURS})
+                    </span>
+                  </div>
+                )}
+                {graph.clusters.some((c) => c.size === 1) && (
+                  <div className="flex items-center gap-space-xs">
+                    <span className="w-2.5 h-2.5 rounded-full border-2 border-outline"></span>
+                    <span className="font-label-sm text-label-sm text-on-surface-variant">No cluster</span>
+                  </div>
+                )}
+              </>
+            ) : (
+              <>
+                <div className="flex items-center gap-space-xs">
+                  <span className="w-2.5 h-2.5 rounded-full bg-tertiary"></span>
+                  <span className="font-label-sm text-label-sm text-on-surface-variant">Hub (3+ links)</span>
+                </div>
+                <div className="flex items-center gap-space-xs">
+                  <span className="w-2.5 h-2.5 rounded-full bg-secondary"></span>
+                  <span className="font-label-sm text-label-sm text-on-surface-variant">Linked (1–2)</span>
+                </div>
+                <div className="flex items-center gap-space-xs">
+                  <span className="w-2.5 h-2.5 rounded-full bg-primary-container"></span>
+                  <span className="font-label-sm text-label-sm text-on-surface-variant">Isolated</span>
+                </div>
+              </>
+            )}
+            {docCount > 0 && (
+              <div className="flex items-center gap-space-xs">
+                <span className="w-3 h-2.5 rounded-sm bg-primary-container"></span>
+                <span className="font-label-sm text-label-sm text-on-surface-variant">Document → subtopics</span>
+              </div>
+            )}
+            {drawnExternal.length > 0 && (
+              <div className="flex items-center gap-space-xs">
+                <span className={`w-2.5 h-2.5 rounded-full border border-dashed ${byCluster ? "border-outline" : "border-tertiary"}`}></span>
+                <span className="font-label-sm text-label-sm text-on-surface-variant">Other subject</span>
+              </div>
+            )}
+            <div className="h-3 w-px bg-outline-variant/60"></div>
+            <span className="font-label-sm text-label-sm text-secondary font-semibold">
+              {visibleCount === graph.nodes.length
+                ? `${
+                    docCount
+                      ? `${topicCount} ${topicCount === 1 ? "topic" : "topics"} in ${docCount} ${docCount === 1 ? "document" : "documents"} + notes`
+                      : `${graph.nodes.length} ${graph.nodes.length === 1 ? "note" : "notes"}`
+                  } · ${
+                    byCluster
+                      ? `${realClusters.length} ${realClusters.length === 1 ? "cluster" : "clusters"}`
+                      : `${graph.edges.length} ${graph.edges.length === 1 ? "connection" : "connections"}`
+                  }${crossEdges.length ? ` · ${crossEdges.length} across subjects` : ""}`
+                : `${visibleCount} of ${graph.nodes.length} notes shown`}
+            </span>
+          </div>
+        )}
+
+      </div>
+
+      <aside className="w-full h-[45%] md:w-[340px] md:h-full bg-surface shadow-2xl flex flex-col justify-between overflow-y-auto z-40 shrink-0" id="inspector-panel">
         {map && (
           <div className="flex flex-col p-space-lg gap-space-md" data-testid="map-inspector">
             <div className="flex items-center justify-between">
@@ -1163,7 +1183,7 @@ export default function KnowledgeGraph() {
                         ? "No links to other notes in this subject yet"
                         : selectedCluster.keywords.length
                           ? `Shared ideas: ${selectedCluster.keywords.join(", ")}`
-                          : "Connected through a chain of related notes"}
+                          : "Linked more to each other than to the rest of this subject"}
                     </span>
                   </div>
                 </div>

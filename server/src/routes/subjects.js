@@ -59,8 +59,9 @@ export async function loadOwnedSubject(req, res, next) {
 //   crossSubjectEdges - links from this subject's notes to other subjects'
 //   rejectedEdges     - ambiguous cross-subject pairs that were not linked
 //   externalNodes     - the other subjects' notes those two lists point at
-//   clusters          - groups of linked notes within this subject (each node
-//                       also gets a clusterId); see clusterNotes()
+//   clusters          - groups of notes within this subject that are linked
+//                       to each other more than to the rest of it (Louvain;
+//                       each node also gets a clusterId); see clusterNotes()
 //   removedEdges      - links the student marked as wrong, same- or cross-
 //                       subject, so the page can offer to restore them
 //   containsEdges     - document -> subtopic links for long uploads that were
