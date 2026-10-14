@@ -91,8 +91,12 @@ member's section of §3.
    where both notes have an embedding; same-subject links stay on TF-IDF (see
    §3). Live only once Member 4 installs the model there, or runs the relink
    where it is installed.
-6. Louvain/Leiden clustering, and feeding link corrections back into the
-   linking rule (backlog item 2).
+6. ~~Louvain clustering~~ Done (`graph/louvain-clusters`): a cluster is now
+   a group of notes linked to each other more than to the rest of the
+   subject, not every chain of links (see §3). Next: feeding link
+   corrections back into the linking rule (`graph/correction-feedback`),
+   once Member 4 has counted the corrections on a backup
+   (`scripts/correction-counts.mjs`).
 
 **Member 3: tests and feedback**
 1. Merge `test-generation-and-feedback` without its `KnowledgeGraph.jsx`
@@ -612,6 +616,10 @@ post-Saturday backlog, item 1 below):
    rest share an "Other clusters" grey; every node also shows its cluster
    number (C1, C2...) so colour is never the only cue.
 
+   **Replaced (14 Oct)** by Louvain community detection: connected
+   components put a whole subject in one cluster as soon as one chain of
+   links ran through it. Next-phase item 6 below.
+
 Post-Saturday backlog (do not start before the two items above are done and
 tested):
 1. **Real sentence embeddings** — swap the TF-IDF vector for a MiniLM
@@ -623,6 +631,12 @@ tested):
 
    **Status (27 Sep): not started.** Needs the relink tool (next-phase
    item 2) first, or every existing link stays on the old TF-IDF vectors.
+
+   **Status (14 Oct): done** as next-phase item 5 (`graph/minilm-embeddings`),
+   not as a swap of the vector: TF-IDF stays, and the embedding is stored
+   beside it. Cross-subject pairs whose notes both have one are linked by
+   meaning; same-subject links stay on TF-IDF, where the link evaluation
+   found embeddings no better.
 2. **Real Louvain/Leiden community detection** in place of the
    connected-components stand-in above, and the **correction loop**: a
    `POST /api/graph/edges/:id/correct` route (already named in the
@@ -643,6 +657,10 @@ tested):
 
    **Status (27 Sep): unchanged.** The correction route is done. Louvain/Leiden
    and feeding corrections back into the linking rule are not started.
+
+   **Status (14 Oct): Louvain done** (next-phase item 6,
+   `graph/louvain-clusters`). Feeding corrections back into the linking rule
+   is next; it starts by counting the corrections there are.
 
 **Also built (ported from the Digital Second Brain prototype):** a per-note
 keyword map, `GET /api/graph/notes/:noteId/keyword-map`
@@ -838,8 +856,50 @@ and were not clearly better (item 4).
    - **Tests**: `graphEngine.test.mjs` and `relink.test.mjs` run with a
      stand-in model (no download in CI) and with the model switched off
      otherwise, so local runs match CI.
-6. **Louvain/Leiden clustering and the correction feedback loop** (backlog
-   item 2).
+6. **Louvain clustering and the correction feedback loop** (backlog item 2).
+   - ~~**Louvain clustering**~~ **Done** (14 Oct, `graph/louvain-clusters`).
+     Evidence: `docs/LINK_EVALUATION.md`, "Clusters".
+     - **The problem.** Connected components put a whole subject in one
+       cluster as soon as one chain of links ran through it: on the link
+       evaluation's notes, all 32 DEDV topics and 51 of ML's 54.
+     - **What changed.** `clusterNotes()` (`graphEngine.js`) runs Louvain
+       community detection on a subject's same-subject links, weighted by
+       their similarity, at resolution 1 (`CLUSTER_RESOLUTION`), then splits
+       any cluster its own links do not hold together. Written in-house (no
+       new dependency) and without randomness: the same notes and links give
+       the same clusters and numbers, whatever order they arrive in. The
+       output, the numbering (largest first, oldest note on ties) and the
+       labels are unchanged; `method: "components"` keeps the old grouping
+       for the evaluation. Still computed on every graph request: about 1.6
+       ms on the largest subject (7.8 ms before - labelling one 51-topic
+       cluster was the slow part).
+     - **Measured first.** `npm run eval:links -- clusters <run> [<check
+       run>] --notes <notes>` reads the link evaluation's rated same-subject
+       pairs as "should these two share a cluster?". The decision rule was
+       written down before the first run (`PLAN.md` beside the results).
+       Louvain at resolution 1: F1 0.55 against 0.32 (precision 73% against
+       20%), a gain that held across resamples and on run 2's pairs and
+       rater. On the evaluation notes DEDV has 4 clusters (10 9 7 6), ML 8
+       and Networks 5.
+     - **Graph page.** In the Clusters view, selecting a topic fades every
+       note outside its cluster, so clusters sharing the "Other clusters"
+       grey can be told apart. Still three colours. A cluster with no shared
+       keywords says "Linked more to each other than to the rest of this
+       subject".
+     - **After deploy**: nothing to run - clusters are never stored.
+     - **Tests**: `graphEngine.test.mjs` 79 checks (two groups joined by one
+       weak link stay apart; the order of notes and links changes nothing on
+       60 random graphs; a cluster its own links do not hold together is
+       split), `linkEvaluation.test.mjs` 108.
+   - **Feeding corrections back into the linking rule**: next
+     (`graph/correction-feedback`). First, the evidence: Member 4 runs
+     `node scripts/correction-counts.mjs` (in `server/`) after
+     `npm run db:backup`. It reads only the backup's `graph_edges.json` and
+     `subjects.json` and prints numbers only: links removed by type,
+     similarity band, shared words and student. Two limits whatever the
+     counts: a restore clears the record, and students cannot add a link the
+     graph missed, so corrections only ever show wrong links, never missing
+     ones.
 7. Optional, from the Digital Second Brain prototype: search across all
    subjects. The graph page's search only covers the current subject.
 

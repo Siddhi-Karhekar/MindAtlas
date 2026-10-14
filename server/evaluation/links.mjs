@@ -44,6 +44,16 @@
 // worked out now, beside the run's own. Writes into <output folder>/recomputed
 // (or --out): the files score writes, comparison.md and key.recomputed.csv.
 //
+// clusters <run> [<check run>] --notes <notes folder>: how well the graph's
+// clusters (graphEngine.js, clusterNotes) group each subject's topics, with
+// connected components and with Louvain at several resolutions. The run's
+// rated same-subject pairs are the labels: related pairs should share a
+// cluster, the others should not. Chooses by the rule in
+// docs/LINK_EVALUATION.md ("Clusters") and checks the choice on the second
+// run. Writes into <run>/clusters (or --out): results.md, results.json,
+// grid.csv and clusters.csv (every topic's cluster under each setting).
+// Options: --resolutions 0.25,0.5,... and the score options.
+//
 // --similarity embedding (generate): measure sentence-embedding similarity
 // instead of TF-IDF - the cosine of two topics' MiniLM vectors
 // (services/noteEmbedding.js; needs `npm run semantic:install`). Pairs are
@@ -57,8 +67,12 @@ import { fileURLToPath } from "node:url";
 import { getEmbedder, semanticStatus } from "../src/services/embeddings.js";
 import { decideEdge, LINK_RULE } from "../src/services/graphEngine.js";
 import {
-  bootstrapDraws, CHOICE, choosePairs, chooseSetting, excerpt, gridSearch, isLink, loadTopics,
-  gridFor, pairLabels, raterAgreement, readRelated, rescorePairs, SAMPLING, scorePairs, stratumOf, stratumWeights, todaysEdge,
+  checkOnRun, chooseClustering, clusterAll, clusterSettings, describeSubject, pairedDifference, ratedSameSubjectPairs,
+  subjectGraphs, timeClustering, together,
+} from "./lib/clusters.js";
+import {
+  bootstrapDraws, CHOICE, choosePairs, chooseSetting, excerpt, f1Bootstrap, gridSearch, isLink, loadTopics,
+  gridFor, pairLabels, raterAgreement, readRelated, rescorePairs, ruleMetrics, SAMPLING, scorePairs, stratumOf, stratumWeights, todaysEdge,
 } from "./lib/links.js";
 import { parseCsv, seededRandom, shuffled, toCsv } from "./lib/stats.js";
 
@@ -123,6 +137,12 @@ function parseArgs(argv) {
     } else if (a === "--recompute") {
       opts.recompute = rest[++i];
       if (!opts.recompute || opts.recompute.startsWith("--")) throw new Error("--recompute needs the notes folder");
+    } else if (a === "--notes") {
+      opts.notes = rest[++i];
+      if (!opts.notes || opts.notes.startsWith("--")) throw new Error("--notes needs the notes folder");
+    } else if (a === "--resolutions") {
+      opts.resolutions = String(rest[++i] || "").split(",").map(Number);
+      if (!opts.resolutions.length || opts.resolutions.some((r) => !Number.isFinite(r) || r <= 0)) throw new Error("--resolutions needs numbers above 0, separated by commas");
     }
     else if (numbers[a]) {
       const v = Number(rest[++i]);
@@ -646,6 +666,214 @@ export function comparisonMarkdown(c) {
   return lines.join("\n");
 }
 
+// ---------------------------------------------------------------------------
+// Clusters: the same ratings, read as "should these two share a cluster?"
+// ---------------------------------------------------------------------------
+
+const CLUSTER_GRID_COLUMNS = ["run", "setting", "method", "resolution", "together", "linked", "linked_related", "related", "precision", "precision_ci", "recall", "recall_ci", "f1", "f1_ci", "f1_vs_components", "f1_vs_components_ci"];
+
+/**
+ * `clusters <run> [<check run>] --notes <notes folder>`: every setting of
+ * clusterSettings() on the notes the runs were generated from, with today's
+ * same-subject links, scored on each run's rated same-subject pairs (a pair
+ * counts as "linked" when its topics share a cluster, so precision, recall,
+ * F1 and their intervals are the link evaluation's, with its sampling
+ * weights). The setting is chosen on the first run (lib/clusters.js,
+ * chooseClustering) and checked on the second (checkOnRun). Also describes
+ * every subject under every setting (describeSubject) and times
+ * clusterNotes() on the largest subject.
+ *
+ * Writes into <run>/clusters (or `out`): results.md, results.json, grid.csv
+ * and clusters.csv. Exported for the tests, which may pass `topics` instead
+ * of a folder. Returns the results object.
+ */
+export async function runClusterEvaluation(options) {
+  const opts = { ...CHOICE, reps: 1000, timingReps: 1000, write: true, quiet: false, ...options };
+  const [dir, checkDir] = opts.inputs ?? [opts.dir, opts.checkDir];
+  if (!dir) throw new Error("give the output folder that eval:links generate wrote");
+  let topics = opts.topics;
+  let skipped = [];
+  if (!topics) {
+    if (!opts.notes) throw new Error("give the notes folder the runs were generated from, after --notes");
+    ({ topics, problems: skipped } = await loadTopics(opts.notes));
+  }
+  const graphs = subjectGraphs(topics, scorePairs(topics));
+  const settings = clusterSettings(opts.resolutions);
+  const clusterings = settings.map((setting) => ({ setting, ...clusterAll(graphs, setting) }));
+  const pairsTogether = (c) => c.bySubject.reduce((s, b) => s + b.clusters.reduce((t, k) => t + (k.size * (k.size - 1)) / 2, 0), 0);
+
+  const scoreOn = (runDir) => {
+    const run = readRun(runDir);
+    const { raters, answers } = readRatings(runDir, null, new Set(run.key.map((k) => k.pair)));
+    const { items: rated, unmatched } = ratedSameSubjectPairs(run.keyRows, pairLabels(answers), topics);
+    const { weightOf, unrepresented } = stratumWeights(rated, run.manifest.strata);
+    const items = rated.map((it) => ({ ...it, sampleWeight: weightOf.get(it.stratum) }));
+    const draws = bootstrapDraws(items, seededRandom(opts.seed ?? 1), opts.reps);
+    const rows = clusterings.map((c) => {
+      const decide = together(c.clusterOf);
+      const spread = f1Bootstrap(items, draws, null, decide);
+      const row = { setting: c.setting.name, method: c.setting.method, resolution: c.setting.resolution, together: pairsTogether(c), ...ruleMetrics(items, null, decide), f1_ci: spread.ci };
+      Object.defineProperty(row, "f1Draws", { value: spread.draws, enumerable: false });
+      return row;
+    });
+    for (const row of rows) row.f1_vs_components = pairedDifference(row, rows[0]);
+    return {
+      dir: path.basename(path.resolve(runDir)),
+      raters,
+      labelled: items.length,
+      related: items.filter((it) => it.label).length,
+      unmatched,
+      unrepresented: unrepresented.filter((s) => s.startsWith("same")),
+      rows,
+      items,
+    };
+  };
+
+  const primary = scoreOn(dir);
+  const choice = chooseClustering(primary.rows, primary.rows[0], opts);
+  const check = checkDir ? scoreOn(checkDir) : null;
+  let decision = { keep: choice.keep, setting: choice.row?.setting ?? "components", reason: choice.reason, checked: null };
+  if (check && !choice.keep) {
+    const chosen = check.rows.find((r) => r.setting === choice.row.setting);
+    const passes = checkOnRun(chosen, check.rows[0], opts);
+    decision.checked = { passes, chosen_f1: chosen.f1, components_f1: check.rows[0].f1, difference: chosen.f1_vs_components };
+    if (!passes) {
+      decision = { ...decision, keep: true, setting: "components", reason: `${choice.row.setting} was chosen on ${primary.dir}, but on ${check.dir} its F1 (${chosen.f1}) is clearly below connected components' (${check.rows[0].f1})` };
+    }
+  }
+
+  // the rated pairs the first run's choice places differently from today
+  const topicOf = new Map(topics.map((t) => [String(t._id), t]));
+  const linked = new Set(graphs.flatMap((g) => g.edges.map((e) => `${e.sourceNoteId}|${e.targetNoteId}`)));
+  const isLinked = (it) => linked.has(`${it.a}|${it.b}`) || linked.has(`${it.b}|${it.a}`);
+  const byName = new Map(clusterings.map((c) => [c.setting.name, c]));
+  const [nowTogether, choiceTogether] = [together(byName.get("components").clusterOf), together(byName.get(choice.row?.setting ?? "components").clusterOf)];
+  const changed = primary.items
+    .filter((it) => nowTogether(it) !== choiceTogether(it))
+    .map((it) => ({
+      pair: it.pair,
+      a: `${topicOf.get(it.a).id} ${topicOf.get(it.a).label}`,
+      b: `${topicOf.get(it.b).id} ${topicOf.get(it.b).label}`,
+      subject: topicOf.get(it.a).subjectId,
+      linked: isLinked(it),
+      components: nowTogether(it) ? "together" : "apart",
+      chosen: choiceTogether(it) ? "together" : "apart",
+      raters_say: it.label ? "related" : "not related",
+    }));
+
+  const largest = graphs.reduce((a, g) => (g.notes.length > a.notes.length ? g : a));
+  const results = {
+    created: new Date().toISOString(),
+    commit: gitCommit(),
+    notes: { topics: topics.length, subjects: graphs.map((g) => ({ subject: g.subject, topics: g.notes.length, links: g.edges.length })), skipped },
+    settings: settings.map((s) => s.name),
+    choice: { flat: opts.flat, min_linked: opts.minLinked, first_run: { setting: choice.row?.setting ?? null, keep: choice.keep, reason: choice.reason, band: choice.band.map((r) => r.setting) } },
+    decision,
+    runs: [primary, check].filter(Boolean).map(({ items: _items, ...run }) => run),
+    changed,
+    subjects: graphs.map((g) => ({ subject: g.subject, notes: g.notes.length, links: g.edges.length, settings: settings.map((s) => describeSubject(g, s)) })),
+    timing: {
+      subject: largest.subject,
+      notes: largest.notes.length,
+      links: largest.edges.length,
+      reps: opts.timingReps,
+      by_setting: settings.map((s) => ({ setting: s.name, ...timeClustering(largest, s, opts.timingReps) })),
+    },
+  };
+
+  if (opts.write) {
+    const outDir = opts.out || path.join(dir, "clusters");
+    fs.mkdirSync(outDir, { recursive: true });
+    fs.writeFileSync(path.join(outDir, "results.json"), JSON.stringify(results, null, 2));
+    fs.writeFileSync(path.join(outDir, "results.md"), clustersMarkdown(results));
+    const gridRows = results.runs.flatMap((run) =>
+      run.rows.map((r) => ({
+        run: run.dir,
+        ...r,
+        resolution: r.resolution ?? "",
+        precision_ci: r.precision_ci?.join("-") ?? "",
+        recall_ci: r.recall_ci?.join("-") ?? "",
+        f1_ci: r.f1_ci?.join("-") ?? "",
+        f1_vs_components: r.f1_vs_components?.change ?? "",
+        f1_vs_components_ci: r.f1_vs_components?.ci.join(" to ") ?? "",
+      }))
+    );
+    fs.writeFileSync(path.join(outDir, "grid.csv"), toCsv(gridRows, CLUSTER_GRID_COLUMNS));
+    const columns = ["subject", "topic", "ref", "title", "file", "section", ...settings.map((s) => s.name)];
+    const rows = topics.map((t) => ({
+      subject: t.subjectId, topic: t.id, ref: t.ref, title: t.label, file: t.file, section: t.section || "",
+      ...Object.fromEntries(clusterings.map((c) => [c.setting.name, (c.clusterOf.get(String(t._id)) || "").split("#").pop()])),
+    }));
+    fs.writeFileSync(path.join(outDir, "clusters.csv"), toCsv(rows, columns));
+  }
+  if (!opts.quiet) console.log(clustersMarkdown(results));
+  return results;
+}
+
+/** The cluster evaluation as tables for a report or a PR. */
+export function clustersMarkdown(r) {
+  const [first, check] = r.runs;
+  const d = r.decision;
+  const lines = [
+    "# Cluster evaluation",
+    "",
+    `Clusters of ${r.notes.topics} topics in ${r.notes.subjects.length} subjects, from today's same-subject links, at commit ${r.commit || "unknown"}. ` +
+      `Labels: the rated same-subject pairs of ${first.dir} (${first.labelled} labelled, ${first.related} related; rater${first.raters.length === 1 ? "" : "s"} ${first.raters.join(", ")})` +
+      (check ? `, checked on ${check.dir} (${check.labelled} labelled, ${check.related} related; ${check.raters.join(", ")})` : "") +
+      ". A rated pair counts as together when both topics are in one cluster.",
+    "",
+    "## Decision",
+    "",
+    d.keep ? `**Keep connected components.** ${d.reason}.` : `**Switch to ${d.setting}.** ${d.reason}.`,
+  ];
+  if (d.checked) {
+    const diff = d.checked.difference;
+    lines.push("", `Check on ${check.dir}: ${d.checked.passes ? "passes" : "fails"} - F1 ${f2(d.checked.chosen_f1)} against connected components' ${f2(d.checked.components_f1)}${diff ? `, difference ${signed(diff.change)} [${signed(diff.ci[0])} to ${signed(diff.ci[1])}]` : ""}.`);
+  } else if (!d.keep && !check) lines.push("", "Not checked on a second run.");
+  lines.push(
+    "",
+    `How it is chosen (PLAN.md): settings putting fewer than ${r.choice.min_linked} rated pairs together are not considered. A setting is as good as the best when, across the same resamples, its F1 minus the best's stays above -${r.choice.flat} at the 97.5th percentile. Connected components are kept if they are as good as the best; otherwise resolution 1 if it is, else the closest resolution to 1 that is. The choice must then not be clearly worse than connected components on the check run.`,
+  );
+  const runTable = (run) => {
+    const out = ["| Setting | Pairs together, all notes | Rated pairs together | Precision | Recall | F1 | F1 minus components |", "| --- | --- | --- | --- | --- | --- | --- |"];
+    for (const row of run.rows) {
+      const diff = row.f1_vs_components;
+      const mark = [row.setting === d.setting && !d.keep && "chosen", r.choice.first_run.band.includes(row.setting) && run === first && "as good as the best"].filter(Boolean).join(", ");
+      out.push(`| ${row.setting}${mark ? ` (${mark})` : ""} | ${row.together} | ${row.linked} | ${withCi(row.precision, row.precision_ci)} | ${withCi(row.recall, row.recall_ci)} | ${f1Cell(row)} | ${diff && row.setting !== "components" ? `${signed(diff.change)} [${signed(diff.ci[0])} to ${signed(diff.ci[1])}]` : "-"} |`);
+    }
+    if (run.unmatched.length) out.push("", `Rated pairs not found in the notes now: ${run.unmatched.join(", ")}.`);
+    if (run.unrepresented.length) out.push("", `Same-subject strata with no labelled pair (left out of the estimates): ${run.unrepresented.join("; ")}.`);
+    return out;
+  };
+  lines.push("", `## ${first.dir}`, "", ...runTable(first));
+  if (check) lines.push("", `## ${check.dir} (check)`, "", ...runTable(check));
+  lines.push("", "Precision and recall are estimates for all same-subject pairs, each rated pair counting for the pairs of its stratum. Brackets are 95% intervals (Wilson; for F1 and differences, 1000 resamples, paired).");
+
+  if (r.changed.length) {
+    lines.push("", `## Rated pairs of ${first.dir} placed differently from connected components`, "", "| Pair | Topic | Topic | Linked | Components | Choice | Raters |", "| --- | --- | --- | --- | --- | --- | --- |");
+    for (const c of r.changed) lines.push(`| ${c.pair} | ${c.a} | ${c.b} | ${c.linked ? "yes" : "no"} | ${c.components} | ${c.chosen} | ${c.raters_say} |`);
+  }
+
+  lines.push(
+    "",
+    "## By subject",
+    "",
+    "Clusters: of two notes or more. Removal: each link removed in turn, the share of the subject's note pairs that move between together and apart (mean / worst), and how often the coloured clusters (C1-C3) change. Reversed: pairs that move when the notes' order is reversed. Sections: adjusted Rand index against the documents' own sections (file and section group; 0 = no better than chance).",
+  );
+  for (const s of r.subjects) {
+    lines.push("", `### ${s.subject} (${s.notes} topics, ${s.links} links)`, "", "| Setting | Clusters | Alone | Sizes | Largest | Modularity | Removal: pairs moved | Removal: colours change | Reversed | Sections |", "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |");
+    for (const x of s.settings) {
+      const rm = x.removal;
+      lines.push(`| ${x.setting} | ${x.clusters} | ${x.alone} | ${x.sizes.join(" ") || "-"} | ${pct(x.largest_share)} | ${f2(x.modularity)} | ${rm ? `${pct(rm.mean)} / ${pct(rm.worst)}` : "-"} | ${rm ? pct(rm.coloured_changed) : "-"} | ${pct(x.reversed)} | ${f2(x.structure_ari)} |`);
+    }
+  }
+  lines.push("", `## Time per call (${r.timing.subject}: ${r.timing.notes} topics, ${r.timing.links} links; ${r.timing.reps} calls)`, "", "| Setting | Median ms | 95th percentile ms |", "| --- | --- | --- |");
+  for (const t of r.timing.by_setting) lines.push(`| ${t.setting} | ${t.median} | ${t.p95} |`);
+  if (r.notes.skipped.length) lines.push("", "Files skipped:", "", ...r.notes.skipped.map((p) => `- ${p}`));
+  lines.push("");
+  return lines.join("\n");
+}
+
 const GRID_COLUMNS = ["group", "similarity", "crossSimilarity", "crossMinShared", "links", "linked", "linked_related", "related", "precision", "precision_ci", "recall", "recall_ci", "f1", "f1_ci"];
 
 const pct = (x) => (x === null || x === undefined ? "-" : `${Math.round(x * 100)}%`);
@@ -739,18 +967,22 @@ const USAGE = [
   "usage: npm run eval:links -- generate <notes folder> [--out dir] [--seed 1] [--similarity tfidf|embedding] [--per-bin 10] [--cross-cap 150] [--zero-shared 20]",
   "       npm run eval:links -- score <output folder> [ratings files...] [--flat 0.02] [--min-linked 10] [--min-precision 0.5] [--reps 1000]",
   "       npm run eval:links -- score <output folder> --recompute <notes folder> [--out dir] [same options]",
+  "       npm run eval:links -- clusters <output folder> [<check output folder>] --notes <notes folder> [--out dir] [--resolutions 0.25,0.5,...] [--flat 0.02] [--min-linked 10] [--reps 1000]",
 ].join("\n");
 
 // run directly: `node evaluation/links.mjs ...`
 if (process.argv[1] && samePath(fileURLToPath(import.meta.url), path.resolve(process.argv[1]))) {
   try {
     const opts = parseArgs(process.argv.slice(2));
-    if (!["generate", "score"].includes(opts.command) || !opts.inputs.length) {
+    if (!["generate", "score", "clusters"].includes(opts.command) || !opts.inputs.length) {
       console.log(USAGE);
       process.exit(1);
     }
     if (opts.command === "generate") await runLinkGeneration(opts);
-    else if (opts.recompute) {
+    else if (opts.command === "clusters") {
+      await runClusterEvaluation(opts);
+      console.log(`Written to ${path.join(opts.out || path.join(opts.inputs[0], "clusters"), "results.md")}, results.json, grid.csv and clusters.csv`);
+    } else if (opts.recompute) {
       await runLinkRescoring(opts);
       const out = opts.out || path.join(opts.inputs[0], "recomputed");
       console.log(`Written to ${path.join(out, "comparison.md")}, results.md, results.json, grid.csv and key.recomputed.csv`);

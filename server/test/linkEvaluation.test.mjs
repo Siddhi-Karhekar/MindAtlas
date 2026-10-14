@@ -22,7 +22,8 @@ import {
   pairLabels, raterAgreement, readRelated, ruleMetrics, scorePairs, stratumOf, stratumWeights, todaysEdge, waterFill,
 } from "../evaluation/lib/links.js";
 import { embedNoteText } from "../src/services/noteEmbedding.js";
-import { comparisonMarkdown, HOW_TO_RATE, runLinkGeneration, runLinkRescoring, runLinkScoring } from "../evaluation/links.mjs";
+import { comparisonMarkdown, HOW_TO_RATE, runClusterEvaluation, runLinkGeneration, runLinkRescoring, runLinkScoring } from "../evaluation/links.mjs";
+import { adjustedRand, checkOnRun, chooseClustering, modularity, pairsMoved } from "../evaluation/lib/clusters.js";
 import { parseCsv, seededRandom, toCsv, wilson } from "../evaluation/lib/stats.js";
 
 let failures = 0;
@@ -299,6 +300,62 @@ check("a pair is decided on its features as they are now",
 check("  ...and a change in similarity is flagged: the notes are not the ones rated", rc.warnings.some((w) => w.startsWith("similarities differ")));
 check("the comparison counts shared keywords before and after", rc.sharing.rated.after[0] >= rc.sharing.rated.before[0] - gone.length && rc.links.after.cross >= 1);
 check("comparison.md has the tables", /## At today's rule[\s\S]*## Shared keywords across subjects[\s\S]*## Rated pairs decided differently/.test(comparisonMarkdown(rc)));
+
+console.log("\n=== Clusters (eval:links clusters) ===");
+const ids = ["a", "b", "c", "d"];
+const grouping = (entries) => new Map(entries);
+const ab_cd = grouping([["a", 1], ["b", 1], ["c", 2], ["d", 2]]);
+const abc_d = grouping([["a", 1], ["b", 1], ["c", 1], ["d", 2]]);
+// a-c, b-c and c-d change between together and apart
+check("pairs moved: none for the same grouping, and counted over all pairs", pairsMoved(ids, ab_cd, ab_cd) === 0 && pairsMoved(ids, ab_cd, abc_d) === 3 / 6);
+const single = grouping(ids.map((x) => [x, 1]));
+check("adjusted Rand: 1 for identical groupings, 0 against a single group, null when both are one",
+  adjustedRand(ids, ab_cd, ab_cd) === 1 && adjustedRand(ids, ab_cd, single) === 0 && adjustedRand(ids, single, single) === null);
+// two triangles joined by one link, each triangle a cluster: (6/7) - 2 * (7/14)^2
+const tri = [["a", "b"], ["b", "c"], ["a", "c"], ["d", "e"], ["e", "f"], ["d", "f"], ["c", "d"]].map(([s, t]) => ({ sourceNoteId: s, targetNoteId: t, weight: 1 }));
+const triangles = grouping(["a", "b", "c"].map((x) => [x, 1]).concat(["d", "e", "f"].map((x) => [x, 2])));
+check("modularity of two triangles joined by one link", Math.abs(modularity(tri, triangles) - (6 / 7 - 0.5)) < 1e-12 && modularity([], triangles) === null);
+
+const crow = (setting, f1, linked, draws) => Object.defineProperty(
+  { setting, method: setting === "components" ? "components" : "louvain", resolution: setting === "components" ? null : Number(setting.split(" ")[1]), f1, linked },
+  "f1Draws", { value: draws, enumerable: false });
+const comp = crow("components", 0.3, 50, [0.3, 0.31, 0.29, 0.3]);
+// 0.75 and 1 beat the best (1.5) in one resample each, so neither is clearly below it
+const r075 = crow("louvain 0.75", 0.5, 30, [0.5, 0.57, 0.49, 0.5]);
+const r1 = crow("louvain 1", 0.49, 25, [0.49, 0.58, 0.47, 0.5]);
+const r15 = crow("louvain 1.5", 0.55, 20, [0.55, 0.56, 0.54, 0.55]);
+const few = crow("louvain 3", 0.9, 5, [0.9, 0.9, 0.9, 0.9]);
+const picked = chooseClustering([comp, r075, r1, r15, few], comp);
+check("clusters: components clearly below the best -> resolution 1, when it is as good as the best",
+  !picked.keep && picked.row === r1 && picked.band.length === 3, picked.reason);
+check("  ...and a setting putting too few rated pairs together is not considered", !picked.band.includes(few));
+const r125 = crow("louvain 1.25", 0.5, 22, [0.5, 0.57, 0.5, 0.5]);
+const without1 = chooseClustering([comp, r075, crow("louvain 1", 0.3, 25, [0.3, 0.3, 0.3, 0.3]), r125, r15], comp);
+check("  ...else the resolution closest to 1 that is (tie: the lower)", without1.row === r075, without1.reason);
+const close = crow("components", 0.54, 50, [0.55, 0.56, 0.53, 0.55]);
+check("  ...and components as good as the best are kept", chooseClustering([close, r075, r1, r15], close).keep);
+check("the check on a second run: not clearly worse than components",
+  checkOnRun(r1, comp) && !checkOnRun(crow("louvain 1", 0.1, 20, [0.1, 0.1, 0.1, 0.1]), comp));
+
+const clusterRun = await runClusterEvaluation({ inputs: [run, run], notes: NOTES_DIR, quiet: true, reps: 100, timingReps: 5, minLinked: 1 });
+const [firstRun, checkRun] = clusterRun.runs;
+check("every setting is scored on both runs", clusterRun.settings.length === 10 && firstRun.rows.length === 10 && checkRun.rows.length === 10);
+// rater "one" answered every pair, so every same-subject pair has a label
+const sameRated = key.filter((k) => k.same_subject === "yes").length;
+check("the labels are the run's same-subject pairs, and only those", sameRated > 0 && firstRun.labelled === sameRated && firstRun.unmatched.length === 0,
+  `${firstRun.labelled} labelled of ${sameRated}`);
+check("connected components put every pair of a group together",
+  firstRun.rows[0].together === clusterRun.subjects.reduce((s, x) => s + x.settings[0].sizes.reduce((t, k) => t + (k * (k - 1)) / 2, 0), 0));
+check("a decision is made, and checked when it changes anything",
+  typeof clusterRun.decision.keep === "boolean" && (clusterRun.decision.keep || clusterRun.decision.checked !== null), JSON.stringify(clusterRun.decision));
+check("every subject is described under every setting",
+  clusterRun.subjects.every((s) => s.settings.length === 10 && s.settings.every((x) => x.alone + x.sizes.reduce((a, k) => a + k, 0) === s.notes)));
+const clusterDir = path.join(run, "clusters");
+check("results.md, results.json, grid.csv and clusters.csv are written",
+  ["results.md", "results.json", "grid.csv", "clusters.csv"].every((f) => fs.existsSync(path.join(clusterDir, f))) &&
+  fs.readFileSync(path.join(clusterDir, "results.md"), "utf8").includes("## Decision") &&
+  parseCsv(fs.readFileSync(path.join(clusterDir, "grid.csv"), "utf8")).length === 20 &&
+  parseCsv(fs.readFileSync(path.join(clusterDir, "clusters.csv"), "utf8")).length === reread.length);
 
 console.log("\n=== A run on sentence-embedding similarity ===");
 // A stand-in for the MiniLM model: a sentence's vector says which of these

@@ -48,6 +48,7 @@ export function collectSubjects(folder) {
  *   id     - T01, T02... in subject, file and section order (raters see it)
  *   ref    - "<subject>/<file>#<n>", the same topic on every run over the
  *            same files (#0 a whole file, #1... its subtopics)
+ *   section - the subtopic's section group (the heading above it), or null
  *   label  - the title a student sees: "Document › Subtopic" for a subtopic
  *   embedding - with an `embedder` (embeddings.js), the topic's meaning as
  *            one vector (noteEmbedding.js), for runs on sentence-embedding
@@ -83,6 +84,7 @@ export async function loadTopics(folder, { embedder = null } = {}) {
     ref: n.ref,
     subjectId: n.subjectId,
     file: n.file,
+    section: n.sectionGroup || null,
     label: n.label,
     text: n.rawText || "",
     ...terms.get(String(n._id)),
@@ -546,6 +548,24 @@ export function gridSearch({ items, population, draws, current = LINK_RULE, grid
 export const CHOICE = Object.freeze({ flat: 0.02, minLinked: 10, minPrecision: 0.5 });
 
 /**
+ * Whether `row`'s F1 is not clearly below `ref`'s: across the same bootstrap
+ * draws (f1Draws, from gridSearch or f1Bootstrap), row's F1 minus ref's stays
+ * at -`flat` or above at the 97.5th percentile. Paired, because both are
+ * scored on the same pairs. Rows without draws fall back to "no more than
+ * `flat` below".
+ */
+export function notClearlyBelow(row, ref, flat = CHOICE.flat) {
+  if (row.f1Draws && ref.f1Draws) {
+    const diffs = row.f1Draws
+      .map((x, i) => (x === null || ref.f1Draws[i] === null ? null : x - ref.f1Draws[i]))
+      .filter((d) => d !== null)
+      .sort((x, y) => x - y);
+    if (diffs.length) return diffs[Math.min(diffs.length - 1, Math.floor(0.975 * diffs.length))] >= -flat - 1e-9;
+  }
+  return row.f1 >= ref.f1 - flat - 1e-9;
+}
+
+/**
  * The setting to recommend from one group's grid rows:
  *   1. Only settings that link at least `minLinked` rated pairs count: a
  *      precision resting on fewer means little.
@@ -572,17 +592,7 @@ export function chooseSetting(rows, currentRow, options = {}) {
   }
   const bestRow = eligible.reduce((a, r) => (r.f1 > a.f1 ? r : a));
   const best = bestRow.f1;
-  const asGood = (r) => {
-    if (!r || r.f1 === null || r.linked < minLinked) return false;
-    if (r.f1Draws && bestRow.f1Draws) {
-      const diffs = r.f1Draws
-        .map((x, i) => (x === null || bestRow.f1Draws[i] === null ? null : x - bestRow.f1Draws[i]))
-        .filter((d) => d !== null)
-        .sort((x, y) => x - y);
-      if (diffs.length) return diffs[Math.min(diffs.length - 1, Math.floor(0.975 * diffs.length))] >= -flat - 1e-9;
-    }
-    return r.f1 >= best - flat - 1e-9;
-  };
+  const asGood = (r) => !!r && r.f1 !== null && r.linked >= minLinked && notClearlyBelow(r, bestRow, flat);
   const band = eligible.filter(asGood);
   if (asGood(currentRow)) {
     return { row: currentRow, keep: true, best, band, reason: `the current setting's F1 (${currentRow.f1}) is not clearly below the best (${best})` };

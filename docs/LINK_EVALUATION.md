@@ -14,7 +14,9 @@ same-subject threshold from 0.12 to 0.11 and kept the cross-subject rule.
 The same ratings were then scored again to try TextRank keywords, which were
 not kept: "Keywords and TextRank", below. A second run, sampled and rated on
 sentence-embedding similarity, made cross-subject links by meaning:
-"Sentence embeddings", below.
+"Sentence embeddings", below. Both runs' ratings were then read as labels for
+the graph's clusters, which moved from connected components to Louvain
+community detection: "Clusters", below.
 
 ## What is measured
 
@@ -439,6 +441,96 @@ default install, CI, the live site today) nothing changes at all - except that
 stored vectors are used wherever they exist, so a relink run where the model is
 installed gives existing notes their links by meaning.
 
+## Clusters (14 Oct 2026)
+
+Member 2's next-phase item 6: should the graph's clusters
+(`server/src/services/graphEngine.js`, `clusterNotes`) come from Louvain
+community detection instead of connected components? Connected components put
+a whole subject in one cluster as soon as one chain of links runs through it:
+on these notes, all 32 DEDV topics and 51 of ML's 54.
+
+No new ratings were needed. A rated same-subject pair is read as "should these
+two topics share a cluster?", and a clustering is scored like a linking rule:
+a pair counts as linked when its two topics are in one cluster. The weights,
+intervals and paired resamples are the link evaluation's.
+
+```
+npm run eval:links -- clusters D:\links-run1 D:\links-run2 --notes D:\eval-notes
+```
+
+It clusters the notes, with today's same-subject links, by connected
+components and by Louvain at resolutions 0.25-3 (`--resolutions`), scores
+each on the first run's rated same-subject pairs, chooses, and checks the
+choice on the second run. It writes into `<run>/clusters/` (or `--out`):
+`results.md`, `results.json`, `grid.csv` and `clusters.csv` (every topic's
+cluster under every setting). It also describes each subject under each
+setting: cluster sizes, modularity, how much one removed link moves, how much
+reversing the notes' order moves, agreement with the documents' own sections,
+and the time per call.
+
+**The choice**, written down before the first run (`PLAN.md` beside the
+results, with checksums of the ratings):
+
+1. Settings that put fewer than 10 rated pairs together are not considered.
+2. "As good as the best" is the paired test above (F1 minus the best F1 at
+   least -0.02 at the 97.5th percentile).
+3. If connected components are as good as the best, keep them.
+4. Otherwise resolution 1 (the standard definition of modularity) if it is
+   as good as the best; if not, the closest resolution to 1 that is. The
+   resolution is preferred, not tuned, because each run's labels are one AI
+   rater's and two subjects hold most of them (DEDV and ML: 111 of run 1's
+   123 rated same-subject pairs).
+5. On the second run, the choice must not be clearly worse than connected
+   components, by the same test.
+
+There is no 50% precision floor here: cluster precision counts every pair in
+a cluster, linked or not, so connected components score about the share of
+pairs that are related (20%), and a floor could block a clear improvement for
+an arbitrary reason.
+
+**Result: Louvain at resolution 1.**
+
+| Clustering | Rated pairs together | Precision | Recall | F1 |
+| --- | --- | --- | --- | --- |
+| Connected components (before) | 117 | 20% [10-36%] | 81% [56-94%] | 0.32 [0.22-0.42] |
+| Louvain 0.75 | 78 | 33% [15-58%] | 53% [30-75%] | 0.41 [0.27-0.59] |
+| **Louvain 1 (now)** | 67 | 73% [52-87%] | 43% [22-67%] | 0.55 [0.36-0.75] |
+| Louvain 1.5 | 61 | 78% [55-91%] | 39% [19-63%] | 0.52 [0.34-0.71] |
+
+- **Run 1** (123 rated same-subject pairs): resolution 1 against connected
+  components, F1 +0.23 [+0.03 to +0.44]. Every resolution from 0.75 to 3 was
+  as good as the best.
+- **Run 2** (63 pairs, another rater; the check): 0.64 against 0.36, +0.28
+  [+0.04 to +0.52]. Passes.
+- **Read the precision with care.** At resolution 1 against 0.75, most of the
+  difference in weighted precision on run 1 comes from four pairs below
+  similarity 0.05, each standing for about 81 pairs and all rated not
+  related, that 0.75 puts together and 1 does not. Unweighted, the share of
+  rated pairs put together that are related rises smoothly with the
+  resolution: 61% for connected components, 74% at 0.75, 81% at 1, 84% at
+  1.5. That Louvain does better holds; how much better at exactly 1 partly
+  rests on those four pairs.
+- **The clusters.** DEDV: 4 (10, 9, 7 and 6 topics: data pre-processing,
+  warehouse modelling and OLAP, the introductory topics, types of data). ML: 8, the largest 11 topics, one topic alone.
+  Networks: 5, with 4 topics alone. They agree with the documents' own units
+  much more than before (adjusted Rand index, ML 0.50 against -0.01; Networks
+  0.56 against 0.38).
+- **One removed link** moves, on average, 2% of a subject's topic pairs
+  between together and apart (at worst 14% in DEDV, 8% in ML). But the three
+  coloured clusters change after about 30% of single removals, against 2-6%
+  before, so a Remove can move a colour. On the graph page, removing one link
+  in DEDV moved just that topic out of its cluster.
+- **Order.** Louvain visits notes oldest first, so the same notes always give
+  the same clusters. Reversing that order moves 0% of DEDV's pairs and 6% of
+  ML's.
+- **Time**: 1.6 ms per graph request on ML (54 topics, 168 links), against
+  7.8 ms before; Louvain itself takes 0.15 ms, and labelling one 51-topic
+  cluster was the slow part.
+
+**Limits.** The labels were given for links ("should these two be linked?"),
+not clusters, and a student may draw a topic area wider or narrower than a
+link. Each run has one AI rater, and two subjects carry most of the pairs.
+
 ## What to report
 
 - The notes: subjects, files, topics, formats and where they came from.
@@ -457,7 +549,12 @@ installed gives existing notes their links by meaning.
 - **Cross-subject links by meaning rest on two runs of one AI rater each,**
   with about 10 linked pairs per run behind each precision. Half right is the
   honest expectation; a person rating the cross-subject pairs of run 2 would
-  show how far that holds.
+  show how far that holds. To do that without disturbing the run: copy its
+  folder, keep in the copy's `for-raters/rating_sheet.csv` only the 30
+  cross-subject pairs that share a word, highest embedding similarity first
+  (where the 0.68 threshold decides), have the person rate them, put their
+  `ratings_<name>.csv` in the copy and run `score` on it. Its agreement table
+  is the answer; its other numbers mix two raters' labels and change nothing.
 - **Shared words depend on what the rule compares.** Links compare each
   topic's top TF-IDF terms (`linkTerms`), not its stored keywords, so how
   keywords are ranked does not move a link; a change to the vector or to
@@ -477,8 +574,9 @@ installed gives existing notes their links by meaning.
 server/src/services/noteEmbedding.js   a topic's vector; attaching stored ones for linking
 server/src/models/NoteEmbedding.js     the stored vectors
 server/evaluation/
-  links.mjs          generate and score
+  links.mjs          generate, score and clusters
   lib/links.js       topics, pairs, strata, labels, weighted metrics, the choice
+  lib/clusters.js    clusters: rated pairs as labels, the choice, sizes, stability
   lib/ingest.js      files -> notes, the way the app builds them
   lib/stats.js       Wilson intervals, kappa, CSV
 server/test/linkEvaluation.test.mjs

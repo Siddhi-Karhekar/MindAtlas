@@ -170,16 +170,41 @@ export function classifyPair(a, b) {
   return { edgeType, weight: Number(features.weight.toFixed(4)), sharedKeywords: features.sharedKeywords, meaning };
 }
 
+// How finely Louvain divides a subject (clusterNotes): the "resolution" of
+// modularity. Higher makes more, smaller clusters; 1 is the standard
+// definition, and was kept as such rather than tuned.
+// Set by the cluster evaluation (docs/LINK_EVALUATION.md, "Clusters"; 14 Oct
+// 2026), on the link evaluation's rated same-subject pairs read as "should
+// these two share a cluster?", with the decision rule written down before
+// the first run. Connected components, as before, put 32 of DEDV's 32
+// topics and 51 of ML's 54 in one cluster: F1 0.32 (precision 20%). Louvain
+// at resolution 1 makes 4 clusters in DEDV and 8 in ML: F1 0.55 (precision
+// 73%), a gain that held across resamples (+0.03 to +0.44) and on the second
+// run's pairs and rater (+0.04 to +0.52). Resolutions 0.75-3 scored about as
+// well; part of 1's lead on the first run rests on four pairs.
+export const CLUSTER_RESOLUTION = 1;
+
+const time = (n) => new Date(n.createdAt || 0).getTime();
+const older = (a, b) => time(a) - time(b) || (String(a._id) < String(b._id) ? -1 : String(a._id) > String(b._id) ? 1 : 0);
+
 /**
- * Group one subject's notes into clusters: notes linked directly, or through
- * a chain of links, form one cluster (connected components, via union-find).
- * A deliberately simple stand-in for Louvain/Leiden community detection,
- * which stays on the post-prototype backlog - see CONTRIBUTING.md. Pure, and
- * computed on every graph request rather than stored, so clusters can never
- * go stale as notes and links are added.
+ * Group one subject's notes into clusters: notes linked to each other more
+ * than to the rest of the subject. Pure, and computed on every graph request
+ * rather than stored, so clusters can never go stale as notes and links are
+ * added (about 1.6 ms for the evaluation's largest subject, 54 topics and
+ * 168 links, most of it the keyword labels).
  *
- * `edges` are the subject's same-subject edges (sourceNoteId/targetNoteId);
- * an edge to a note outside `notes` is ignored. Returns:
+ * `method`:
+ *   "louvain"    - Louvain community detection on the links, weighted by
+ *                  their similarity, at `resolution`; then every cluster is
+ *                  split into its connected pieces (see louvain() below).
+ *                  What the graph uses.
+ *   "components" - notes linked directly, or through a chain of links, form
+ *                  one cluster (connected components): what the graph used
+ *                  until Oct 2026, kept for the cluster evaluation
+ *
+ * `edges` are the subject's same-subject edges (sourceNoteId, targetNoteId,
+ * weight); an edge to a note outside `notes` is ignored. Returns:
  *   clusterOf - Map of noteId -> clusterId
  *   clusters  - [{ id, size, keywords }], numbered from 1 largest-first (ties:
  *               the cluster with the oldest note first), so the same notes and
@@ -187,41 +212,179 @@ export function classifyPair(a, b) {
  *               is a cluster of one. `keywords` are up to three keywords shared
  *               by at least two of the cluster's notes, as a readable label.
  */
-export function clusterNotes(notes, edges) {
-  const parent = new Map(notes.map((n) => [String(n._id), String(n._id)]));
-  const find = (x) => {
-    while (parent.get(x) !== x) {
-      parent.set(x, parent.get(parent.get(x))); // path halving
-      x = parent.get(x);
-    }
-    return x;
-  };
-  for (const e of edges) {
-    const a = String(e.sourceNoteId);
-    const b = String(e.targetNoteId);
-    if (parent.has(a) && parent.has(b)) parent.set(find(a), find(b));
+export function clusterNotes(notes, edges, { method = "louvain", resolution = CLUSTER_RESOLUTION } = {}) {
+  // Oldest first: the order Louvain visits notes in, so the result never
+  // depends on the order the database returns notes or edges in.
+  const ordered = [...notes].sort(older);
+  const indexOf = new Map(ordered.map((n, i) => [String(n._id), i]));
+  const links = linksAmong(indexOf, edges);
+  let groupOf;
+  if (method === "louvain") {
+    const community = louvain(ordered.length, links, resolution);
+    groupOf = components(ordered.length, links.filter((l) => community[l.a] === community[l.b]));
+  } else if (method === "components") {
+    groupOf = components(ordered.length, links);
+  } else {
+    throw new Error(`unknown clustering method "${method}"`);
   }
 
   const groups = new Map();
-  for (const n of notes) {
-    const root = find(String(n._id));
-    if (!groups.has(root)) groups.set(root, []);
-    groups.get(root).push(n);
-  }
-
-  const time = (n) => new Date(n.createdAt || 0).getTime();
-  const older = (a, b) => time(a) - time(b) || (String(a._id) < String(b._id) ? -1 : 1);
-  const ordered = [...groups.values()]
-    .map((members) => members.sort(older))
-    .sort((a, b) => b.length - a.length || older(a[0], b[0]));
-
-  const clusterOf = new Map();
-  const clusters = ordered.map((members, i) => {
-    const id = i + 1;
-    for (const n of members) clusterOf.set(String(n._id), id);
-    return { id, size: members.length, keywords: sharedClusterKeywords(members) };
+  ordered.forEach((n, i) => {
+    if (!groups.has(groupOf[i])) groups.set(groupOf[i], []);
+    groups.get(groupOf[i]).push(n); // oldest first, as `ordered` is
   });
+  const clusterOf = new Map();
+  const clusters = [...groups.values()]
+    .sort((a, b) => b.length - a.length || older(a[0], b[0]))
+    .map((members, i) => {
+      const id = i + 1;
+      for (const n of members) clusterOf.set(String(n._id), id);
+      return { id, size: members.length, keywords: sharedClusterKeywords(members) };
+    });
   return { clusterOf, clusters };
+}
+
+// The edges between the notes of `indexOf` (Map noteId -> index), as
+// { a, b, w } with a < b, one per pair, sorted by a then b. Edges are stored
+// one per pair; should a pair ever have two, the stronger counts. A row with
+// no usable weight counts as the weakest link the rule makes.
+function linksAmong(indexOf, edges) {
+  const byPair = new Map();
+  for (const e of edges) {
+    const [x, y] = [indexOf.get(String(e.sourceNoteId)), indexOf.get(String(e.targetNoteId))];
+    if (x === undefined || y === undefined || x === y) continue;
+    const [a, b] = x < y ? [x, y] : [y, x];
+    const w = Number(e.weight) > 0 ? Number(e.weight) : SIMILARITY_THRESHOLD;
+    const key = a * indexOf.size + b;
+    if (!byPair.has(key) || byPair.get(key).w < w) byPair.set(key, { a, b, w });
+  }
+  return [...byPair.values()].sort((p, q) => p.a - q.a || p.b - q.b);
+}
+
+// Connected components of nodes 0..n-1 (union-find): each node's group, the
+// smallest node index in its component.
+function components(n, links) {
+  const parent = Array.from({ length: n }, (_, i) => i);
+  const find = (x) => {
+    while (parent[x] !== x) {
+      parent[x] = parent[parent[x]]; // path halving
+      x = parent[x];
+    }
+    return x;
+  };
+  for (const { a, b } of links) {
+    const [ra, rb] = [find(a), find(b)];
+    if (ra !== rb) parent[Math.max(ra, rb)] = Math.min(ra, rb);
+  }
+  return parent.map((_, i) => find(i));
+}
+
+// A move must gain more than this to count, so rounding in the sums can never
+// make two equally good choices look different or a node move back and forth.
+const GAIN_EPSILON = 1e-12;
+const MAX_PASSES = 100; // a safeguard: every pass that moves a node raises modularity
+
+/**
+ * Louvain community detection (Blondel et al., 2008): each node, in index
+ * order, moves to the neighbouring community that raises modularity most;
+ * repeated until no node moves; then each community becomes one node and the
+ * same is done on that smaller graph, until nothing merges. Returns each
+ * node's community.
+ *
+ * Connected components put a whole subject in one cluster as soon as one
+ * chain of links runs through it (all 32 DEDV topics of the link evaluation's
+ * notes). Modularity instead groups notes that are linked to each other more
+ * than the link counts alone would lead one to expect, so a chain of weak links
+ * between two groups no longer merges them.
+ *
+ * Deterministic: nodes are visited in index order (oldest note first),
+ * neighbouring communities are tried in ascending order, a node moves only
+ * for a strictly larger gain (ties keep it where it is, then go to the
+ * lower-numbered community), and merged nodes are numbered in order of their
+ * oldest note. No randomness, so the same notes and links always give the
+ * same clusters.
+ *
+ * Louvain can leave a community that its own links do not hold together;
+ * clusterNotes() splits each one into its connected pieces, which only ever
+ * raises modularity. Leiden (Traag et al., 2019) guards against that inside
+ * the algorithm, at the price of randomness and about twice the code; on a
+ * subject's few dozen notes the split is enough.
+ */
+function louvain(n, links, resolution) {
+  let membership = Array.from({ length: n }, (_, i) => i);
+  const total = links.reduce((sum, l) => sum + l.w, 0);
+  if (!total) return membership;
+  let adjacency = Array.from({ length: n }, () => new Map());
+  for (const { a, b, w } of links) {
+    adjacency[a].set(b, w);
+    adjacency[b].set(a, w);
+  }
+  let inside = new Array(n).fill(0); // weight of links within each node (merged nodes)
+
+  for (;;) {
+    const community = moveNodes(adjacency, inside, total, resolution);
+    const count = community.reduce((max, c) => Math.max(max, c + 1), 0);
+    if (count === adjacency.length) return membership;
+    membership = membership.map((node) => community[node]);
+    const merged = Array.from({ length: count }, () => new Map());
+    const mergedInside = new Array(count).fill(0);
+    adjacency.forEach((neighbours, i) => {
+      const ci = community[i];
+      mergedInside[ci] += inside[i];
+      for (const [j, w] of neighbours) {
+        if (j < i) continue; // each link once
+        const cj = community[j];
+        if (ci === cj) mergedInside[ci] += w;
+        else {
+          merged[ci].set(cj, (merged[ci].get(cj) || 0) + w);
+          merged[cj].set(ci, (merged[cj].get(ci) || 0) + w);
+        }
+      }
+    });
+    adjacency = merged;
+    inside = mergedInside;
+  }
+}
+
+// Louvain's first phase on one level: returns each node's community,
+// numbered 0.. in order of first appearance.
+function moveNodes(adjacency, inside, total, resolution) {
+  const n = adjacency.length;
+  const degree = adjacency.map((neighbours, i) => 2 * inside[i] + [...neighbours.values()].reduce((s, w) => s + w, 0));
+  const community = Array.from({ length: n }, (_, i) => i);
+  const communityDegree = [...degree];
+  let moved = true;
+  for (let pass = 0; moved && pass < MAX_PASSES; pass++) {
+    moved = false;
+    for (let i = 0; i < n; i++) {
+      const own = community[i];
+      const k = degree[i];
+      const toCommunity = new Map();
+      for (const [j, w] of adjacency[i]) toCommunity.set(community[j], (toCommunity.get(community[j]) || 0) + w);
+      communityDegree[own] -= k;
+      // modularity gained by adding node i to community c, times `total`
+      const gain = (c) => (toCommunity.get(c) || 0) - (resolution * communityDegree[c] * k) / (2 * total);
+      let best = own;
+      let bestGain = gain(own);
+      for (const c of [...toCommunity.keys()].sort((x, y) => x - y)) {
+        const g = gain(c);
+        if (g > bestGain + GAIN_EPSILON) {
+          best = c;
+          bestGain = g;
+        }
+      }
+      communityDegree[best] += k;
+      if (best !== own) {
+        community[i] = best;
+        moved = true;
+      }
+    }
+  }
+  const renumbered = new Map();
+  return community.map((c) => {
+    if (!renumbered.has(c)) renumbered.set(c, renumbered.size);
+    return renumbered.get(c);
+  });
 }
 
 // Keywords appearing in at least two of a cluster's notes, most widespread

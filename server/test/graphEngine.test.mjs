@@ -17,7 +17,7 @@ process.env.SEMANTIC_MODEL = "off";
 
 import { computeTfidf } from "../src/services/tfidf.js";
 import {
-  classifyPair, clusterNotes, decideLink, linkTerms, updateGraphForNote, LINK_RULE,
+  classifyPair, clusterNotes, decideLink, linkTerms, updateGraphForNote, CLUSTER_RESOLUTION, LINK_RULE,
   SIMILARITY_THRESHOLD, CROSS_SUBJECT_THRESHOLD, CROSS_SUBJECT_MIN_SHARED, CROSS_SUBJECT_MEANING_THRESHOLD,
 } from "../src/services/graphEngine.js";
 import { connectDB, getCollection } from "../src/db/index.js";
@@ -147,7 +147,7 @@ check("classification does not depend on argument order",
   Object.keys(note).every((a) => Object.keys(note).every((b) =>
     a === b || typeOf(classifyPair(note[a], note[b])) === typeOf(classifyPair(note[b], note[a])))));
 
-console.log("\n=== Clustering (connected components) ===");
+console.log("\n=== Clustering: numbering and labels (the default method) ===");
 // A-B-C is a chain (A and C are not linked directly), D-E a pair, F alone.
 const day = (d) => new Date(`2026-09-0${d}T00:00:00Z`);
 const cn = (id, d, keywords = []) => ({ _id: id, createdAt: day(d), keywords });
@@ -159,7 +159,7 @@ const ce = (a, b) => ({ sourceNoteId: a, targetNoteId: b });
 const cEdges = [ce("A", "B"), ce("B", "C"), ce("D", "E"), ce("E", "not-in-this-subject")];
 const { clusterOf, clusters } = clusterNotes(cNotes, cEdges);
 const idOf = (x) => clusterOf.get(x);
-check("notes linked through a chain share a cluster", idOf("A") === idOf("C") && idOf("A") === idOf("B"));
+check("notes linked through a short chain share a cluster", idOf("A") === idOf("C") && idOf("A") === idOf("B"));
 check("unlinked groups get different clusters", idOf("A") !== idOf("D") && idOf("D") === idOf("E"));
 check("a note with no links is a cluster of one", clusters.find((c) => c.id === idOf("F"))?.size === 1);
 check("every note gets a clusterId", cNotes.every((n) => typeof idOf(n._id) === "number"));
@@ -175,6 +175,98 @@ const tie = clusterNotes([cn("Y", 2), cn("X", 1), cn("Z", 3)], []);
 check("equal-size clusters: the one with the oldest note comes first",
   tie.clusterOf.get("X") === 1 && tie.clusterOf.get("Y") === 2 && tie.clusterOf.get("Z") === 3);
 check("no notes, no clusters", clusterNotes([], []).clusters.length === 0);
+
+console.log("\n=== Clustering (Louvain) ===");
+// Two triangles joined by one weak link, and a separate pair.
+const lNotes = "ABCDEFGH".split("").map((id, i) => cn(id, i + 1));
+const le = (a, b, weight) => ({ sourceNoteId: a, targetNoteId: b, weight });
+const lEdges = [
+  le("A", "B", 0.4), le("B", "C", 0.4), le("A", "C", 0.4), le("D", "E", 0.4), le("E", "F", 0.4), le("D", "F", 0.4),
+  le("C", "D", 0.12), le("G", "H", 0.3),
+];
+const louvain = clusterNotes(lNotes, lEdges, { method: "louvain" });
+const lid = (x) => louvain.clusterOf.get(x);
+const comps = clusterNotes(lNotes, lEdges, { method: "components" }).clusterOf;
+check("connected components: one weak link merges two groups", comps.get("A") === comps.get("F"));
+check("the graph uses Louvain at CLUSTER_RESOLUTION (1) by default",
+  CLUSTER_RESOLUTION === 1 && JSON.stringify([...clusterNotes(lNotes, lEdges).clusterOf]) === JSON.stringify([...louvain.clusterOf]));
+check("Louvain: two groups joined by one weak link stay apart",
+  lid("A") === lid("B") && lid("B") === lid("C") && lid("D") === lid("E") && lid("E") === lid("F") && lid("C") !== lid("D"),
+  [...louvain.clusterOf].map(([k, v]) => k + v).join(" "));
+check("Louvain: numbered largest first, the oldest note breaking ties",
+  lid("A") === 1 && lid("D") === 2 && lid("G") === 3 && louvain.clusters.map((c) => c.size).join() === "3,3,2");
+check("Louvain: a higher resolution makes smaller clusters",
+  clusterNotes(lNotes, lEdges, { method: "louvain", resolution: 5 }).clusters.length > louvain.clusters.length);
+check("Louvain: a low enough resolution merges the groups again",
+  clusterNotes(lNotes, lEdges, { method: "louvain", resolution: 0.1 }).clusterOf.get("F") === lid("A"));
+check("Louvain: notes without links are clusters of one",
+  clusterNotes(lNotes, [], { method: "louvain" }).clusters.every((c) => c.size === 1) &&
+  clusterNotes([...lNotes, cn("Z", 9)], lEdges, { method: "louvain" }).clusters.find((c) => c.size === 1)?.id === 4);
+check("Louvain: edges to notes outside the subject, and from a note to itself, are ignored",
+  JSON.stringify([...clusterNotes(lNotes, [...lEdges, le("A", "elsewhere", 0.9), le("B", "B", 0.9)], { method: "louvain" }).clusterOf]) ===
+    JSON.stringify([...louvain.clusterOf]));
+check("an unknown clustering method is refused", (() => {
+  try {
+    clusterNotes(lNotes, lEdges, { method: "leiden" });
+    return false;
+  } catch {
+    return true;
+  }
+})());
+
+// A hub (H) linked to P, Q and, strongly, S. At resolution 2 Louvain moves H
+// to S and leaves P and Q in one community with no link between them; the
+// split afterwards must part them. (Rare: found once in 80,000 random graphs.)
+const hub = ["P", "Q", "X", "Y", "S", "T", "H"].map((id, i) => cn(id, i + 1));
+const hubEdges = [le("P", "H", 0.14), le("Q", "H", 0.19), le("X", "Y", 0.16), le("S", "H", 0.46)];
+const hubClusters = clusterNotes(hub, hubEdges, { method: "louvain", resolution: 2 }).clusterOf;
+check("Louvain: a cluster its own links do not hold together is split", hubClusters.get("P") !== hubClusters.get("Q"),
+  [...hubClusters].map(([k, v]) => k + v).join(" "));
+
+// Random graphs: the same notes and links in any order give the same
+// clusters, and every cluster is held together by its own links.
+const rng = (seed) => () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648);
+const shuffle = (xs, rand) => {
+  const out = [...xs];
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = Math.floor(rand() * (i + 1));
+    [out[i], out[j]] = [out[j], out[i]];
+  }
+  return out;
+};
+let orderFree = true;
+let connected = true;
+for (let g = 0; g < 60; g++) {
+  const rand = rng(g + 1);
+  const n = 8 + Math.floor(rand() * 30);
+  const notes = Array.from({ length: n }, (_, i) => ({ _id: `n${String(i).padStart(2, "0")}`, createdAt: new Date(2026, 8, 1, 0, i), keywords: [] }));
+  const edges = [];
+  for (let i = 0; i < n; i++) {
+    for (let j = i + 1; j < n; j++) if (rand() < 0.15) edges.push(le(notes[i]._id, notes[j]._id, Number((0.11 + rand() * 0.5).toFixed(4))));
+  }
+  const resolution = [0.5, 1, 2][g % 3];
+  const base = clusterNotes(notes, edges, { method: "louvain", resolution });
+  const again = clusterNotes(shuffle(notes, rand), shuffle(edges, rand), { method: "louvain", resolution });
+  if (JSON.stringify([...base.clusterOf].sort()) !== JSON.stringify([...again.clusterOf].sort())) orderFree = false;
+  for (const c of base.clusters) {
+    const members = notes.filter((x) => base.clusterOf.get(x._id) === c.id).map((x) => x._id);
+    const inside = edges.filter((e) => members.includes(e.sourceNoteId) && members.includes(e.targetNoteId));
+    const reached = new Set([members[0]]);
+    for (let grew = true; grew; ) {
+      grew = false;
+      for (const e of inside) {
+        if (reached.has(e.sourceNoteId) !== reached.has(e.targetNoteId)) {
+          reached.add(e.sourceNoteId);
+          reached.add(e.targetNoteId);
+          grew = true;
+        }
+      }
+    }
+    if (reached.size !== members.length) connected = false;
+  }
+}
+check("Louvain: the order notes and links arrive in changes nothing (60 random graphs)", orderFree);
+check("Louvain: every cluster is connected by its own links (60 random graphs)", connected);
 
 console.log("\n=== Storage contract (in-memory database) ===");
 await connectDB();

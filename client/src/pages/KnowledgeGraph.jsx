@@ -487,6 +487,16 @@ export default function KnowledgeGraph() {
     nodeById.has(id) ? matches(nodeById.get(id)) : externalById.has(id) && matchesExternal(externalById.get(id));
   const visibleCount = graph ? graph.nodes.filter(matches).length : 0;
 
+  // In the Clusters view, selecting a topic in a cluster fades everything
+  // outside that cluster, so a cluster without a colour of its own (the
+  // "Other clusters" grey) can still be told apart from its neighbours. Its
+  // own links to other notes stay drawn, as for any selected note.
+  const focusCluster = byCluster && selected && !selectedIsDoc && selectedCluster?.size > 1 ? selectedCluster.id : null;
+  const inFocus = (n) => focusCluster === null || n?.clusterId === focusCluster;
+  const crossLinked = new Set(crossNeighbours.map((nb) => nb.id));
+  const outOfFocus = (e, touches) =>
+    focusCluster !== null && !touches && !(inFocus(nodeById.get(String(e.source))) && inFocus(nodeById.get(String(e.target))));
+
   const tone = (deg) =>
     deg >= 3 ? { dot: "bg-tertiary", label: "Hub" } : deg >= 1 ? { dot: "bg-secondary", label: "Linked" } : { dot: "bg-primary-container", label: "Isolated" };
 
@@ -552,7 +562,9 @@ export default function KnowledgeGraph() {
               const b = pos.get(String(e.target));
               if (!a || !b) return null;
               const touches = String(e.source) === selectedId || String(e.target) === selectedId;
-              const dim = q || filter !== "all" ? !(matches(nodeById.get(String(e.source))) && matches(nodeById.get(String(e.target)))) : false;
+              const dim =
+                (q || filter !== "all" ? !(matches(nodeById.get(String(e.source))) && matches(nodeById.get(String(e.target)))) : false) ||
+                outOfFocus(e, touches);
               return (
                 <line
                   key={e.id}
@@ -574,7 +586,9 @@ export default function KnowledgeGraph() {
               const b = pos.get(String(e.target));
               if (!a || !b) return null;
               const touches = String(e.source) === selectedId || String(e.target) === selectedId;
-              const dim = q || filter !== "all" ? !(matches(nodeById.get(String(e.source))) && matches(nodeById.get(String(e.target)))) : false;
+              const dim =
+                (q || filter !== "all" ? !(matches(nodeById.get(String(e.source))) && matches(nodeById.get(String(e.target)))) : false) ||
+                outOfFocus(e, touches);
               return (
                 <line
                   key={e.id}
@@ -594,7 +608,7 @@ export default function KnowledgeGraph() {
               const b = pos.get(String(e.target));
               if (!a || !b) return null;
               const touches = String(e.source) === selectedId || String(e.target) === selectedId;
-              const dim = q || filter !== "all" ? !(matchesAny(String(e.source)) && matchesAny(String(e.target))) : false;
+              const dim = (q || filter !== "all" ? !(matchesAny(String(e.source)) && matchesAny(String(e.target))) : false) || (focusCluster !== null && !touches);
               // Amber marks other subjects, except in the Clusters view, where
               // colour means cluster only and these go neutral.
               return (
@@ -625,7 +639,7 @@ export default function KnowledgeGraph() {
             const inCluster = cluster?.size > 1;
             const sw = byCluster ? clusterSwatch(cluster) : { className: t.dot };
             const isSel = id === selectedId;
-            const dim = !matches(n);
+            const dim = !matches(n) || !inFocus(n);
             if (isSplitParent(n)) {
               return (
                 <div
@@ -691,7 +705,7 @@ export default function KnowledgeGraph() {
             const p = pos.get(id);
             if (!p) return null;
             const isSel = id === selectedId;
-            const dim = !matchesExternal(n);
+            const dim = !matchesExternal(n) || (focusCluster !== null && !crossLinked.has(id));
             return (
               <div
                 key={id}
@@ -1163,7 +1177,7 @@ export default function KnowledgeGraph() {
                         ? "No links to other notes in this subject yet"
                         : selectedCluster.keywords.length
                           ? `Shared ideas: ${selectedCluster.keywords.join(", ")}`
-                          : "Connected through a chain of related notes"}
+                          : "Linked more to each other than to the rest of this subject"}
                     </span>
                   </div>
                 </div>
