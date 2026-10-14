@@ -55,8 +55,9 @@ fs.copyFileSync(DBMS, path.join(NOTES_DIR, "dbms", "dbms_unit4.md"));
 console.log("\n=== The linking rule, split into features and decision ===");
 const f = (weight, shared, sameSubject) => ({ weight, sharedKeywords: Array.from({ length: shared }, (_, i) => `k${i}`), sameSubject });
 check("decideEdge with the current rule matches the constants",
-  decideEdge(f(0.12, 0, true)) === "same-subject" && decideEdge(f(0.1199, 0, true)) === null &&
-  decideEdge(f(0.25, 2, false)) === "cross-subject" && decideEdge(f(0.3, 1, false)) === "rejected" && decideEdge(f(0.3, 0, false)) === null);
+  decideEdge(f(LINK_RULE.similarity, 0, true)) === "same-subject" && decideEdge(f(LINK_RULE.similarity - 0.0001, 0, true)) === null &&
+  decideEdge(f(LINK_RULE.crossSimilarity, LINK_RULE.crossMinShared, false)) === "cross-subject" &&
+  decideEdge(f(0.3, LINK_RULE.crossMinShared - 1, false)) === "rejected" && decideEdge(f(0.3, 0, false)) === null);
 check("another rule changes only what it should",
   decideEdge(f(0.1, 0, true), { ...LINK_RULE, similarity: 0.08 }) === "same-subject" &&
   decideEdge(f(0.3, 1, false), { ...LINK_RULE, crossMinShared: 1 }) === "cross-subject" &&
@@ -199,16 +200,30 @@ check("the current setting is kept when it is within the flat band", kept.keep &
 check("no related pairs: nothing to recommend", chooseSetting([{ ...row(0.1, null, null, 0), related: 0 }], null).row === null);
 const tied = chooseSetting([row(0.1, 0.9, 0.9, 20), row(0.11, 0.9, 0.9, 20)], null);
 check("equal precision and F1: the stricter setting", tied.row.similarity === 0.11);
+// With bootstrap draws, "as good as the best" is judged on the same resamples:
+// a setting that beats the best in some of them is not clearly below it.
+const withDraws = (r, f1Draws) => Object.defineProperty({ ...r }, "f1Draws", { value: f1Draws, enumerable: false });
+const bestD = withDraws(row(0.1, 0.8, 0.6, 20), [0.8, 0.82, 0.78, 0.81]);
+const closeD = withDraws(row(0.12, 0.75, 0.7, 20), [0.79, 0.83, 0.7, 0.74]);
+const belowD = withDraws(row(0.14, 0.7, 0.9, 20), [0.7, 0.72, 0.68, 0.71]);
+const paired = chooseSetting([bestD, closeD, belowD], belowD);
+check("a setting lower in every resample is clearly below the best; one that wins some is not",
+  !paired.keep && paired.row.similarity === 0.12 && paired.band.length === 2, paired.reason);
+const floor = chooseSetting([row(0.1, 0.4, 0.3, 20), row(0.12, 0.39, 0.45, 20)], row(0.25, 0.1, 0.33, 3));
+check("no change whose links would be wrong more often than right", floor.keep && floor.row.similarity === 0.25 && /wrong more often than right/.test(floor.reason), floor.reason);
 
 // A census (every pair rated, weight 1) whose raters call same-subject pairs
 // related from 0.2 up, and cross-subject pairs related with 2+ shared
 // keywords and similarity 0.3 or more. The choice must find those lines.
+// Each pair is rated ten times over, so that the resamples can tell settings
+// apart (with eight pairs, no difference is clear).
 const feat = (sameSubject, weight, shared, lbl) => ({ stratum: "all", sampleWeight: 1, sameSubject, weight, sharedKeywords: Array.from({ length: shared }, (_, i) => `k${i}`), label: lbl });
 const census = [
   ...[0.05, 0.1, 0.15, 0.18].map((w) => feat(true, w, 0, 0)), ...[0.21, 0.25, 0.3, 0.35].map((w) => feat(true, w, 0, 1)),
   feat(false, 0.35, 1, 0), feat(false, 0.2, 2, 0), feat(false, 0.28, 2, 0), feat(false, 0.32, 2, 1), feat(false, 0.4, 3, 1), feat(false, 0.5, 2, 1),
 ];
-const censusGrid = gridSearch({ items: census, population: census, draws: bootstrapDraws(census, seededRandom(1), 50) });
+const tenfold = census.flatMap((it) => Array.from({ length: 10 }, () => ({ ...it })));
+const censusGrid = gridSearch({ items: tenfold, population: census, draws: bootstrapDraws(tenfold, seededRandom(1), 200) });
 const sameChoice = chooseSetting(censusGrid.same, censusGrid.current.same, { minLinked: 1 });
 check("same subject: finds the line the raters drew, at its strictest", !sameChoice.keep && sameChoice.row.similarity === 0.21 && sameChoice.row.f1 === 1, sameChoice.reason);
 check("  ...and the current 0.12 scores what it should (P 4/6, R 1)", censusGrid.current.same.precision === 0.667 && censusGrid.current.same.recall === 1);
@@ -216,6 +231,8 @@ const crossChoice = chooseSetting(censusGrid.cross, censusGrid.current.cross, { 
 check("cross subject: two shared keywords and 0.32", crossChoice.row.crossMinShared === 2 && crossChoice.row.crossSimilarity === 0.32 && crossChoice.row.f1 === 1, crossChoice.reason);
 check("links made are counted over every pair", censusGrid.current.same.links === 6 && censusGrid.cross.find((r) => r.crossMinShared === 1 && r.crossSimilarity === 0.3).links === 4);
 check("F1 has a bootstrap interval", Array.isArray(censusGrid.current.same.f1_ci));
+check("each row keeps its resampled F1s for the choice, but not in results.json",
+  censusGrid.current.same.f1Draws.length === 200 && !JSON.stringify(censusGrid.current.same).includes("f1Draws"));
 
 console.log("\n=== Scoring a rated run ===");
 const keyById = new Map(key.map((k) => [k.pair, k]));

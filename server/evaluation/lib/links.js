@@ -363,11 +363,14 @@ export function bootstrapDraws(items, random, reps = 1000) {
   return Array.from({ length: reps }, () => groups.flatMap((g) => g.map(() => g[Math.floor(random() * g.length)])));
 }
 
-/** 95% percentile interval of `rule`'s F1 over the bootstrap draws (null when too few draws have a related pair). */
-export function f1Interval(items, draws, rule) {
+/**
+ * `rule`'s F1 in each bootstrap draw (`draws`, aligned with them; null where a
+ * draw has no related pair) and their 95% percentile interval (`ci`, null
+ * when too few draws have a related pair).
+ */
+export function f1Bootstrap(items, draws, rule) {
   const linked = items.map((it) => isLink(decideEdge(it, rule)));
-  const f1s = [];
-  for (const draw of draws) {
+  const f1s = draws.map((draw) => {
     let tp = 0;
     let pp = 0;
     let rel = 0;
@@ -377,12 +380,12 @@ export function f1Interval(items, draws, rule) {
       if (items[i].label) rel += w;
       if (linked[i] && items[i].label) tp += w;
     }
-    if (rel) f1s.push((2 * tp) / (pp + rel));
-  }
-  if (f1s.length < draws.length / 2) return null;
-  f1s.sort((x, y) => x - y);
-  const at = (q) => f1s[Math.min(f1s.length - 1, Math.floor(q * f1s.length))];
-  return [round(at(0.025)), round(at(0.975))];
+    return rel ? (2 * tp) / (pp + rel) : null;
+  });
+  const valid = f1s.filter((x) => x !== null).sort((x, y) => x - y);
+  if (valid.length < draws.length / 2) return { ci: null, draws: f1s };
+  const at = (q) => valid[Math.min(valid.length - 1, Math.floor(q * valid.length))];
+  return { ci: [round(at(0.025)), round(at(0.975))], draws: f1s };
 }
 
 // thresholds 0.01 apart, as exact two-place numbers
@@ -397,7 +400,8 @@ export const GRID = Object.freeze({ same: steps(0.05, 0.3), cross: steps(0.15, 0
  * `crossSimilarity` x `crossMinShared`, each on its own group of pairs.
  * `population` is every pair (scorePairs), for `links`: how many links the
  * setting makes across all the notes, exactly rather than estimated.
- * Returns { same: rows, cross: rows, current: { same, cross } }.
+ * Returns { same: rows, cross: rows, current: { same, cross } }; each row
+ * also carries its F1 in every bootstrap draw (`f1Draws`, not enumerable).
  */
 export function gridSearch({ items, population, draws, current = LINK_RULE }) {
   const sameItems = items.filter((it) => it.sameSubject);
@@ -412,14 +416,20 @@ export function gridSearch({ items, population, draws, current = LINK_RULE }) {
   };
   const sameDraws = remap(sameItems);
   const crossDraws = remap(crossItems);
-  const row = (group, groupDraws, pop, rule) => ({
-    similarity: rule.similarity,
-    crossSimilarity: rule.crossSimilarity,
-    crossMinShared: rule.crossMinShared,
-    links: pop.filter((p) => isLink(decideEdge(p, rule))).length,
-    ...ruleMetrics(group, rule),
-    f1_ci: f1Interval(group, groupDraws, rule),
-  });
+  const row = (group, groupDraws, pop, rule) => {
+    const spread = f1Bootstrap(group, groupDraws, rule);
+    const out = {
+      similarity: rule.similarity,
+      crossSimilarity: rule.crossSimilarity,
+      crossMinShared: rule.crossMinShared,
+      links: pop.filter((p) => isLink(decideEdge(p, rule))).length,
+      ...ruleMetrics(group, rule),
+      f1_ci: spread.ci,
+    };
+    // for chooseSetting's paired comparison; kept out of results.json
+    Object.defineProperty(out, "f1Draws", { value: spread.draws, enumerable: false });
+    return out;
+  };
   return {
     same: GRID.same.map((t) => row(sameItems, sameDraws, samePop, { ...current, similarity: t })),
     cross: GRID.minShared.flatMap((k) => GRID.cross.map((t) => row(crossItems, crossDraws, crossPop, { ...current, crossSimilarity: t, crossMinShared: k }))),
@@ -427,41 +437,65 @@ export function gridSearch({ items, population, draws, current = LINK_RULE }) {
   };
 }
 
-export const CHOICE = Object.freeze({ flat: 0.02, minLinked: 10 });
+export const CHOICE = Object.freeze({ flat: 0.02, minLinked: 10, minPrecision: 0.5 });
 
 /**
- * The setting to recommend from one group's grid rows. The best F1 - but when
- * F1 is flat, with several settings within `flat` of the best, the one with
- * the highest precision among them, because a wrong link costs a student
- * more than a missing one (ties: higher F1, then the stricter setting). A
- * setting that links fewer than `minLinked` rated pairs is not considered:
- * its precision would rest on too few pairs. And if the current setting is
- * itself within `flat` of the best it is kept, because the difference is
- * smaller than a sample this size can show.
+ * The setting to recommend from one group's grid rows:
+ *   1. Only settings that link at least `minLinked` rated pairs count: a
+ *      precision resting on fewer means little.
+ *   2. "As good as the best": settings whose F1 is not clearly below the best
+ *      one's. With the rows' bootstrap draws (gridSearch), clearly below means
+ *      that across the same resamples the setting's F1 minus the best's stays
+ *      under -`flat` at the 97.5th percentile - a real difference, not noise.
+ *      Paired, because every setting is scored on the same pairs. Rows
+ *      without draws fall back to "more than `flat` below the best".
+ *   3. If the current setting is as good as the best, it is kept.
+ *   4. Otherwise the most precise of them, because a wrong link costs a
+ *      student more than a missing one (ties: higher F1, then the stricter
+ *      setting) - but only one with precision of at least `minPrecision`, so
+ *      the links a change adds are right more often than wrong. If none is,
+ *      the current setting is kept.
  * Returns { row, keep, best, band, reason }; row is null when nothing qualifies.
  */
 export function chooseSetting(rows, currentRow, options = {}) {
-  const { flat, minLinked } = { ...CHOICE, ...options };
+  const { flat, minLinked, minPrecision } = { ...CHOICE, ...options };
   const eligible = rows.filter((r) => r.f1 !== null && r.linked >= minLinked);
   if (!eligible.length) {
     const reason = rows.some((r) => r.related) ? `no setting links ${minLinked} or more rated pairs` : "no rated pair in this group is related";
     return { row: null, keep: true, best: null, band: [], reason };
   }
-  const best = Math.max(...eligible.map((r) => r.f1));
-  const band = eligible.filter((r) => r.f1 >= best - flat - 1e-9);
-  if (currentRow && currentRow.f1 !== null && currentRow.linked >= minLinked && currentRow.f1 >= best - flat - 1e-9) {
-    return { row: currentRow, keep: true, best, band, reason: `the current setting's F1 (${currentRow.f1}) is within ${flat} of the best (${best})` };
+  const bestRow = eligible.reduce((a, r) => (r.f1 > a.f1 ? r : a));
+  const best = bestRow.f1;
+  const asGood = (r) => {
+    if (!r || r.f1 === null || r.linked < minLinked) return false;
+    if (r.f1Draws && bestRow.f1Draws) {
+      const diffs = r.f1Draws
+        .map((x, i) => (x === null || bestRow.f1Draws[i] === null ? null : x - bestRow.f1Draws[i]))
+        .filter((d) => d !== null)
+        .sort((x, y) => x - y);
+      if (diffs.length) return diffs[Math.min(diffs.length - 1, Math.floor(0.975 * diffs.length))] >= -flat - 1e-9;
+    }
+    return r.f1 >= best - flat - 1e-9;
+  };
+  const band = eligible.filter(asGood);
+  if (asGood(currentRow)) {
+    return { row: currentRow, keep: true, best, band, reason: `the current setting's F1 (${currentRow.f1}) is not clearly below the best (${best})` };
+  }
+  const acceptable = band.filter((r) => r.precision >= minPrecision);
+  if (!acceptable.length) {
+    const reason = `none of the ${band.length} setting(s) as good as the best F1 (${best}) has precision of ${minPrecision} or more, so their links would be wrong more often than right`;
+    return { row: currentRow ?? null, keep: true, best, band, reason };
   }
   const strictness = (r) => [r.similarity, r.crossSimilarity, r.crossMinShared];
-  const pick = [...band].sort((x, y) => {
+  const pick = [...acceptable].sort((x, y) => {
     if (y.precision !== x.precision) return y.precision - x.precision;
     if (y.f1 !== x.f1) return y.f1 - x.f1;
     const [sx, sy] = [strictness(x), strictness(y)];
     for (let i = 0; i < sx.length; i++) if (sy[i] !== sx[i]) return sy[i] - sx[i];
     return 0;
   })[0];
-  const why = band.length > 1 ? `highest precision of the ${band.length} settings within ${flat} of the best F1 (${best})` : `best F1 (${best})`;
-  const current = currentRow?.linked >= minLinked ? `; the current setting's F1 is ${currentRow.f1}` : "; the current setting links too few rated pairs to judge";
+  const why = band.length > 1 ? `highest precision of the ${band.length} settings whose F1 is not clearly below the best (${best})` : `best F1 (${best})`;
+  const current = currentRow?.linked >= minLinked ? `; the current setting's F1 (${currentRow.f1}) is clearly below it` : "; the current setting links too few rated pairs to judge";
   return { row: pick, keep: false, best, band, reason: why + current };
 }
 

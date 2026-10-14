@@ -79,10 +79,10 @@ member's section of §3.
    (`npm run relink`, `graph/relink-tool`; see §3).
 3. ~~Fix a note's links when it is edited or deleted.~~ Done by Member 3 with
    note edit/delete (`services/noteLifecycle.js`, PR #8).
-4. Tune the linking thresholds on real notes, then TextRank keywords. The
-   link evaluation is built (`npm run eval:links`, `docs/LINK_EVALUATION.md`,
-   `graph/link-evaluation`); waiting for real notes and ratings before the
-   thresholds change.
+4. Tune the linking thresholds on real notes, then TextRank keywords.
+   Thresholds done (`graph/link-thresholds`): same-subject 0.12 -> 0.11,
+   cross-subject rule kept (see §3). Member 4 relinks the live site once it
+   is deployed. TextRank keywords next.
 5. MiniLM sentence embeddings (backlog item 1).
 6. Louvain/Leiden clustering, and feeding link corrections back into the
    linking rule (backlog item 2).
@@ -509,6 +509,7 @@ the `/api/subjects/:id/graph` route, `client/src/pages/KnowledgeGraph.jsx`.
 >
 > **Known limits and still open (post-Saturday)**
 > - Linking thresholds were tuned on sample notes, not real student notes.
+>   (Checked on real notes on 14 Oct: Member 2's next-phase item 4.)
 > - Notes that were already in a real MongoDB database before PR #1 do not
 >   get cross-subject links (the in-memory dev database is unaffected).
 > - The keyword map is only as good as the stored keywords, which sometimes
@@ -712,6 +713,24 @@ Its quality is only as good as the stored keywords, so TextRank keywords
      and the constants behave and are named as before.
    - **Tests**: `server/test/linkEvaluation.test.mjs` (65 checks, part of
      `npm test`; in-process, no port).
+   - **Thresholds: done** (14 Oct, `graph/link-thresholds`). 117 topics from
+     the team's DEDV and ML notes plus the sample notes; 293 pairs rated by
+     one rater, Claude (blind to the scores - no time for people to rate;
+     a second rater on even 30 pairs would show how far that matters).
+     `SIMILARITY_THRESHOLD` 0.12 -> **0.11**: recall 34% -> 46%, precision
+     62% -> 65%, F1 0.44 -> 0.54, and the gain held across resamples.
+     Cross-subject rule kept at 0.25 + 2 shared keywords: every looser
+     setting's links were right only 30-40% of the time. Relink dry run on
+     the same notes: 237 -> 278 same-subject links. Results and limits:
+     `docs/LINK_EVALUATION.md`, "Results".
+   - The evaluation's choice rule was tightened after the first run, before
+     any constant changed: "as good as the best" is now a paired comparison
+     across resamples instead of a fixed 0.02, and a change must have at
+     least 50% precision. As first written it picked 0.07 (a peak resting on
+     two pairs) and a cross-subject rule right only 31% of the time.
+     `linkEvaluation.test.mjs` now has 68 checks.
+   - **After deploy** (Member 4): `npm run db:backup`, then
+     `npm run relink -- --live --all` (dry run), then the same with `--yes`.
 5. **MiniLM sentence embeddings** (backlog item 1).
 6. **Louvain/Leiden clustering and the correction feedback loop** (backlog
    item 2).
