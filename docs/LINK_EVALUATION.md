@@ -75,6 +75,18 @@ they do not depend on the order files were added), scores every pair of topics
 with the current rule, and picks the pairs to rate (below). Options:
 `--per-bin 10`, `--cross-cap 150`, `--zero-shared 20`, `--seed`.
 
+`--similarity embedding` measures sentence-embedding similarity instead of
+TF-IDF: the cosine of two topics' MiniLM vectors, each the normalised mean of
+its sentences' vectors (`server/src/services/noteEmbedding.js`). It needs the
+model (`npm run semantic:install`). Pairs are binned and sampled by that
+similarity, on its own scale (same subject 0.30-0.75 in bins, cross subject
+0.40-0.70, with pairs sharing no word binned as finely, since meaning can link
+them). Scoring searches thresholds on it (0.30-0.80 same subject, 0.40-0.80
+cross subject with 0-3 shared words) and still compares them with today's
+rule on TF-IDF similarity, which `key.csv` keeps for every pair
+(`tfidf_similarity`). The run remembers its similarity in `manifest.json`, so
+`score` takes no option.
+
 It writes:
 
 - `for-raters/` - everything the raters get, and nothing else:
