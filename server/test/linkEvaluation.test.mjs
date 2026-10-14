@@ -4,7 +4,8 @@
 // classifyPair the evaluation relies on, notes -> topics -> pairs exactly as
 // the graph scores them, which pairs are rated and that raters see no
 // scores, the weighted precision / recall / F1 (against values worked out by
-// hand), the choice of setting, and a whole generate -> rate -> score run.
+// hand), the choice of setting, a whole generate -> rate -> score run, and
+// scoring the same ratings again on features worked out now (--recompute).
 // In-process, no server and no port.
 process.env.MONGODB_URI = ""; // never a real cluster
 process.env.DB_FILE = "memory"; // never write server/data/ from a test
@@ -19,7 +20,7 @@ import {
   allStrata, bootstrapDraws, chooseSetting, collectSubjects, excerpt, GRID, gridSearch, loadTopics, pairLabels,
   raterAgreement, readRelated, ruleMetrics, scorePairs, stratumOf, stratumWeights, waterFill,
 } from "../evaluation/lib/links.js";
-import { HOW_TO_RATE, runLinkGeneration, runLinkScoring } from "../evaluation/links.mjs";
+import { comparisonMarkdown, HOW_TO_RATE, runLinkGeneration, runLinkRescoring, runLinkScoring } from "../evaluation/links.mjs";
 import { parseCsv, seededRandom, toCsv, wilson } from "../evaluation/lib/stats.js";
 
 let failures = 0;
@@ -260,6 +261,42 @@ check("raters who agree with the graph: the current rule is perfect and kept",
   agreeing.current.same.precision === 1 && agreeing.current.same.recall === 1 && agreeing.choice.same.keep &&
   agreeing.rule.recommended.similarity === LINK_RULE.similarity, agreeing.choice.same.reason);
 check("  ...and the report says agreement needs a second rater", !agreeing.agreement.length);
+
+console.log("\n=== Scoring the same ratings again (score --recompute) ===");
+const resultsBefore = fs.readFileSync(path.join(run, "results.md"), "utf8");
+const unchanged = await runLinkRescoring({ dir: run, recompute: NOTES_DIR, quiet: true, reps: 200, minLinked: 1 });
+const uc = unchanged.comparison;
+check("with nothing changed, every rated pair is found again by its refs, at the same similarity",
+  uc.pairs_found === key.length && uc.largest_similarity_change < 1e-12 && !uc.warnings.some((w) => !w.startsWith("file skipped")), uc.warnings.join("; "));
+check("  ...and scores exactly as before", JSON.stringify(unchanged.after.current) === JSON.stringify(results.current) &&
+  JSON.stringify(unchanged.before.current) === JSON.stringify(results.current) && uc.changed.length === 0 && uc.current.same.f1_change.change === 0);
+check("it writes into recomputed/ and leaves the run's own results alone",
+  ["comparison.md", "comparison.json", "key.recomputed.csv", "results.md", "results.json", "grid.csv"].every((f) => fs.existsSync(path.join(run, "recomputed", f))) &&
+  fs.readFileSync(path.join(run, "results.md"), "utf8") === resultsBefore &&
+  parseCsv(fs.readFileSync(path.join(run, "recomputed", "key.recomputed.csv"), "utf8")).length === key.length);
+
+// a topic gone, and one note's vector replaced by another's
+const CELL_REF = "biology/cell_structure.txt#0";
+const ECHEM_REF = "chemistry/electrochemical_cells.txt#0";
+const GONE_REF = "physics/physics.txt#0";
+const reread = (await loadTopics(NOTES_DIR)).topics;
+const echem = reread.find((t) => t.ref === ECHEM_REF);
+const altered = reread.filter((t) => t.ref !== GONE_REF).map((t) => (t.ref === CELL_REF ? { ...t, vector: echem.vector } : t));
+const rescored = await runLinkRescoring({ dir: run, topics: altered, quiet: true, write: false, reps: 200, minLinked: 1 });
+const rc = rescored.comparison;
+const gone = key.filter((k) => k.ref_a === GONE_REF || k.ref_b === GONE_REF).map((k) => k.pair);
+check("a rated pair whose topic is gone is reported and left out",
+  gone.length > 0 && rc.pairs_found === key.length - gone.length && gone.every((id) => rc.warnings.some((w) => w.startsWith(`${id} left out`))), `${gone.length} pair(s)`);
+check("  ...its answers are dropped without complaint, and 'before' leaves it out too",
+  !rescored.after.problems.some((p) => p.includes("not in key.csv")) && rescored.before.labelled === rescored.after.labelled && rescored.after.labelled < results.labelled);
+check("  ...and the changed number of pairs is flagged", rc.warnings.some((w) => w.startsWith("the notes now give")));
+const cellEchem = key.find((k) => refPair(k.ref_a, k.ref_b) === refPair(CELL_REF, ECHEM_REF));
+const cellEchemChange = rc.changed.find((c) => c.pair === cellEchem?.pair);
+check("a pair is decided on its features as they are now",
+  cellEchemChange?.after === "cross-subject" && cellEchemChange.before !== "cross-subject" && cellEchemChange.similarity === 1, JSON.stringify(cellEchemChange));
+check("  ...and a change in similarity is flagged: the notes are not the ones rated", rc.warnings.some((w) => w.startsWith("similarities differ")));
+check("the comparison counts shared keywords before and after", rc.sharing.rated.after[0] >= rc.sharing.rated.before[0] - gone.length && rc.links.after.cross >= 1);
+check("comparison.md has the tables", /## At today's rule[\s\S]*## Shared keywords across subjects[\s\S]*## Rated pairs decided differently/.test(comparisonMarkdown(rc)));
 
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log(failures === 0 ? "\nAll checks passed." : `\n${failures} check(s) FAILED.`);

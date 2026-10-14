@@ -1,8 +1,14 @@
-// TF-IDF keyword extraction + a TF-IDF-weighted vector used as a stand-in
-// for the MiniLM sentence embedding in the architecture doc's "dual
-// extraction" step. Zero external ML dependencies, so it runs anywhere
-// with no model download - the interface (text -> {keywords, vector}) is
-// exactly what a real embedding call would return, so swapping in
+// A note's terms, in two forms (text -> { vector, keywords }):
+//   - vector: TF-IDF weights over every term, a stand-in for the MiniLM
+//     sentence embedding in the architecture doc's "dual extraction" step.
+//     Similarity, and so every link (graphEngine.js), is computed from it.
+//   - keywords: the note's 12 highest-scoring words by TF-IDF, with a word's
+//     singular and plural counted as one keyword (topKeywords, below). The
+//     keyword map and the graph page show them, and the question generator's
+//     older single-keyword path asks about them. Linking compares the vector's
+//     own top terms instead (graphEngine.js, linkTerms, which says why).
+// Zero external ML dependencies, so it runs anywhere with no model download -
+// the interface is what a real embedding call would return, so swapping in
 // @xenova/transformers or a hosted embedding API later only touches this
 // file.
 
@@ -39,8 +45,11 @@ export function stem(word) {
   return w.slice(0, 6);
 }
 
+// Counts in an object with no prototype: in a plain {}, the word
+// "constructor" starts out as Object's constructor function, and a note using
+// it got a weight of NaN and a NaN similarity to every note, so no links.
 function termFrequencies(tokens) {
-  const tf = {};
+  const tf = Object.create(null);
   for (const t of tokens) tf[t] = (tf[t] || 0) + 1;
   return tf;
 }
@@ -53,10 +62,85 @@ function termFrequencies(tokens) {
  */
 export const tokenSet = (doc) => (doc instanceof Set ? doc : new Set(tokenize(doc)));
 
+// ---------------------------------------------------------------------------
+// Singular and plural
+// ---------------------------------------------------------------------------
+
+const pluralsOf = (w) => [`${w}s`, `${w}es`, ...(w.endsWith("y") ? [`${w.slice(0, -1)}ies`] : [])];
+// the words `w` could be the plural of, in the order they are tried
+const singularsOf = (w) =>
+  [w.endsWith("s") && w.slice(0, -1), w.endsWith("es") && w.slice(0, -2), w.endsWith("ies") && `${w.slice(0, -3)}y`].filter(Boolean);
+
+/**
+ * Whether two keywords are one word, in singular and plural: "cell" /
+ * "cells", "class" / "classes", "query" / "queries". Only plurals, so nothing
+ * is merged that a reader would tell apart - unlike stem(), whose six-letter
+ * cut makes "distributed" and "distribution", or "relational" and "relative",
+ * one word.
+ */
+export function sameWord(a, b) {
+  return a === b || pluralsOf(a).includes(b) || pluralsOf(b).includes(a);
+}
+
+// ---------------------------------------------------------------------------
+// Keywords
+// ---------------------------------------------------------------------------
+// A note's keywords are its highest TF-IDF terms, as they always were, with
+// two changes (Oct 2026):
+//   - A word's singular and plural are one keyword, weighted by both forms'
+//     TF-IDF weights added together. "cell" and "cells" used to take two of
+//     the 12 slots (50 slots across the 117 topics of the link evaluation's
+//     notes). The keyword is shown in the form the note uses most (ties: the
+//     shorter), which always occurs in the note - the keyword map, the
+//     question generator and the highlighting rely on that.
+//   - Numbers ("100", "1024") are never keywords: on their own they name
+//     nothing.
+// A note with neither keeps exactly the keywords it had.
+// TextRank (Mihalcea & Tarau, 2004) was tried in their place and not kept
+// (commit 208d805); docs/LINK_EVALUATION.md, "Keywords and TextRank", has
+// the numbers.
+// Weighted by IDF it gave fewer weak words (function words, common verbs),
+// but fewer of its keywords were words of the notes' own key terms
+// (keyTerms.js), notes lost their central words ("missing", "values" and
+// "binning" from Data Cleaning), and related notes in different subjects kept
+// far fewer words in common. TF-IDF is a strong baseline for this; the
+// keyword-extraction literature found the same (Hasan & Ng, 2010).
+
+const KEYWORDS = 12;
+
+/**
+ * The top keywords from a note's TF-IDF `vector` and term counts `tf` (see
+ * above), highest first; ties keep the order the note first uses them.
+ */
+function topKeywords(vector, tf) {
+  // each word's keyword: a plural joins its singular when the note uses both
+  const keyOf = new Map();
+  for (const w of Object.keys(tf).sort((a, b) => a.length - b.length || (a < b ? -1 : 1))) {
+    const singular = singularsOf(w).find((x) => Object.hasOwn(tf, x));
+    keyOf.set(w, singular ? keyOf.get(singular) : w);
+  }
+  const keywords = new Map(); // key -> { weight, shown }, in order of first use
+  for (const [word, weight] of Object.entries(vector)) {
+    const key = keyOf.get(word);
+    if (/^\d+$/.test(key)) continue;
+    const k = keywords.get(key);
+    if (!k) keywords.set(key, { weight, shown: word });
+    else {
+      k.weight += weight;
+      if (tf[word] > tf[k.shown] || (tf[word] === tf[k.shown] && word.length < k.shown.length)) k.shown = word;
+    }
+  }
+  return [...keywords.values()]
+    .sort((a, b) => b.weight - a.weight)
+    .slice(0, KEYWORDS)
+    .map((k) => k.shown);
+}
+
 /**
  * Compute a TF-IDF vector and top keywords for `text`, using `corpusDocs`
  * (the subject's other notes: raw text strings, or their tokenSet()s) to
- * derive document frequency / idf.
+ * derive document frequency / idf. It returns exactly these two fields,
+ * because callers save the whole result onto the note.
  */
 export function computeTfidf(text, corpusDocs = []) {
   const tokens = tokenize(text);
@@ -75,20 +159,17 @@ export function computeTfidf(text, corpusDocs = []) {
     vector[term] = Number((tfNorm * idf).toFixed(6));
   }
 
-  const keywords = Object.entries(vector)
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 12)
-    .map(([term]) => term);
-
-  return { vector, keywords };
+  return { vector, keywords: topKeywords(vector, tf) };
 }
 
 export function cosineSimilarity(vecA, vecB) {
   const terms = new Set([...Object.keys(vecA), ...Object.keys(vecB)]);
   let dot = 0, magA = 0, magB = 0;
   for (const t of terms) {
-    const a = vecA[t] || 0;
-    const b = vecB[t] || 0;
+    // own weights only: vectors are plain objects, and "constructor" is
+    // inherited by every one of them (see termFrequencies)
+    const a = Object.hasOwn(vecA, t) ? vecA[t] : 0;
+    const b = Object.hasOwn(vecB, t) ? vecB[t] : 0;
     dot += a * b;
     magA += a * a;
     magB += b * b;

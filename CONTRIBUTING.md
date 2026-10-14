@@ -79,10 +79,13 @@ member's section of §3.
    (`npm run relink`, `graph/relink-tool`; see §3).
 3. ~~Fix a note's links when it is edited or deleted.~~ Done by Member 3 with
    note edit/delete (`services/noteLifecycle.js`, PR #8).
-4. Tune the linking thresholds on real notes, then TextRank keywords.
-   Thresholds done (`graph/link-thresholds`): same-subject 0.12 -> 0.11,
-   cross-subject rule kept (see §3). Member 4 relinks the live site once it
-   is deployed. TextRank keywords next.
+4. ~~Tune the linking thresholds on real notes, then TextRank keywords.~~
+   Done. Thresholds (`graph/link-thresholds`, PR #26): same-subject 0.12 ->
+   0.11, cross-subject rule kept. TextRank keywords (`graph/textrank-keywords`):
+   tried on the same ratings and not kept - they did not help linking and
+   were not clearly better keywords; keywords now count singular and plural
+   as one word instead (see §3). Member 4 relinks the live site once both
+   are deployed.
 5. MiniLM sentence embeddings (backlog item 1).
 6. Louvain/Leiden clustering, and feeding link corrections back into the
    linking rule (backlog item 2).
@@ -513,7 +516,9 @@ the `/api/subjects/:id/graph` route, `client/src/pages/KnowledgeGraph.jsx`.
 > - Notes that were already in a real MongoDB database before PR #1 do not
 >   get cross-subject links (the in-memory dev database is unaffected).
 > - The keyword map is only as good as the stored keywords, which sometimes
->   include weak words like "holds" or "enters"; TextRank keywords would help.
+>   include weak words like "holds" or "enters". TextRank keywords were tried
+>   (14 Oct) and did not fix it: in a note of a few sentences nothing tells a
+>   verb from a noun without a part-of-speech tagger (Member 2, item 4).
 > - Backlog unchanged: MiniLM sentence embeddings, real Louvain/Leiden
 >   clustering, and feeding students' link corrections back into the
 >   linking rule.
@@ -639,11 +644,12 @@ tested):
 keyword map, `GET /api/graph/notes/:noteId/keyword-map`
 (`services/keywordMap.js`, rule-based). For each of a note's stored top
 keywords it returns a weight (its TF-IDF weight relative to the note's
-strongest keyword), up to five words it appears alongside (never another top
-keyword or its own plural), and up to three sentences that use it, plus the
-total count. The graph page opens it from a note's "Keyword map" button.
-Its quality is only as good as the stored keywords, so TextRank keywords
-(README "What's next") would improve it directly.
+strongest keyword, singular and plural together), up to five words it
+appears alongside (never another top keyword or its own plural), and up to
+three sentences that use it in either form, plus the total count. The graph
+page opens it from a note's "Keyword map" button. Its quality is only as
+good as the stored keywords; TextRank keywords were tried to improve them,
+and were not clearly better (item 4).
 
 **Next phase (after the demo), in order:**
 1. ~~**Dark-mode link lines on the current graph page.**~~ **Done** (12 Oct,
@@ -689,9 +695,10 @@ Its quality is only as good as the stored keywords, so TextRank keywords
    link touching the note (`deleteEdgesForNotes` in `models/GraphEdge.js`).
    Other notes' keywords are not recomputed after an edit - item 2 covers
    that.
-4. **Tune the thresholds on real notes, then TextRank keywords.** The
-   0.12 / 0.25 + two-keyword rule was tuned on sample notes. TextRank
-   keywords then improve both linking and the keyword map. Two PRs, in this
+4. ~~**Tune the thresholds on real notes, then TextRank keywords.**~~
+   **Done** (14 Oct; TextRank tried and not kept). The 0.12 / 0.25 +
+   two-keyword rule was tuned on sample notes; TextRank keywords were
+   expected to improve both linking and the keyword map. Two PRs, in this
    order.
    - **Link evaluation: built** (12 Oct, `graph/link-evaluation`); the
      thresholds have not changed yet, because the ratings do not exist yet.
@@ -729,9 +736,59 @@ Its quality is only as good as the stored keywords, so TextRank keywords
      least 50% precision. As first written it picked 0.07 (a peak resting on
      two pairs) and a cross-subject rule right only 31% of the time.
      `linkEvaluation.test.mjs` now has 68 checks.
+   - **TextRank keywords: tried, not kept** (14 Oct,
+     `graph/textrank-keywords`). Built as planned (window 2, PageRank with
+     damping 0.85, times IDF) and scored on the same 293 ratings with the
+     new `npm run eval:links -- score <run> --recompute <notes folder>`,
+     which reads the notes again and re-scores the rated pairs on today's
+     features. Linking: related cross-subject pairs kept far fewer words in
+     common (of 12, those sharing two words fell from 5 to 1-2), and the one
+     right cross-subject link was lost at window 2. Keywords: fewer weak words
+     (15.0% against 17.8%), but fewer key-term words (29.1% against 36.5%) -
+     Data Cleaning lost "missing", "values" and "binning". It did not drop
+     "holds" and "enters" either. Numbers and tables: `docs/LINK_EVALUATION.md`,
+     "Keywords and TextRank"; the attempt itself is commit `208d805`.
+   - **What changed instead**:
+     - `tfidf.js`: keywords are still the top TF-IDF terms, but a word's
+       singular and plural are one keyword ("cell" and "cells" took two of
+       the 12 slots, 50 slots across the 117 topics), weighted by both forms
+       together and shown in the form the note uses most; numbers are never
+       keywords. A note with neither keeps exactly its keywords; on the
+       evaluation notes 93 of 117 topics change, by 1.5 words on average.
+       `sameWord(a, b)` (singular/plural only) is exported. `stem()` was not
+       used: its six-letter cut makes "distributed" and "distribution" one
+       word.
+     - `tfidf.js` bug fix: a note using the word "constructor" got a weight of
+       NaN (a plain `{}` inherits `constructor`) and a NaN similarity to every
+       note, so it was never linked. Counts now have no prototype, and
+       `cosineSimilarity` reads own properties only.
+     - `graphEngine.js`: links compare each note's 12 highest TF-IDF terms
+       read from its vector (`linkTerms`) - exactly the words they compared
+       before - instead of the stored keywords. Linking on the new keywords
+       changed no rated decision that mattered but made 18 more cross-subject
+       pairs share two words, so links stay as they were. Cluster labels
+       match singular and plural.
+     - `keywordMap.js`: a keyword's sentences and weight include both forms.
+       `KnowledgeGraph.jsx`: "Also in" and the sentence highlighting match
+       both forms.
+     - Evaluation: `score --recompute` (above); the question evaluation's
+       baseline gets a frozen copy of the old keywords
+       (`evaluation/baseline/keywords.tfidf.js`, used by `generate.mjs` for
+       the "tfidf" strategy only), so its input is unchanged - checked: same
+       questions and metrics on the samples as on `main`.
+     - Thresholds re-checked with the final code: unchanged. Relink dry run
+       on the evaluation notes: links identical to `main`'s (278 same-subject,
+       3 cross-subject, 72 rejected); keywords change on 119 of 127 notes.
+     - **Tests**: new `server/test/keywords.test.mjs` (20 checks);
+       `graphEngine.test.mjs` 47, `keywordMap.test.mjs` 20,
+       `linkEvaluation.test.mjs` 78 checks.
    - **After deploy** (Member 4): `npm run db:backup`, then
      `npm run relink -- --live --all` (dry run), then the same with `--yes`.
-5. **MiniLM sentence embeddings** (backlog item 1).
+     Run once, after both item 4 PRs are deployed.
+5. **MiniLM sentence embeddings** (backlog item 1). The next thing to try
+   for cross-subject links: "class" in IPv4 address classes and in
+   class-imbalanced data is a question of meaning, which no ranking of single
+   words settles.
 6. **Louvain/Leiden clustering and the correction feedback loop** (backlog
    item 2).
 7. Optional, from the Digital Second Brain prototype: search across all

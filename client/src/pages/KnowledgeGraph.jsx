@@ -155,9 +155,20 @@ function keywordMapLayout(keywords, openKeyword) {
   return pos;
 }
 
-// A sentence with each use of `word` marked.
+// A keyword in singular and plural is one keyword: "cell" and "cells" (as
+// sameWord in server/src/services/tfidf.js).
+const pluralsOf = (w) => [`${w}s`, `${w}es`, ...(w.endsWith("y") ? [`${w.slice(0, -1)}ies`] : [])];
+const sameWord = (a, b) => a === b || pluralsOf(a).includes(b) || pluralsOf(b).includes(a);
+const formsOf = (w) => [
+  w,
+  ...pluralsOf(w),
+  ...[w.endsWith("s") && w.slice(0, -1), w.endsWith("es") && w.slice(0, -2), w.endsWith("ies") && `${w.slice(0, -3)}y`].filter(Boolean),
+];
+
+// A sentence with each use of `word` marked, in singular or plural.
 function highlight(sentence, word) {
-  const parts = sentence.split(new RegExp(`(\\b${word.replace(/[^a-z0-9]/gi, "\\$&")}\\b)`, "gi"));
+  const forms = formsOf(word.toLowerCase()).map((f) => f.replace(/[^a-z0-9]/gi, "\\$&"));
+  const parts = sentence.split(new RegExp(`(\\b(?:${forms.join("|")})\\b)`, "gi"));
   return parts.map((p, i) =>
     i % 2 === 1 ? (
       <mark key={i} className="rounded px-0.5 bg-secondary-container text-on-secondary-container">
@@ -436,9 +447,9 @@ export default function KnowledgeGraph() {
   const mapPos = useMemo(() => keywordMapLayout(mapKeywords, map?.keyword), [mapKeywords, map?.keyword]);
   const mapOpen = mapKeywords.find((k) => k.keyword === map?.keyword) || null;
   const mapTitle = map?.data?.note.title || nodeById.get(mapNoteId)?.title || "";
-  // Other notes in this subject that share the open keyword.
+  // Other notes in this subject that share the open keyword, in either form.
   const alsoIn = mapOpen
-    ? (graph?.nodes || []).filter((n) => String(n.id) !== mapNoteId && (n.keywords || []).includes(mapOpen.keyword))
+    ? (graph?.nodes || []).filter((n) => String(n.id) !== mapNoteId && (n.keywords || []).some((k) => sameWord(k, mapOpen.keyword)))
     : [];
 
   const q = query.trim().toLowerCase();

@@ -36,6 +36,13 @@
 // and how far the raters agree. Options: --flat <x> (default 0.02),
 // --min-linked <n> (default 10), --min-precision <x> (default 0.5), --reps <n>
 // bootstrap draws (default 1000).
+//
+// score --recompute <notes folder>: the same, after a change to the keywords
+// (or anything else the linking rule looks at). The notes the run was
+// generated from are read again with the current code, each rated pair is
+// found again by its topics' refs, and the ratings are scored on the features
+// worked out now, beside the run's own. Writes into <output folder>/recomputed
+// (or --out): the files score writes, comparison.md and key.recomputed.csv.
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -43,7 +50,7 @@ import { fileURLToPath } from "node:url";
 import { decideEdge, LINK_RULE } from "../src/services/graphEngine.js";
 import {
   bootstrapDraws, CHOICE, choosePairs, chooseSetting, excerpt, gridSearch, isLink, loadTopics,
-  pairLabels, raterAgreement, readRelated, SAMPLING, scorePairs, stratumOf, stratumWeights,
+  pairLabels, raterAgreement, readRelated, rescorePairs, SAMPLING, scorePairs, stratumOf, stratumWeights,
 } from "./lib/links.js";
 import { parseCsv, seededRandom, shuffled, toCsv } from "./lib/stats.js";
 
@@ -99,6 +106,10 @@ function parseArgs(argv) {
   for (let i = 0; i < rest.length; i++) {
     const a = rest[i];
     if (a === "--out") opts.out = rest[++i];
+    else if (a === "--recompute") {
+      opts.recompute = rest[++i];
+      if (!opts.recompute || opts.recompute.startsWith("--")) throw new Error("--recompute needs the notes folder");
+    }
     else if (numbers[a]) {
       const v = Number(rest[++i]);
       if (!Number.isFinite(v) || v < 0) throw new Error(`${a} needs a number`);
@@ -279,6 +290,33 @@ const featuresOf = (k) => ({
   current: k.current === "none" ? null : k.current,
 });
 
+/** What scoring reads from the folder generation wrote. */
+function readRun(dir) {
+  const read = (name) => fs.readFileSync(path.join(dir, name), "utf8");
+  const keyRows = parseCsv(read("key.csv"));
+  const sheetPath = path.join(dir, "for-raters", "rating_sheet.csv");
+  return {
+    manifest: JSON.parse(read("manifest.json")),
+    keyRows,
+    key: keyRows.map(featuresOf),
+    population: parseCsv(read("pairs.csv")).map(featuresOf),
+    titles: new Map(fs.existsSync(sheetPath) ? parseCsv(fs.readFileSync(sheetPath, "utf8")).map((r) => [r.pair, `${r.title_a} / ${r.title_b}`]) : []),
+  };
+}
+
+function writeResults(outDir, results, grid) {
+  fs.mkdirSync(outDir, { recursive: true });
+  fs.writeFileSync(path.join(outDir, "results.json"), JSON.stringify(results, null, 2));
+  fs.writeFileSync(path.join(outDir, "results.md"), resultsMarkdown(results));
+  const gridRows = [...grid.same.map((r) => ({ group: "same", ...r })), ...grid.cross.map((r) => ({ group: "cross", ...r }))].map((r) => ({
+    ...r,
+    precision_ci: r.precision_ci?.join("-") ?? "",
+    recall_ci: r.recall_ci?.join("-") ?? "",
+    f1_ci: r.f1_ci?.join("-") ?? "",
+  }));
+  fs.writeFileSync(path.join(outDir, "grid.csv"), toCsv(gridRows, GRID_COLUMNS));
+}
+
 /**
  * Run scoring. Exported so the tests can call it without a child process.
  * Returns the results object that results.json holds.
@@ -287,15 +325,23 @@ export function runLinkScoring(options) {
   const opts = { ...CHOICE, reps: 1000, write: true, quiet: false, ...options };
   const dir = opts.dir ?? opts.inputs?.[0];
   if (!dir) throw new Error("give the output folder that eval:links generate wrote");
-  const files = opts.files ?? opts.inputs?.slice(1);
-  const read = (name) => fs.readFileSync(path.join(dir, name), "utf8");
-  const manifest = JSON.parse(read("manifest.json"));
-  const key = parseCsv(read("key.csv")).map(featuresOf);
-  const population = parseCsv(read("pairs.csv")).map(featuresOf);
-  const sheetPath = path.join(dir, "for-raters", "rating_sheet.csv");
-  const titles = new Map(fs.existsSync(sheetPath) ? parseCsv(fs.readFileSync(sheetPath, "utf8")).map((r) => [r.pair, `${r.title_a} / ${r.title_b}`]) : []);
+  const { results, grid } = scoreRun({ ...readRun(dir), dir, files: opts.files ?? opts.inputs?.slice(1) }, opts);
+  if (opts.write) writeResults(dir, results, grid);
+  if (!opts.quiet) console.log(resultsMarkdown(results));
+  return results;
+}
 
-  const { raters, answers, comments, problems, practiceRows } = readRatings(dir, files, new Set(key.map((k) => k.pair)));
+/**
+ * The scoring itself: the raters' answers in `dir` (or `files`) against the
+ * rated pairs' features in `key` and every pair in `population`. Writes
+ * nothing. Answers for a pair of the sheet that is not in `key` are ignored
+ * without complaint when `sheetPairs` lists it (a re-scored pair whose topic
+ * no longer matches). Returns { results, grid, items }.
+ */
+function scoreRun({ dir, files, manifest, key, population, titles, sheetPairs }, opts) {
+  const { raters, answers, comments, problems, practiceRows } = readRatings(dir, files, new Set(sheetPairs ?? key.map((k) => k.pair)));
+  const keyIds = new Set(key.map((k) => k.pair));
+  for (const id of answers.keys()) if (!keyIds.has(id)) answers.delete(id);
   const labels = pairLabels(answers);
   const labelled = key.filter((k) => labels.get(k.pair).label !== null).map((k) => ({ ...k, label: labels.get(k.pair).label }));
   const { weightOf, unrepresented } = stratumWeights(labelled, manifest.strata);
@@ -363,19 +409,196 @@ export function runLinkScoring(options) {
     comments: Object.fromEntries(comments),
     problems,
   };
-  if (opts.write) {
-    fs.writeFileSync(path.join(dir, "results.json"), JSON.stringify(results, null, 2));
-    fs.writeFileSync(path.join(dir, "results.md"), resultsMarkdown(results));
-    const gridRows = [...grid.same.map((r) => ({ group: "same", ...r })), ...grid.cross.map((r) => ({ group: "cross", ...r }))].map((r) => ({
-      ...r,
-      precision_ci: r.precision_ci?.join("-") ?? "",
-      recall_ci: r.recall_ci?.join("-") ?? "",
-      f1_ci: r.f1_ci?.join("-") ?? "",
-    }));
-    fs.writeFileSync(path.join(dir, "grid.csv"), toCsv(gridRows, GRID_COLUMNS));
+  return { results, grid, items };
+}
+
+// ---------------------------------------------------------------------------
+// Scoring again after a change: the same ratings, features worked out now
+// ---------------------------------------------------------------------------
+
+const RECOMPUTED_COLUMNS = ["pair", "stratum", "same_subject", "ref_a", "ref_b", "similarity", "shared_before", "shared_after", "decision_before", "decision_after", "raters"];
+
+/**
+ * `score <run> --recompute <notes folder>`: the run's ratings scored again
+ * with the current code, to measure a change to the keywords (or anything
+ * else pairFeatures looks at) on ratings that already exist. The notes folder
+ * is the one `generate` read; it is read again, and every rated pair is found
+ * again by its topics' refs (lib/links.js, rescorePairs). The pairs keep
+ * their strata, so the sampling weights are the run's; the population (links
+ * made) is every pair of the notes as read now. "Before" is the run's own
+ * features on the same pairs, both scored with today's rule.
+ *
+ * Writes into <run>/recomputed (or `out`), leaving the run's results alone:
+ * results.md, results.json and grid.csv as `score` writes them, with the
+ * recommendation; comparison.md, before against after; key.recomputed.csv,
+ * every rated pair's shared keywords and decision before and after.
+ * Exported for the tests, which may pass `topics` instead of a folder.
+ * Returns { before, after, comparison }.
+ */
+export async function runLinkRescoring(options) {
+  const opts = { ...CHOICE, reps: 1000, write: true, quiet: false, ...options };
+  const dir = opts.dir ?? opts.inputs?.[0];
+  if (!dir) throw new Error("give the output folder that eval:links generate wrote");
+  const files = opts.files ?? opts.inputs?.slice(1);
+  const run = readRun(dir);
+  let topics = opts.topics;
+  let skipped = [];
+  if (!topics) {
+    if (!opts.recompute) throw new Error("give the notes folder the run was generated from, after --recompute");
+    ({ topics, problems: skipped } = await loadTopics(opts.recompute));
   }
-  if (!opts.quiet) console.log(resultsMarkdown(results));
-  return results;
+
+  const { key, unmatched, largestChange } = rescorePairs(run.keyRows, topics);
+  const population = scorePairs(topics);
+  const found = new Set(key.map((k) => k.pair));
+  const sheetPairs = run.key.map((k) => k.pair);
+  const before = scoreRun({ ...run, dir, files, sheetPairs, key: run.key.filter((k) => found.has(k.pair)) }, opts);
+  const after = scoreRun({ ...run, dir, files, sheetPairs, key, population }, opts);
+
+  const rule = { ...LINK_RULE };
+  const pairCounts = { all: population.length, same: population.filter((p) => p.sameSubject).length, cross: population.filter((p) => !p.sameSubject).length };
+  const warnings = [
+    ...unmatched.map((u) => `${u.pair} left out: ${u.reason}`),
+    ...(largestChange > 1e-9 ? [`similarities differ from key.csv by up to ${largestChange.toPrecision(3)}: the notes, or the vector, are not the ones that were rated - check the labels still apply`] : []),
+    ...(["all", "same", "cross"].some((k) => pairCounts[k] !== run.manifest.pairs?.[k])
+      ? [`the notes now give ${pairCounts.all} pairs (${pairCounts.same} same-subject, ${pairCounts.cross} cross-subject); the run had ${run.manifest.pairs?.all} (${run.manifest.pairs?.same}, ${run.manifest.pairs?.cross})`]
+      : []),
+    ...skipped.map((p) => `file skipped: ${p}`),
+  ];
+
+  // F1 after minus before in each resample: both runs score the same pairs,
+  // in the same order and strata, from the same seed, so the draws match
+  const f1Change = (group) => {
+    const [b, a] = [before.grid.current[group].f1Draws, after.grid.current[group].f1Draws];
+    const diffs = a.map((x, i) => (x === null || b[i] === null ? null : x - b[i])).filter((d) => d !== null).sort((x, y) => x - y);
+    if (!diffs.length || after.results.current[group].f1 === null) return null;
+    const at = (q) => diffs[Math.min(diffs.length - 1, Math.floor(q * diffs.length))];
+    return { change: round4(after.results.current[group].f1 - before.results.current[group].f1), ci: [round4(at(0.025)), round4(at(0.975))] };
+  };
+  const sharing = (pairs) => [1, 2, 3].map((n) => pairs.filter((p) => !p.sameSubject && p.sharedKeywords.length >= n).length);
+  const linksByType = (pairs) => {
+    const types = pairs.map((p) => decideEdge(p, rule));
+    return { same: types.filter((t) => t === "same-subject").length, cross: types.filter((t) => t === "cross-subject").length, rejected: types.filter((t) => t === "rejected").length };
+  };
+  const labelOf = new Map(after.items.map((it) => [it.pair, it.label]));
+  const beforeOf = new Map(run.key.map((k) => [k.pair, k]));
+  const decisions = key.map((k) => ({ pair: k.pair, after: k, before: beforeOf.get(k.pair) }));
+  const changed = decisions
+    .filter((d) => (decideEdge(d.before, rule) || "none") !== (decideEdge(d.after, rule) || "none"))
+    .map((d) => ({
+      pair: d.pair,
+      titles: run.titles.get(d.pair) || "",
+      same_subject: d.after.sameSubject,
+      similarity: Number(d.after.weight.toFixed(3)),
+      shared_before: d.before.sharedKeywords,
+      shared_after: d.after.sharedKeywords,
+      before: decideEdge(d.before, rule) || "none",
+      after: decideEdge(d.after, rule) || "none",
+      raters_say: labelOf.has(d.pair) ? (labelOf.get(d.pair) ? "related" : "not related") : "no label",
+    }));
+
+  const comparison = {
+    created: new Date().toISOString(),
+    commit: gitCommit(),
+    run: { generated_at_commit: run.manifest.commit, seed: run.manifest.seed, pairs_rated: run.key.length },
+    rule,
+    pairs_found: key.length,
+    labelled: after.results.labelled,
+    largest_similarity_change: largestChange,
+    warnings,
+    current: {
+      same: { before: before.results.current.same, after: after.results.current.same, f1_change: f1Change("same") },
+      cross: { before: before.results.current.cross, after: after.results.current.cross, f1_change: f1Change("cross") },
+    },
+    sharing: {
+      rated: { before: sharing(before.items), after: sharing(after.items) },
+      rated_related: { before: sharing(before.items.filter((it) => it.label)), after: sharing(after.items.filter((it) => it.label)) },
+      all: { before: sharing(run.population), after: sharing(population) },
+    },
+    links: { before: linksByType(run.population), after: linksByType(population) },
+    changed,
+    recommended: { rule: after.results.rule.recommended, same: after.results.choice.same.reason, cross: after.results.choice.cross.reason },
+  };
+
+  if (opts.write) {
+    const outDir = opts.out || path.join(dir, "recomputed");
+    writeResults(outDir, after.results, after.grid);
+    fs.writeFileSync(path.join(outDir, "comparison.md"), comparisonMarkdown(comparison));
+    fs.writeFileSync(path.join(outDir, "comparison.json"), JSON.stringify(comparison, null, 2));
+    const afterOf = new Map(key.map((k) => [k.pair, k]));
+    const rows = run.keyRows.map((row) => {
+      const a = afterOf.get(row.pair);
+      const b = beforeOf.get(row.pair);
+      return {
+        pair: row.pair, stratum: row.stratum, same_subject: row.same_subject, ref_a: row.ref_a, ref_b: row.ref_b,
+        similarity: a ? String(a.weight) : "", shared_before: b.sharedKeywords.join(" "), shared_after: a ? a.sharedKeywords.join(" ") : "",
+        decision_before: decideEdge(b, rule) || "none", decision_after: a ? decideEdge(a, rule) || "none" : "",
+        raters: labelOf.has(row.pair) ? (labelOf.get(row.pair) ? "related" : "not related") : "",
+      };
+    });
+    fs.writeFileSync(path.join(outDir, "key.recomputed.csv"), toCsv(rows, RECOMPUTED_COLUMNS));
+  }
+  if (!opts.quiet) console.log(comparisonMarkdown(comparison));
+  return { before: before.results, after: after.results, comparison };
+}
+
+const round4 = (x) => Math.round(x * 10000) / 10000;
+const signed = (x) => `${x >= 0 ? "+" : "−"}${Math.abs(x).toFixed(2)}`;
+
+/** Before against after on the same ratings, as tables for a PR. */
+export function comparisonMarkdown(c) {
+  const { rule } = c;
+  const lines = [
+    "# Link evaluation: the same ratings, scored again",
+    "",
+    `The run's ${c.run.pairs_rated} rated pairs (generated at commit ${c.run.generated_at_commit || "unknown"}, seed ${c.run.seed}), scored again with the code at commit ${c.commit || "unknown"}. ` +
+      `${c.pairs_found} found again by their topics' refs, ${c.labelled} of them labelled. Largest change in similarity from key.csv: ${c.largest_similarity_change.toPrecision(2)}. ` +
+      `"Before" is the run's own features, "after" the features worked out now; both are scored with today's rule (${rule.similarity}; across subjects ${rule.crossSimilarity} and ${rule.crossMinShared} shared keywords) and the run's sampling weights.`,
+  ];
+  if (c.warnings.length) lines.push("", "**Check first:**", "", ...c.warnings.map((w) => `- ${w}`));
+  lines.push("", "## At today's rule", "", "| Links | Features | Rated pairs linked | Precision | Recall | F1 |", "| --- | --- | --- | --- | --- | --- |");
+  for (const [group, name] of [["same", "Same subject"], ["cross", "Cross subject"]]) {
+    for (const when of ["before", "after"]) {
+      const r = c.current[group][when];
+      lines.push(`| ${name} | ${when} | ${r.linked} | ${withCi(r.precision, r.precision_ci)} | ${withCi(r.recall, r.recall_ci)} | ${f1Cell(r)} |`);
+    }
+  }
+  lines.push("", "Change in F1, after minus before, with its 95% interval over the same resamples (paired):", "");
+  for (const [group, name] of [["same", "Same subject"], ["cross", "Cross subject"]]) {
+    const d = c.current[group].f1_change;
+    lines.push(`- ${name}: ${d ? `${signed(d.change)} [${signed(d.ci[0])} to ${signed(d.ci[1])}]` : "-"}`);
+  }
+  const triple = (xs) => xs.join(" / ");
+  lines.push(
+    "",
+    "## Shared keywords across subjects",
+    "",
+    "| | Before | After |",
+    "| --- | --- | --- |",
+    `| Rated cross-subject pairs sharing 1+ / 2+ / 3+ keywords | ${triple(c.sharing.rated.before)} | ${triple(c.sharing.rated.after)} |`,
+    `| ...of them, related | ${triple(c.sharing.rated_related.before)} | ${triple(c.sharing.rated_related.after)} |`,
+    `| All cross-subject pairs sharing 1+ / 2+ / 3+ keywords | ${triple(c.sharing.all.before)} | ${triple(c.sharing.all.after)} |`,
+    `| Links made across all the notes: same-subject / cross-subject / rejected | ${c.links.before.same} / ${c.links.before.cross} / ${c.links.before.rejected} | ${c.links.after.same} / ${c.links.after.cross} / ${c.links.after.rejected} |`,
+  );
+  if (c.changed.length) {
+    lines.push("", "## Rated pairs decided differently", "", "| Pair | Topics | Similarity | Shared before | Shared after | Before | After | Raters |", "| --- | --- | --- | --- | --- | --- | --- | --- |");
+    for (const x of c.changed) lines.push(`| ${x.pair} | ${x.titles} | ${x.similarity} | ${x.shared_before.join(", ") || "-"} | ${x.shared_after.join(", ") || "-"} | ${x.before} | ${x.after} | ${x.raters_say} |`);
+  } else lines.push("", "No rated pair is decided differently.");
+  const rec = c.recommended.rule;
+  const keep = rec.similarity === rule.similarity && rec.crossSimilarity === rule.crossSimilarity && rec.crossMinShared === rule.crossMinShared;
+  lines.push(
+    "",
+    "## The thresholds, with the new features",
+    "",
+    keep ? "The choice rule keeps today's thresholds." : `The choice rule recommends ${rec.similarity}; across subjects ${rec.crossSimilarity} and ${rec.crossMinShared} shared keywords.`,
+    "",
+    `- Same subject: ${c.recommended.same}.`,
+    `- Cross subject: ${c.recommended.cross}.`,
+    "",
+    "results.md in this folder has the full tables.",
+    "",
+  );
+  return lines.join("\n");
 }
 
 const GRID_COLUMNS = ["group", "similarity", "crossSimilarity", "crossMinShared", "links", "linked", "linked_related", "related", "precision", "precision_ci", "recall", "recall_ci", "f1", "f1_ci"];
@@ -464,6 +687,7 @@ const samePath = (a, b) => (process.platform === "win32" ? a.toLowerCase() === b
 const USAGE = [
   "usage: npm run eval:links -- generate <notes folder> [--out dir] [--seed 1] [--per-bin 10] [--cross-cap 150] [--zero-shared 20]",
   "       npm run eval:links -- score <output folder> [ratings files...] [--flat 0.02] [--min-linked 10] [--min-precision 0.5] [--reps 1000]",
+  "       npm run eval:links -- score <output folder> --recompute <notes folder> [--out dir] [same options]",
 ].join("\n");
 
 // run directly: `node evaluation/links.mjs ...`
@@ -475,7 +699,11 @@ if (process.argv[1] && samePath(fileURLToPath(import.meta.url), path.resolve(pro
       process.exit(1);
     }
     if (opts.command === "generate") await runLinkGeneration(opts);
-    else {
+    else if (opts.recompute) {
+      await runLinkRescoring(opts);
+      const out = opts.out || path.join(opts.inputs[0], "recomputed");
+      console.log(`Written to ${path.join(out, "comparison.md")}, results.md, results.json, grid.csv and key.recomputed.csv`);
+    } else {
       runLinkScoring(opts);
       console.log(`Written to ${path.join(opts.inputs[0], "results.md")}, results.json and grid.csv`);
     }
