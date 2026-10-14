@@ -7,7 +7,9 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { decideEdge, LINK_RULE, pairFeatures } from "../../src/services/graphEngine.js";
+import { cosine } from "../../src/services/embeddings.js";
+import { decideEdge, decideLink, LINK_RULE, pairFeatures } from "../../src/services/graphEngine.js";
+import { embedNoteText } from "../../src/services/noteEmbedding.js";
 import { freshTerms } from "../../src/services/relink.js";
 import { collectFiles, notesFromFile } from "./ingest.js";
 import { cohenKappa, round, shuffled, wilson } from "./stats.js";
@@ -47,9 +49,12 @@ export function collectSubjects(folder) {
  *   ref    - "<subject>/<file>#<n>", the same topic on every run over the
  *            same files (#0 a whole file, #1... its subtopics)
  *   label  - the title a student sees: "Document › Subtopic" for a subtopic
+ *   embedding - with an `embedder` (embeddings.js), the topic's meaning as
+ *            one vector (noteEmbedding.js), for runs on sentence-embedding
+ *            similarity
  * Files that cannot be read are skipped and listed in `problems`.
  */
-export async function loadTopics(folder) {
+export async function loadTopics(folder, { embedder = null } = {}) {
   const subjects = collectSubjects(folder);
   if (!subjects.length) throw new Error(`no note files in ${folder} - put each subject's files in a subfolder named after it`);
   const notes = [];
@@ -82,20 +87,52 @@ export async function loadTopics(folder) {
     text: n.rawText || "",
     ...terms.get(String(n._id)),
   }));
+  if (embedder) for (const t of topics) t.embedding = await embedNoteText(t.text, embedder);
   return { subjects: summary, topics, problems };
 }
 
 /**
- * Every pair of `topics`, with what the linking rule looks at (graphEngine's
- * pairFeatures: weight, sharedKeywords, sameSubject) and what it decides now
- * (`current`: an edge type or null). `a` and `b` index into `topics`.
+ * A pair's features for a run on `measure`: graphEngine's pairFeatures
+ * (weight, sharedKeywords, sameSubject), with `weight` the similarity the run
+ * measures - TF-IDF, or the cosine of the topics' sentence embeddings - and
+ * the TF-IDF similarity always kept as `tfidfWeight`, because today's rule
+ * needs it (todaysEdge).
  */
-export function scorePairs(topics) {
+export function pairFeaturesBy(a, b, measure = "tfidf") {
+  const features = pairFeatures(a, b);
+  if (measure === "tfidf") return { ...features, tfidfWeight: features.weight };
+  if (measure !== "embedding") throw new Error(`unknown similarity "${measure}"`);
+  if (!a.embedding || !b.embedding) throw new Error("topics have no embeddings - load them with an embedder");
+  return { ...features, tfidfWeight: features.weight, weight: cosine(a.embedding, b.embedding) };
+}
+
+/**
+ * What the graph decides today for a pair, from its features in a run on
+ * `measure`: graphEngine's decideLink on its TF-IDF similarity, with its
+ * embedding similarity as `meaning` when the run measured that - so across
+ * subjects, the rule by meaning that the graph uses wherever both notes have
+ * an embedding. A run on TF-IDF measures the graph without the model.
+ */
+export function todaysEdge(it, measure = "tfidf") {
+  return decideLink({
+    weight: it.tfidfWeight ?? it.weight,
+    sharedKeywords: it.sharedKeywords,
+    sameSubject: it.sameSubject,
+    meaning: measure === "embedding" ? it.weight : null,
+  });
+}
+
+/**
+ * Every pair of `topics`, with what the linking rule looks at
+ * (pairFeaturesBy) and what it decides now (`current`: an edge type or null,
+ * by today's rule). `a` and `b` index into `topics`.
+ */
+export function scorePairs(topics, { measure = "tfidf" } = {}) {
   const pairs = [];
   for (let i = 0; i < topics.length; i++) {
     for (let j = i + 1; j < topics.length; j++) {
-      const features = pairFeatures(topics[i], topics[j]);
-      pairs.push({ a: i, b: j, ...features, current: decideEdge(features) });
+      const features = pairFeaturesBy(topics[i], topics[j], measure);
+      pairs.push({ a: i, b: j, ...features, current: todaysEdge(features, measure) });
     }
   }
   return pairs;
@@ -119,7 +156,7 @@ export const isLink = (edgeType) => edgeType === "same-subject" || edgeType === 
  *                   keywords play no part in it, so anything above rounding
  *                   means the notes or the vector are not what was rated.
  */
-export function rescorePairs(keyRows, topics) {
+export function rescorePairs(keyRows, topics, { measure = "tfidf" } = {}) {
   const byRef = new Map(topics.map((t) => [t.ref, t]));
   const key = [];
   const unmatched = [];
@@ -131,13 +168,13 @@ export function rescorePairs(keyRows, topics) {
       unmatched.push({ pair: row.pair, reason: `no topic ${gone.join(" or ")} in the notes now` });
       continue;
     }
-    const features = pairFeatures(a, b);
+    const features = pairFeaturesBy(a, b, measure);
     if (features.sameSubject !== (row.same_subject === "yes")) {
       unmatched.push({ pair: row.pair, reason: `${row.ref_a} and ${row.ref_b} are no longer ${features.sameSubject ? "in different subjects" : "in the same subject"}` });
       continue;
     }
     largestChange = Math.max(largestChange, Math.abs(features.weight - Number(row.similarity)));
-    key.push({ pair: row.pair, stratum: row.stratum, ...features, current: decideEdge(features) });
+    key.push({ pair: row.pair, stratum: row.stratum, ...features, current: todaysEdge(features, measure) });
   }
   return { key, unmatched, largestChange };
 }
@@ -170,20 +207,40 @@ const binOf = (x, edges) => {
 const binsOf = (edges) => [`<${edges[0].toFixed(3)}`, ...edges.slice(1).map((e, i) => `${edges[i].toFixed(3)}-${e.toFixed(3)}`), `>=${edges.at(-1).toFixed(3)}`];
 const sharedBand = (n) => (n >= 3 ? "3+" : String(n));
 
+// Sentence-embedding similarity runs on another scale: on the link
+// evaluation's notes, same-subject pairs mostly score 0.3-0.7 and
+// cross-subject ones below 0.5, with a few to 0.8. A pair sharing no word
+// can still be close in meaning, so for this measure the cross-subject pairs
+// sharing none are binned as finely as the others.
+const STRATA_EDGES = Object.freeze({
+  tfidf: { same: SAME_EDGES, cross: CROSS_EDGES, none: NONE_EDGES },
+  embedding: {
+    same: [0.3, 0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7, 0.75],
+    cross: [0.4, 0.5, 0.55, 0.6, 0.65, 0.7],
+    none: [0.4, 0.5, 0.55, 0.6, 0.65, 0.7],
+  },
+});
+const edgesOf = (measure) => {
+  if (!STRATA_EDGES[measure]) throw new Error(`unknown similarity "${measure}"`);
+  return STRATA_EDGES[measure];
+};
+
 /** The stratum a pair is sampled from: "same 0.100-0.125", "cross 2 shared 0.250-0.300", "cross 0 shared <0.050". */
-export function stratumOf(pair) {
-  if (pair.sameSubject) return `same ${binOf(pair.weight, SAME_EDGES)}`;
+export function stratumOf(pair, measure = "tfidf") {
+  const edges = edgesOf(measure);
+  if (pair.sameSubject) return `same ${binOf(pair.weight, edges.same)}`;
   const shared = pair.sharedKeywords.length;
-  if (!shared) return `cross 0 shared ${binOf(pair.weight, NONE_EDGES)}`;
-  return `cross ${sharedBand(shared)} shared ${binOf(pair.weight, CROSS_EDGES)}`;
+  if (!shared) return `cross 0 shared ${binOf(pair.weight, edges.none)}`;
+  return `cross ${sharedBand(shared)} shared ${binOf(pair.weight, edges.cross)}`;
 }
 
 /** Every stratum, in the order they are sampled and reported, with its sampling group. */
-export function allStrata() {
+export function allStrata(measure = "tfidf") {
+  const edges = edgesOf(measure);
   return [
-    ...binsOf(SAME_EDGES).map((bin) => ({ id: `same ${bin}`, group: "same" })),
-    ...["1", "2", "3+"].flatMap((k) => binsOf(CROSS_EDGES).map((bin) => ({ id: `cross ${k} shared ${bin}`, group: "cross-shared" }))),
-    ...binsOf(NONE_EDGES).map((bin) => ({ id: `cross 0 shared ${bin}`, group: "cross-none" })),
+    ...binsOf(edges.same).map((bin) => ({ id: `same ${bin}`, group: "same" })),
+    ...["1", "2", "3+"].flatMap((k) => binsOf(edges.cross).map((bin) => ({ id: `cross ${k} shared ${bin}`, group: "cross-shared" }))),
+    ...binsOf(edges.none).map((bin) => ({ id: `cross 0 shared ${bin}`, group: "cross-none" })),
   ];
 }
 
@@ -212,8 +269,10 @@ export function waterFill(sizes, budget) {
 export const SAMPLING = Object.freeze({ perBin: 10, crossCap: 150, zeroShared: 20, practice: 10 });
 
 /**
- * Which pairs to rate. Every random choice comes from `random`, in a fixed
- * order, so a seed always gives the same pairs. Returns:
+ * Which pairs to rate, binned by the similarity `options.measure` ("tfidf",
+ * the default, or "embedding"; the pairs' `weight` is that similarity). Every
+ * random choice comes from `random`, in a fixed order, so a seed always gives
+ * the same pairs. Returns:
  *   strata   - [{ id, group, size, take }] in allStrata() order. `size` is
  *              how many pairs the stratum has; it weights the stratum's
  *              ratings when scoring (stratumWeights)
@@ -221,14 +280,14 @@ export const SAMPLING = Object.freeze({ perBin: 10, crossCap: 150, zeroShared: 2
  *   practice - pairs for the raters' practice round, none of them in `sample`
  */
 export function choosePairs(pairs, options, random) {
-  const o = { ...SAMPLING, ...options };
-  const members = new Map(allStrata().map((s) => [s.id, []]));
-  for (const p of pairs) members.get(stratumOf(p)).push(p);
-  const strata = allStrata().map((s) => ({ ...s, size: members.get(s.id).length, take: 0 }));
+  const o = { ...SAMPLING, measure: "tfidf", ...options };
+  const members = new Map(allStrata(o.measure).map((s) => [s.id, []]));
+  for (const p of pairs) members.get(stratumOf(p, o.measure)).push(p);
+  const strata = allStrata(o.measure).map((s) => ({ ...s, size: members.get(s.id).length, take: 0 }));
 
   // the lowest bin holds most pairs, and most of the related ones recall
   // could miss, so it gets half as many again
-  const lowest = `same <${SAME_EDGES[0].toFixed(3)}`;
+  const lowest = `same <${edgesOf(o.measure).same[0].toFixed(3)}`;
   for (const s of strata.filter((x) => x.group === "same")) s.take = Math.min(s.size, s.id === lowest ? Math.round(o.perBin * 1.5) : o.perBin);
   for (const [group, budget] of [["cross-shared", o.crossCap], ["cross-none", o.zeroShared]]) {
     const inGroup = strata.filter((s) => s.group === group);
@@ -349,7 +408,7 @@ const weightedWilson = (share, ws) => {
  * of rated pairs, unweighted. F1 = 2TP / (linked + related), so it is 0 when
  * nothing is linked, and null when no pair is related.
  */
-export function ruleMetrics(items, rule) {
+export function ruleMetrics(items, rule, decide = (it) => decideEdge(it, rule)) {
   let tp = 0;
   let pp = 0;
   let rel = 0;
@@ -357,7 +416,7 @@ export function ruleMetrics(items, rule) {
   const linkedW = [];
   const relatedW = [];
   for (const it of items) {
-    const linked = isLink(decideEdge(it, rule));
+    const linked = isLink(decide(it));
     if (linked) {
       pp += it.sampleWeight;
       linkedW.push(it.sampleWeight);
@@ -407,8 +466,8 @@ export function bootstrapDraws(items, random, reps = 1000) {
  * draw has no related pair) and their 95% percentile interval (`ci`, null
  * when too few draws have a related pair).
  */
-export function f1Bootstrap(items, draws, rule) {
-  const linked = items.map((it) => isLink(decideEdge(it, rule)));
+export function f1Bootstrap(items, draws, rule, decide = (it) => decideEdge(it, rule)) {
+  const linked = items.map((it) => isLink(decide(it)));
   const f1s = draws.map((draw) => {
     let tp = 0;
     let pp = 0;
@@ -430,6 +489,10 @@ export function f1Bootstrap(items, draws, rule) {
 // thresholds 0.01 apart, as exact two-place numbers
 const steps = (from, to) => Array.from({ length: Math.round((to - from) * 100) + 1 }, (_, i) => round(from + i / 100, 2));
 export const GRID = Object.freeze({ same: steps(0.05, 0.3), cross: steps(0.15, 0.4), minShared: [1, 2, 3] });
+// For sentence-embedding similarity: its own range, and across subjects also
+// no shared word at all, since meaning can link two notes without one.
+export const EMBEDDING_GRID = Object.freeze({ same: steps(0.3, 0.8), cross: steps(0.4, 0.8), minShared: [0, 1, 2, 3] });
+export const gridFor = (measure = "tfidf") => (measure === "embedding" ? EMBEDDING_GRID : GRID);
 
 /**
  * Every setting of the grid, scored. Same-subject decisions depend only on
@@ -439,10 +502,14 @@ export const GRID = Object.freeze({ same: steps(0.05, 0.3), cross: steps(0.15, 0
  * `crossSimilarity` x `crossMinShared`, each on its own group of pairs.
  * `population` is every pair (scorePairs), for `links`: how many links the
  * setting makes across all the notes, exactly rather than estimated.
+ * `grid` is GRID, or EMBEDDING_GRID for a run on embedding similarity. The
+ * current setting is scored by `today` (the graph's own decision, todaysEdge),
+ * so a setting on another similarity is compared with what the graph does
+ * now, on the same draws; `current` gives its rows' thresholds.
  * Returns { same: rows, cross: rows, current: { same, cross } }; each row
  * also carries its F1 in every bootstrap draw (`f1Draws`, not enumerable).
  */
-export function gridSearch({ items, population, draws, current = LINK_RULE }) {
+export function gridSearch({ items, population, draws, current = LINK_RULE, grid = GRID, today = (it) => todaysEdge(it) }) {
   const sameItems = items.filter((it) => it.sameSubject);
   const crossItems = items.filter((it) => !it.sameSubject);
   const samePop = population.filter((p) => p.sameSubject);
@@ -455,14 +522,14 @@ export function gridSearch({ items, population, draws, current = LINK_RULE }) {
   };
   const sameDraws = remap(sameItems);
   const crossDraws = remap(crossItems);
-  const row = (group, groupDraws, pop, rule) => {
-    const spread = f1Bootstrap(group, groupDraws, rule);
+  const row = (group, groupDraws, pop, rule, decide = (it) => decideEdge(it, rule)) => {
+    const spread = f1Bootstrap(group, groupDraws, rule, decide);
     const out = {
       similarity: rule.similarity,
       crossSimilarity: rule.crossSimilarity,
       crossMinShared: rule.crossMinShared,
-      links: pop.filter((p) => isLink(decideEdge(p, rule))).length,
-      ...ruleMetrics(group, rule),
+      links: pop.filter((p) => isLink(decide(p))).length,
+      ...ruleMetrics(group, rule, decide),
       f1_ci: spread.ci,
     };
     // for chooseSetting's paired comparison; kept out of results.json
@@ -470,9 +537,9 @@ export function gridSearch({ items, population, draws, current = LINK_RULE }) {
     return out;
   };
   return {
-    same: GRID.same.map((t) => row(sameItems, sameDraws, samePop, { ...current, similarity: t })),
-    cross: GRID.minShared.flatMap((k) => GRID.cross.map((t) => row(crossItems, crossDraws, crossPop, { ...current, crossSimilarity: t, crossMinShared: k }))),
-    current: { same: row(sameItems, sameDraws, samePop, current), cross: row(crossItems, crossDraws, crossPop, current) },
+    same: grid.same.map((t) => row(sameItems, sameDraws, samePop, { ...current, similarity: t })),
+    cross: grid.minShared.flatMap((k) => grid.cross.map((t) => row(crossItems, crossDraws, crossPop, { ...current, crossSimilarity: t, crossMinShared: k }))),
+    current: { same: row(sameItems, sameDraws, samePop, current, today), cross: row(crossItems, crossDraws, crossPop, current, today) },
   };
 }
 

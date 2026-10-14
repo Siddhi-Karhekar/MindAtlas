@@ -10,7 +10,8 @@ const PORT = 4598;
 const API = `http://localhost:${PORT}/api`;
 const server = spawn(process.execPath, ["src/index.js"], {
   cwd: fileURLToPath(new URL("..", import.meta.url)),
-  env: { ...process.env, PORT: String(PORT), MONGODB_URI: "", DB_FILE: "memory", GROQ_API_KEY: "", NODE_ENV: "development" },
+  // no embedding model, so the links do not depend on whether it is installed here
+  env: { ...process.env, PORT: String(PORT), MONGODB_URI: "", DB_FILE: "memory", GROQ_API_KEY: "", SEMANTIC_MODEL: "off", NODE_ENV: "development" },
   stdio: ["ignore", "pipe", "pipe"],
 });
 let serverLog = "";

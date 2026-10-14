@@ -24,6 +24,8 @@ export async function deleteSubjectAndData(id, ownerId) {
   removed.graph_edges = noteIds.length
     ? (await col("graph_edges").deleteMany({ sourceNoteId: noteIds })) + (await col("graph_edges").deleteMany({ targetNoteId: noteIds }))
     : 0;
+  // notes' embeddings (models/NoteEmbedding.js) are made from their text
+  removed.note_embeddings = noteIds.length ? await col("note_embeddings").deleteMany({ noteId: noteIds.map(String) }) : 0;
   removed.questions = testIds.length ? await col("questions").deleteMany({ testId: testIds }) : 0;
   removed.responses = attemptIds.length ? await col("responses").deleteMany({ attemptId: attemptIds }) : 0;
   for (const name of ["feedback_reports", "question_reports", "attempts", "tests", "mastery", "notes"]) {

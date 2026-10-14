@@ -10,6 +10,12 @@
 //     its subject: a topic against every other topic (a subtopic's siblings
 //     included, as when it was saved), a split document against the topics
 //     outside it;
+//   - each topic's sentence embedding (noteEmbedding.js), when the optional
+//     model is there: a stored one is reused while the note's text is
+//     unchanged. Cross-subject pairs whose topics both have one are linked by
+//     meaning (graphEngine.js, decideLink). The vectors are stored, so the
+//     server uses them even without the model: running the relink where the
+//     model is installed is enough for existing notes;
 //   - every pair of topics, across all their subjects, with classifyPair().
 //
 // What it keeps:
@@ -18,8 +24,8 @@
 //     student's decision about the pair, as in noteLifecycle.js;
 //   - a link whose pair still qualifies keeps its edge and id (the graph
 //     page uses edge ids for remove / undo); only changed fields are written.
-// It deletes links the current rule no longer makes, and links to notes that
-// no longer exist. Running it twice changes nothing the second time, so a
+// It deletes links the current rule no longer makes, links to notes that no
+// longer exist, and those notes' embeddings. Running it twice changes nothing the second time, so a
 // run that stops half way is finished by running it again.
 //
 // Run it with scripts/relink.mjs. Take a backup before running it on the
@@ -27,7 +33,10 @@
 
 import { deleteEdgesByIds, edgeFields, findEdgesForNotes, isRemoved, upsertEdge } from "../models/GraphEdge.js";
 import { findNotesByIds, findNotesByOwner, isSplitParent, updateNote } from "../models/Note.js";
+import { deleteEmbeddingsForNotes, findEmbeddingsByOwner } from "../models/NoteEmbedding.js";
+import { getEmbedder } from "./embeddings.js";
 import { classifyPair } from "./graphEngine.js";
+import { withEmbeddings } from "./noteEmbedding.js";
 import { computeTfidf, tokenSet } from "./tfidf.js";
 
 const sameId = (a, b) => String(a) === String(b);
@@ -101,13 +110,21 @@ export function desiredEdges(topics) {
  *   added, dropped    - links the current rule adds, and no longer makes
  *   removedKept       - links the student removed, left removed
  *   dangling          - links to notes that no longer exist, deleted
+ *   embeddingModel    - the model embeddings were made with, or null
+ *   embedded          - topics with an embedding, so linked by meaning across subjects
+ *   embeddingsMade    - embeddings made now (new notes, edited ones, a new model)
+ *   embeddingsDropped - embeddings of notes that no longer exist, deleted
+ * `embedder` is the embedding model (embeddings.js, getEmbedder); left out,
+ * it is whatever is ready now.
  */
-export async function relinkOwner(ownerId, { dryRun = false } = {}) {
+export async function relinkOwner(ownerId, { dryRun = false, embedder } = {}) {
   const notes = await findNotesByOwner(ownerId);
   const terms = freshTerms(notes);
   const termsOf = (n) => terms.get(String(n._id));
   const rewritten = notes.filter((n) => !same(n.keywords, termsOf(n).keywords) || !same(n.vector, termsOf(n).vector));
-  const topics = notes.filter((n) => !isSplitParent(n)).map((n) => ({ ...n, ...termsOf(n) }));
+  const plainTopics = notes.filter((n) => !isSplitParent(n)).map((n) => ({ ...n, ...termsOf(n) }));
+  const model = embedder === undefined ? await getEmbedder() : embedder;
+  const { notes: topics, computed } = await withEmbeddings(plainTopics, { embedder: model, compute: plainTopics, save: !dryRun });
   const desired = desiredEdges(topics);
 
   const ownIds = new Set(notes.map((n) => String(n._id)));
@@ -117,6 +134,7 @@ export async function relinkOwner(ownerId, { dryRun = false } = {}) {
   // this ran - which links itself, so its edges are left alone.
   const outside = [...new Set(stored.flatMap((e) => [String(e.sourceNoteId), String(e.targetNoteId)]).filter((id) => !ownIds.has(id)))];
   const existing = new Set((await findNotesByIds(outside)).map((n) => String(n._id)));
+  const orphanEmbeddings = (await findEmbeddingsByOwner(ownerId)).map((r) => r.noteId).filter((id) => !ownIds.has(id));
 
   const report = {
     notes: notes.length,
@@ -131,6 +149,10 @@ export async function relinkOwner(ownerId, { dryRun = false } = {}) {
     dropped: 0,
     removedKept: 0,
     dangling: 0,
+    embeddingModel: model?.model ?? null,
+    embedded: topics.filter((t) => t.embedding).length,
+    embeddingsMade: computed,
+    embeddingsDropped: orphanEmbeddings.length,
   };
   const toDelete = [];
   const toWrite = [];
@@ -185,6 +207,7 @@ export async function relinkOwner(ownerId, { dryRun = false } = {}) {
     for (const n of rewritten) await updateNote(n._id, termsOf(n));
     await deleteEdgesByIds(toDelete);
     for (const e of toWrite) await upsertEdge(e);
+    await deleteEmbeddingsForNotes(orphanEmbeddings);
   }
   return report;
 }

@@ -12,17 +12,22 @@ are `server/test/linkEvaluation.test.mjs`.
 The first run (14 Oct 2026) is under "Results" below: it lowered the
 same-subject threshold from 0.12 to 0.11 and kept the cross-subject rule.
 The same ratings were then scored again to try TextRank keywords, which were
-not kept: "Keywords and TextRank", below.
+not kept: "Keywords and TextRank", below. A second run, sampled and rated on
+sentence-embedding similarity, made cross-subject links by meaning:
+"Sentence embeddings", below.
 
 ## What is measured
 
-The linking rule (`server/src/services/graphEngine.js`) has three numbers:
+The linking rule (`server/src/services/graphEngine.js`, `decideLink`) has
+these numbers:
 
 | Constant | Now | What it does |
 | --- | --- | --- |
 | `SIMILARITY_THRESHOLD` | 0.11 | Two topics in the same subject are linked at this similarity or above. |
 | `CROSS_SUBJECT_THRESHOLD` | 0.25 | Topics in different subjects need this similarity... |
 | `CROSS_SUBJECT_MIN_SHARED` | 2 | ...and this many shared top words: each topic's 12 highest TF-IDF terms (`linkTerms`). |
+| `CROSS_SUBJECT_MEANING_THRESHOLD` | 0.68 | When both topics have a sentence embedding, topics in different subjects need this embedding similarity instead... |
+| `CROSS_SUBJECT_MEANING_MIN_SHARED` | 1 | ...and this many shared top words. |
 
 They were set on a handful of hand-written notes. The evaluation measures, for
 every setting of them in a grid, how many of the links it makes are right
@@ -74,6 +79,18 @@ topic's keywords against the rest of its subject as `npm run relink` does (so
 they do not depend on the order files were added), scores every pair of topics
 with the current rule, and picks the pairs to rate (below). Options:
 `--per-bin 10`, `--cross-cap 150`, `--zero-shared 20`, `--seed`.
+
+`--similarity embedding` measures sentence-embedding similarity instead of
+TF-IDF: the cosine of two topics' MiniLM vectors, each the normalised mean of
+its sentences' vectors (`server/src/services/noteEmbedding.js`). It needs the
+model (`npm run semantic:install`). Pairs are binned and sampled by that
+similarity, on its own scale (same subject 0.30-0.75 in bins, cross subject
+0.40-0.70, with pairs sharing no word binned as finely, since meaning can link
+them). Scoring searches thresholds on it (0.30-0.80 same subject, 0.40-0.80
+cross subject with 0-3 shared words) and still compares them with today's
+rule on TF-IDF similarity, which `key.csv` keeps for every pair
+(`tfidf_similarity`). The run remembers its similarity in `manifest.json`, so
+`score` takes no option.
 
 It writes:
 
@@ -361,6 +378,67 @@ with today's rule (0.25 and two shared words):
   against 58 with `main`'s code, whose relink recomputes keywords against the
   whole subject.
 
+## Sentence embeddings (14 Oct 2026)
+
+Member 2's next-phase item 5: link topics by what they are about, with the
+optional MiniLM model (`server/src/services/embeddings.js`). A topic's vector
+is the normalised mean of its sentences' vectors
+(`server/src/services/noteEmbedding.js`), so a long topic is never cut off at
+the model's 256-word-piece limit.
+
+**On run 1's ratings** (sampled by TF-IDF similarity), embeddings ranked
+related same-subject pairs better (AUC 0.91 against 0.81), but the choice rule
+kept today's rule for both groups. Across subjects, embedding similarity of
+0.65-0.68 with a shared word found 6-7 of the 12 related pairs at 42-48%
+precision - just under the 50% floor - and was found on the same pairs.
+
+**Run 2** settled it on new pairs: 153 pairs sampled by embedding similarity
+(`generate --similarity embedding`, seed 2), rated blind by a fresh Claude
+agent given only the rater folder (29 yes, 122 no, 2 unsure). The hypotheses
+and the decision rule were written into the run's `PLAN.md` before rating,
+with checksums of the sheet and key; the code that generated it is commit
+`9ef90a1`. Decision rule: link a group by meaning only if the unchanged choice
+rule recommends an embedding setting for it.
+
+| Links | Setting | Rated pairs linked | Precision | Recall | F1 |
+| --- | --- | --- | --- | --- | --- |
+| Same subject | today (TF-IDF 0.11) | 18 | 32% [13-61%] | 27% [9-59%] | 0.30 [0.18-0.47] |
+| Cross subject | today (TF-IDF 0.25 + 2 shared) | 2 | 100% [34-100%] | 8% [1-48%] | 0.15 [0.06-0.36] |
+| Cross subject | **embedding 0.68 + 1 shared (chosen)** | 10 | 58% [29-82%] | 29% [8-67%] | 0.39 [0.20-0.71] |
+| Cross subject | embedding 0.65 + 1 shared (named in the plan) | 15 | 50% [27-73%] | 38% [12-74%] | 0.44 [0.24-0.72] |
+
+- **Same subject: kept on TF-IDF.** The best embedding threshold scored F1
+  0.47 against 0.30, but not clearly better across resamples.
+- **Cross subject: linked by meaning** at embedding similarity 0.68 with at
+  least one shared top TF-IDF word. The gain over today held across resamples
+  (+0.02 to +0.50). On run 1's ratings the same setting is right 48% of the
+  time (recall 33%, F1 0.39 against 0.09), so expect about half of these links
+  to be right. The right ones are mostly data pre-processing and outliers in
+  DEDV and ML; Decision trees <-> Data reduction is a typical wrong one.
+- **Vectors must not depend on their batch.** Batched, the 8-bit model gives
+  a sentence a slightly different vector depending on the other sentences in
+  its batch (alone and in a batch of four: cosine 0.995), so a topic's vector
+  depended on what had been embedded before it, and a relink of the same notes
+  made 12 cross-subject links where the evaluation made 13. Sentences are now
+  embedded one at a time (`embed(texts, { alone: true })`): the same topics in
+  either order give identical vectors, and the whole set takes 2.5 s. Both
+  runs were scored again on these vectors (`score --recompute`): similarities
+  moved by at most 0.016, no rated pair is decided differently at the chosen
+  setting, and the choice rule keeps it.
+- **Relink, dry run** on a local database of the same notes uploaded through
+  `main`'s API, with the model: 278 same-subject links as before, 13
+  cross-subject (3 on `main`), 65 rejected (72); 117 embeddings made.
+
+**In the app.** Each topic's embedding is stored in its own collection
+(`note_embeddings`, `server/src/models/NoteEmbedding.js`) with the model's
+name and a fingerprint of the text, made when a note is saved if the model is
+ready, and by `npm run relink` for the rest. A pair is linked by meaning only
+when both topics have a vector from the same model; otherwise the TF-IDF rule
+applies, as before. Same-subject links never change. Without the model (a
+default install, CI, the live site today) nothing changes at all - except that
+stored vectors are used wherever they exist, so a relink run where the model is
+installed gives existing notes their links by meaning.
+
 ## What to report
 
 - The notes: subjects, files, topics, formats and where they came from.
@@ -376,6 +454,10 @@ with today's rule (0.25 and two shared words):
 - **The keywords are the relink's.** Notes saved before the last relink on
   the live site may have different keywords, so their links can differ until
   Member 4 relinks.
+- **Cross-subject links by meaning rest on two runs of one AI rater each,**
+  with about 10 linked pairs per run behind each precision. Half right is the
+  honest expectation; a person rating the cross-subject pairs of run 2 would
+  show how far that holds.
 - **Shared words depend on what the rule compares.** Links compare each
   topic's top TF-IDF terms (`linkTerms`), not its stored keywords, so how
   keywords are ranked does not move a link; a change to the vector or to
@@ -392,6 +474,8 @@ with today's rule (0.25 and two shared words):
 ## Files
 
 ```
+server/src/services/noteEmbedding.js   a topic's vector; attaching stored ones for linking
+server/src/models/NoteEmbedding.js     the stored vectors
 server/evaluation/
   links.mjs          generate and score
   lib/links.js       topics, pairs, strata, labels, weighted metrics, the choice

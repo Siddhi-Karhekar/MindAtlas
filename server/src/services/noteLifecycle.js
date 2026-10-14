@@ -17,6 +17,7 @@
 // document its subtopics with it.
 
 import { deleteEdgesForNotes } from "../models/GraphEdge.js";
+import { deleteEmbeddingsForNotes } from "../models/NoteEmbedding.js";
 import { deleteMasteryForTopics } from "../models/Mastery.js";
 import {
   deleteNotesByIds,
@@ -155,6 +156,7 @@ export async function deleteNote(note) {
   }
 
   await deleteEdgesForNotes(ids);
+  await deleteEmbeddingsForNotes(ids);
   await deleteMasteryForTopics(note.ownerId, ids);
   await deleteNotesByIds(ids);
 

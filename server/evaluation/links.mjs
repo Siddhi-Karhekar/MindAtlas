@@ -43,21 +43,32 @@
 // found again by its topics' refs, and the ratings are scored on the features
 // worked out now, beside the run's own. Writes into <output folder>/recomputed
 // (or --out): the files score writes, comparison.md and key.recomputed.csv.
+//
+// --similarity embedding (generate): measure sentence-embedding similarity
+// instead of TF-IDF - the cosine of two topics' MiniLM vectors
+// (services/noteEmbedding.js; needs `npm run semantic:install`). Pairs are
+// binned and sampled by it, and score searches thresholds on it, still
+// comparing them with today's rule on TF-IDF similarity. The run remembers
+// its similarity (manifest.json), so score needs no option.
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { getEmbedder, semanticStatus } from "../src/services/embeddings.js";
 import { decideEdge, LINK_RULE } from "../src/services/graphEngine.js";
 import {
   bootstrapDraws, CHOICE, choosePairs, chooseSetting, excerpt, gridSearch, isLink, loadTopics,
-  pairLabels, raterAgreement, readRelated, rescorePairs, SAMPLING, scorePairs, stratumOf, stratumWeights,
+  gridFor, pairLabels, raterAgreement, readRelated, rescorePairs, SAMPLING, scorePairs, stratumOf, stratumWeights, todaysEdge,
 } from "./lib/links.js";
 import { parseCsv, seededRandom, shuffled, toCsv } from "./lib/stats.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SHEET_COLUMNS = ["pair", "subject_a", "topic_a", "title_a", "excerpt_a", "subject_b", "topic_b", "title_b", "excerpt_b", "related", "comment"];
-const KEY_COLUMNS = ["pair", "stratum", "same_subject", "topic_a", "topic_b", "ref_a", "ref_b", "subject_a", "subject_b", "similarity", "shared_keywords", "current"];
-const PAIR_COLUMNS = ["topic_a", "topic_b", "ref_a", "ref_b", "subject_a", "subject_b", "same_subject", "similarity", "shared_keywords", "current", "stratum", "pair"];
+// `similarity` is the one the run measures (manifest.json, `similarity`);
+// `tfidf_similarity` is what today's rule decides on, whatever the run measures
+const KEY_COLUMNS = ["pair", "stratum", "same_subject", "topic_a", "topic_b", "ref_a", "ref_b", "subject_a", "subject_b", "similarity", "tfidf_similarity", "shared_keywords", "current"];
+const PAIR_COLUMNS = ["topic_a", "topic_b", "ref_a", "ref_b", "subject_a", "subject_b", "same_subject", "similarity", "tfidf_similarity", "shared_keywords", "current", "stratum", "pair"];
+const MEASURES = ["tfidf", "embedding"];
 
 export const HOW_TO_RATE = `How to rate the pairs
 =====================
@@ -106,7 +117,10 @@ function parseArgs(argv) {
   for (let i = 0; i < rest.length; i++) {
     const a = rest[i];
     if (a === "--out") opts.out = rest[++i];
-    else if (a === "--recompute") {
+    else if (a === "--similarity") {
+      opts.similarity = rest[++i];
+      if (!MEASURES.includes(opts.similarity)) throw new Error(`--similarity is ${MEASURES.join(" or ")}`);
+    } else if (a === "--recompute") {
       opts.recompute = rest[++i];
       if (!opts.recompute || opts.recompute.startsWith("--")) throw new Error("--recompute needs the notes folder");
     }
@@ -136,17 +150,19 @@ const sharedText = (p) => p.sharedKeywords.join(" ");
  * Returns { outDir, topics, pairs, strata, sample, practice, sheet, key, manifest }.
  */
 export async function runLinkGeneration(options) {
-  const opts = { seed: 1, ...SAMPLING, quiet: false, ...options };
+  const opts = { seed: 1, ...SAMPLING, similarity: "tfidf", quiet: false, ...options };
   const log = (...a) => !opts.quiet && console.log(...a);
   if (opts.inputs?.length > 1) throw new Error("give one notes folder, with a subfolder per subject");
   const folder = opts.folder ?? opts.inputs?.[0];
   if (!folder) throw new Error("give the notes folder");
+  const measure = opts.similarity;
+  const embedder = measure === "embedding" ? await embedderFor(opts, log) : null;
 
-  const { subjects, topics, problems } = await loadTopics(folder);
+  const { subjects, topics, problems } = await loadTopics(folder, { embedder });
   if (topics.length < 2) throw new Error("fewer than two topics - nothing to pair");
-  const pairs = scorePairs(topics);
+  const pairs = scorePairs(topics, { measure });
   const random = seededRandom(opts.seed);
-  const { strata, sample, practice } = choosePairs(pairs, opts, random);
+  const { strata, sample, practice } = choosePairs(pairs, { ...opts, measure }, random);
 
   // the sheet's order, and which topic of each pair is shown first, are both
   // random, so neither says anything about the pair's score or stratum
@@ -172,14 +188,14 @@ export async function runLinkGeneration(options) {
     topic_a: r.first.id, topic_b: r.second.id, ref_a: r.first.ref, ref_b: r.second.ref,
     subject_a: r.first.subjectId, subject_b: r.second.subjectId,
     // full precision, so scoring decides exactly as the graph would
-    similarity: String(r.weight), shared_keywords: sharedText(r), current: r.current || "none",
+    similarity: String(r.weight), tfidf_similarity: String(r.tfidfWeight), shared_keywords: sharedText(r), current: r.current || "none",
   }));
   const rated = new Map(rows.map((r) => [`${r.a}|${r.b}`, r.id]));
   const pairRows = pairs.map((p) => ({
     topic_a: topics[p.a].id, topic_b: topics[p.b].id, ref_a: topics[p.a].ref, ref_b: topics[p.b].ref,
     subject_a: topics[p.a].subjectId, subject_b: topics[p.b].subjectId, same_subject: p.sameSubject ? "yes" : "no",
-    similarity: String(p.weight), shared_keywords: sharedText(p), current: p.current || "none",
-    stratum: stratumOf(p), pair: rated.get(`${p.a}|${p.b}`) || "",
+    similarity: String(p.weight), tfidf_similarity: String(p.tfidfWeight), shared_keywords: sharedText(p), current: p.current || "none",
+    stratum: stratumOf(p, measure), pair: rated.get(`${p.a}|${p.b}`) || "",
   }));
 
   const manifest = {
@@ -187,6 +203,8 @@ export async function runLinkGeneration(options) {
     commit: gitCommit(),
     seed: opts.seed,
     options: { perBin: opts.perBin, crossCap: opts.crossCap, zeroShared: opts.zeroShared, practice: opts.practice },
+    similarity: measure,
+    model: embedder?.model ?? null,
     rule: { ...LINK_RULE },
     subjects,
     topics: topics.length,
@@ -223,9 +241,20 @@ function topicsMarkdown(topics) {
   return lines.join("\n");
 }
 
+// The embedding model for a run on embedding similarity: `opts.embedder` (the
+// tests pass a stand-in), or the local MiniLM model, which must be installed.
+async function embedderFor(opts, log) {
+  if (opts.embedder) return opts.embedder;
+  log("Loading the embedding model ...");
+  const embedder = await getEmbedder({ waitMs: 180_000 });
+  if (!embedder) throw new Error(`--similarity embedding needs the embedding model (npm run semantic:install): ${semanticStatus().reason}`);
+  return embedder;
+}
+
 function generationSummary(m, outDir) {
   const lines = [
     "",
+    ...(m.similarity === "embedding" ? [`Pairs binned by sentence-embedding similarity (${m.model}).`] : []),
     ...m.subjects.map((s) => `  ${s.subject}: ${s.topics} topic(s) from ${s.files.length} file(s)`),
     "",
     `${m.topics} topics, ${m.pairs.all} pairs (${m.pairs.same} same-subject, ${m.pairs.cross} cross-subject).`,
@@ -282,6 +311,8 @@ function readRatings(dir, files, known) {
 }
 
 const featuresOf = (k) => ({
+  // runs before Oct 2026 measured TF-IDF only, and have no column for it
+  tfidfWeight: Number(k.tfidf_similarity || k.similarity),
   pair: k.pair,
   stratum: k.stratum,
   sameSubject: k.same_subject === "yes",
@@ -347,9 +378,15 @@ function scoreRun({ dir, files, manifest, key, population, titles, sheetPairs },
   const { weightOf, unrepresented } = stratumWeights(labelled, manifest.strata);
   const items = labelled.map((it) => ({ ...it, sampleWeight: weightOf.get(it.stratum) }));
 
-  const rule = { ...LINK_RULE };
   const draws = bootstrapDraws(items, seededRandom(opts.seed ?? manifest.seed ?? 1), opts.reps);
-  const grid = gridSearch({ items, population, draws, current: rule });
+  const measure = manifest.similarity || "tfidf";
+  // today's setting, as the thresholds of its rows: across subjects, a run on
+  // embeddings measures the graph's rule by meaning
+  const rule = measure === "embedding"
+    ? { ...LINK_RULE, crossSimilarity: LINK_RULE.crossMeaning, crossMinShared: LINK_RULE.crossMeaningMinShared }
+    : { ...LINK_RULE };
+  const today = (it) => todaysEdge(it, measure);
+  const grid = gridSearch({ items, population, draws, current: rule, grid: gridFor(measure), today });
   const same = chooseSetting(grid.same, grid.current.same, opts);
   const cross = chooseSetting(grid.cross, grid.current.cross, opts);
   const recommended = {
@@ -359,17 +396,19 @@ function scoreRun({ dir, files, manifest, key, population, titles, sheetPairs },
   };
 
   // rated pairs the recommended rule decides differently: what a change
-  // would actually do, pair by pair
+  // would actually do, pair by pair. A group whose setting is kept is decided
+  // as today; a changed one on the similarity the run measures.
+  const recommendedEdge = (it) => ((it.sameSubject ? same.keep : cross.keep) ? today(it) : decideEdge(it, recommended));
   const changed = items
-    .filter((it) => isLink(decideEdge(it, rule)) !== isLink(decideEdge(it, recommended)))
+    .filter((it) => isLink(today(it)) !== isLink(recommendedEdge(it)))
     .map((it) => ({
       pair: it.pair,
       titles: titles.get(it.pair) || "",
       same_subject: it.sameSubject,
       similarity: Number(it.weight.toFixed(3)),
       shared: it.sharedKeywords.length,
-      now: isLink(decideEdge(it, rule)) ? "linked" : "not linked",
-      recommended: isLink(decideEdge(it, recommended)) ? "linked" : "not linked",
+      now: isLink(today(it)) ? "linked" : "not linked",
+      recommended: isLink(recommendedEdge(it)) ? "linked" : "not linked",
       raters_say: it.label ? "related" : "not related",
     }));
 
@@ -384,6 +423,8 @@ function scoreRun({ dir, files, manifest, key, population, titles, sheetPairs },
   const results = {
     created: new Date().toISOString(),
     notes: { subjects: manifest.subjects, topics: manifest.topics, pairs: manifest.pairs, generated_at_commit: manifest.commit, seed: manifest.seed },
+    similarity: measure,
+    model: manifest.model ?? null,
     raters,
     pairs_in_sheet: key.length,
     labelled: labelled.length,
@@ -441,15 +482,17 @@ export async function runLinkRescoring(options) {
   if (!dir) throw new Error("give the output folder that eval:links generate wrote");
   const files = opts.files ?? opts.inputs?.slice(1);
   const run = readRun(dir);
+  const measure = run.manifest.similarity || "tfidf";
   let topics = opts.topics;
   let skipped = [];
   if (!topics) {
     if (!opts.recompute) throw new Error("give the notes folder the run was generated from, after --recompute");
-    ({ topics, problems: skipped } = await loadTopics(opts.recompute));
+    const embedder = measure === "embedding" ? await embedderFor(opts, () => {}) : null;
+    ({ topics, problems: skipped } = await loadTopics(opts.recompute, { embedder }));
   }
 
-  const { key, unmatched, largestChange } = rescorePairs(run.keyRows, topics);
-  const population = scorePairs(topics);
+  const { key, unmatched, largestChange } = rescorePairs(run.keyRows, topics, { measure });
+  const population = scorePairs(topics, { measure });
   const found = new Set(key.map((k) => k.pair));
   const sheetPairs = run.key.map((k) => k.pair);
   const before = scoreRun({ ...run, dir, files, sheetPairs, key: run.key.filter((k) => found.has(k.pair)) }, opts);
@@ -476,15 +519,17 @@ export async function runLinkRescoring(options) {
     return { change: round4(after.results.current[group].f1 - before.results.current[group].f1), ci: [round4(at(0.025)), round4(at(0.975))] };
   };
   const sharing = (pairs) => [1, 2, 3].map((n) => pairs.filter((p) => !p.sameSubject && p.sharedKeywords.length >= n).length);
+  // today's rule decides on TF-IDF similarity, whatever the run measures
+  const todays = (p) => todaysEdge(p, measure) || "none";
   const linksByType = (pairs) => {
-    const types = pairs.map((p) => decideEdge(p, rule));
+    const types = pairs.map(todays);
     return { same: types.filter((t) => t === "same-subject").length, cross: types.filter((t) => t === "cross-subject").length, rejected: types.filter((t) => t === "rejected").length };
   };
   const labelOf = new Map(after.items.map((it) => [it.pair, it.label]));
   const beforeOf = new Map(run.key.map((k) => [k.pair, k]));
   const decisions = key.map((k) => ({ pair: k.pair, after: k, before: beforeOf.get(k.pair) }));
   const changed = decisions
-    .filter((d) => (decideEdge(d.before, rule) || "none") !== (decideEdge(d.after, rule) || "none"))
+    .filter((d) => todays(d.before) !== todays(d.after))
     .map((d) => ({
       pair: d.pair,
       titles: run.titles.get(d.pair) || "",
@@ -492,8 +537,8 @@ export async function runLinkRescoring(options) {
       similarity: Number(d.after.weight.toFixed(3)),
       shared_before: d.before.sharedKeywords,
       shared_after: d.after.sharedKeywords,
-      before: decideEdge(d.before, rule) || "none",
-      after: decideEdge(d.after, rule) || "none",
+      before: todays(d.before),
+      after: todays(d.after),
       raters_say: labelOf.has(d.pair) ? (labelOf.get(d.pair) ? "related" : "not related") : "no label",
     }));
 
@@ -532,7 +577,7 @@ export async function runLinkRescoring(options) {
       return {
         pair: row.pair, stratum: row.stratum, same_subject: row.same_subject, ref_a: row.ref_a, ref_b: row.ref_b,
         similarity: a ? String(a.weight) : "", shared_before: b.sharedKeywords.join(" "), shared_after: a ? a.sharedKeywords.join(" ") : "",
-        decision_before: decideEdge(b, rule) || "none", decision_after: a ? decideEdge(a, rule) || "none" : "",
+        decision_before: todays(b), decision_after: a ? todays(a) : "",
         raters: labelOf.has(row.pair) ? (labelOf.get(row.pair) ? "related" : "not related") : "",
       };
     });
@@ -613,6 +658,9 @@ const sameSetting = (a, b) => a && b && a.similarity === b.similarity && a.cross
 /** The results as tables that can go straight into a report or a PR. */
 export function resultsMarkdown(r) {
   const { current, recommended } = r.rule;
+  const crossNames = r.similarity === "embedding"
+    ? ["CROSS_SUBJECT_MEANING_THRESHOLD", "CROSS_SUBJECT_MEANING_MIN_SHARED"]
+    : ["CROSS_SUBJECT_THRESHOLD", "CROSS_SUBJECT_MIN_SHARED"];
   const lines = [
     "# Link evaluation: human ratings",
     "",
@@ -621,11 +669,14 @@ export function resultsMarkdown(r) {
     "",
     "## Recommendation",
     "",
+    ...(r.similarity === "embedding"
+      ? [`Similarity measured: sentence embeddings (${r.model || "unknown model"}), the cosine of two topics' vectors (services/noteEmbedding.js). "Now" is today's graph where notes have embeddings: same-subject links on TF-IDF similarity, cross-subject links by meaning. A same-subject threshold that differs from "now" is on embedding similarity: using it means linking those on embeddings too.`, ""]
+      : []),
     "| Constant in graphEngine.js | Now | Recommended | Why |",
     "| --- | --- | --- | --- |",
     `| SIMILARITY_THRESHOLD | ${current.similarity} | ${recommended.similarity} | ${r.choice.same.keep ? "keep: " : ""}${r.choice.same.reason} |`,
-    `| CROSS_SUBJECT_THRESHOLD | ${current.crossSimilarity} | ${recommended.crossSimilarity} | ${r.choice.cross.keep ? "keep: " : ""}${r.choice.cross.reason} |`,
-    `| CROSS_SUBJECT_MIN_SHARED | ${current.crossMinShared} | ${recommended.crossMinShared} | (chosen with the cross-subject threshold) |`,
+    `| ${crossNames[0]} | ${current.crossSimilarity} | ${recommended.crossSimilarity} | ${r.choice.cross.keep ? "keep: " : ""}${r.choice.cross.reason} |`,
+    `| ${crossNames[1]} | ${current.crossMinShared} | ${recommended.crossMinShared} | (chosen with the cross-subject threshold) |`,
     "",
     `How it is chosen: settings linking fewer than ${r.choice.min_linked} rated pairs are not considered. A setting is as good as the best when its F1 is not clearly below the best one's: across the same resamples, the difference stays above -${r.choice.flat} at the 97.5th percentile. The current setting is kept if it is as good as the best; otherwise the most precise of those settings is recommended, because a wrong link costs more than a missing one, provided its precision is at least ${pct(r.choice.min_precision)} so that the links it adds are right more often than wrong.`,
     "",
@@ -685,7 +736,7 @@ export function resultsMarkdown(r) {
 // Windows paths differ only by case ("d:\\" and "D:\\" are the same folder)
 const samePath = (a, b) => (process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b);
 const USAGE = [
-  "usage: npm run eval:links -- generate <notes folder> [--out dir] [--seed 1] [--per-bin 10] [--cross-cap 150] [--zero-shared 20]",
+  "usage: npm run eval:links -- generate <notes folder> [--out dir] [--seed 1] [--similarity tfidf|embedding] [--per-bin 10] [--cross-cap 150] [--zero-shared 20]",
   "       npm run eval:links -- score <output folder> [ratings files...] [--flat 0.02] [--min-linked 10] [--min-precision 0.5] [--reps 1000]",
   "       npm run eval:links -- score <output folder> --recompute <notes folder> [--out dir] [same options]",
 ].join("\n");
