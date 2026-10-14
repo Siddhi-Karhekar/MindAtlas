@@ -1,8 +1,8 @@
-// Tests for a note's keywords (services/tfidf.js): TextRank weighted by IDF,
-// with singular and plural as one keyword, and the vector left as it was.
-// Also that the question evaluation's baseline still gets the TF-IDF keywords
-// it was measured with (evaluation/baseline/keywords.tfidf.js).
-import { computeTfidf, rankKeywords, sameWord, tokenize, tokenSet } from "../src/services/tfidf.js";
+// Tests for a note's keywords (services/tfidf.js): its top TF-IDF terms, with
+// a word's singular and plural as one keyword and no numbers, and the vector
+// left as it was. Also that the question evaluation's baseline still gets the
+// keywords it was measured with (evaluation/baseline/keywords.tfidf.js).
+import { computeTfidf, cosineSimilarity, sameWord, tokenize, tokenSet } from "../src/services/tfidf.js";
 import { tfidfKeywords } from "../evaluation/baseline/keywords.tfidf.js";
 import { withBaselineKeywords } from "../evaluation/generate.mjs";
 
@@ -24,33 +24,39 @@ check("cell / cells, class / classes, query / queries, bus / buses are one word"
 check("...and nothing else is: not distributed / distribution, relational / relative, general / generation",
   !sameWord("distributed", "distribution") && !sameWord("relational", "relative") && !sameWord("general", "generation") && !sameWord("process", "processing"));
 
-console.log("\n=== TextRank weighted by IDF ===");
+console.log("\n=== Keywords ===");
 const result = computeTfidf(WAREHOUSE, DEDV);
 check("computeTfidf still returns exactly { vector, keywords } (callers save the whole result on the note)",
   same(Object.keys(result).sort(), ["keywords", "vector"]));
 check("the vector is TF-IDF as before: its top 12 are the keywords the baseline gets",
   same(tfidfTop(result.vector), tfidfKeywords(WAREHOUSE, DEDV)) && same(tfidfTop(computeTfidf(CELL).vector), tfidfKeywords(CELL)));
-check("a word joined to many others outranks the rest",
-  computeTfidf("Router forwards packets. Router stores tables. Router runs protocols. Switch learns addresses.").keywords[0] === "router");
-check("with no other notes, a word the note repeats wins", computeTfidf(WAREHOUSE).keywords[0] === "data", computeTfidf(WAREHOUSE).keywords.join(", "));
-check("  ...but one every note in the subject uses is pushed down by its IDF",
-  result.keywords[0] === "warehouse" && result.keywords.indexOf("data") > 2, result.keywords.join(", "));
+check("a note with no singular-and-plural pair and no number keeps exactly its keywords",
+  same(result.keywords, tfidfKeywords(WAREHOUSE, DEDV)) && DEDV.every((t, i) => same(computeTfidf(t, DEDV.filter((_, j) => j !== i)).keywords, tfidfKeywords(t, DEDV.filter((_, j) => j !== i)))),
+  result.keywords.join(", "));
 const plural = computeTfidf("Cells divide. The cells grow. A cell membrane surrounds each cell nucleus. Cells need energy.").keywords;
 check("a word's singular and plural take one slot", plural.filter((k) => sameWord(k, "cell")).length === 1, plural.join(", "));
 check("  ...shown as the note writes it most often", plural[0] === "cells", plural.join(", "));
 check("  ...or, on a tie, the shorter form", computeTfidf("The cell grows. Two cells divide.").keywords.includes("cell"));
+const together = computeTfidf("Cell wall. Cell growth. Cells divide. Cells split. Membrane, membrane, membrane.").keywords;
+check("  ...weighted by both forms together: 2 + 2 uses outrank 3", together[0] === "cell" && together[1] === "membrane", together.join(", "));
 check("numbers are never keywords", !computeTfidf("Port 1024 and port 80 carry 1024 requests over TCP.").keywords.some((k) => /^\d+$/.test(k)));
 check("every keyword is a word of the note, as written",
   [CELL, WAREHOUSE].every((t) => computeTfidf(t, DEDV).keywords.every((k) => tokenize(t).includes(k))));
 check("at most 12 keywords", computeTfidf(`${CELL} ${WAREHOUSE} ${DEDV.join(" ")}`).keywords.length === 12);
 check("the order of the other notes makes no difference", same(result.keywords, computeTfidf(WAREHOUSE, [...DEDV].reverse()).keywords));
 check("token sets and raw text give the same keywords", same(result.keywords, computeTfidf(WAREHOUSE, DEDV.map(tokenSet)).keywords));
-check("the window can be tried wider (for the link evaluation), and changes the ranking",
-  !same(rankKeywords(CELL, [], { window: 2 }), rankKeywords(CELL, [], { window: 4 })));
 check("no text, no keywords", computeTfidf("").keywords.length === 0 && computeTfidf("12 345 6789").keywords.length === 0);
 
+console.log("\n=== The word 'constructor' ===");
+// in a plain {} it starts out as Object's constructor function
+const oop = computeTfidf("A constructor builds an object. The constructor runs when the object is created.");
+const state = computeTfidf("An object holds state. Methods change the object state.");
+check("a note that uses it gets a real weight for it", Number.isFinite(oop.vector.constructor) && oop.vector.constructor > 0, String(oop.vector.constructor));
+check("  ...and a real similarity to other notes, either way round and after saving",
+  [cosineSimilarity(oop.vector, state.vector), cosineSimilarity(state.vector, oop.vector), cosineSimilarity(JSON.parse(JSON.stringify(state.vector)), oop.vector)].every((x) => Number.isFinite(x) && x > 0));
+
 console.log("\n=== The question evaluation's baseline keeps its keywords ===");
-// what computeTfidf returned for CELL before TextRank (main, f9472e8)
+// what computeTfidf returned for CELL until Oct 2026 (main, f9472e8)
 check("the frozen TF-IDF keywords are what they were",
   same(tfidfKeywords(CELL), ["cell", "basic", "unit", "life", "membrane", "controls", "enters", "leaves", "nucleus", "holds", "dna", "mitochondria"]),
   tfidfKeywords(CELL).join(", "));

@@ -1,19 +1,23 @@
-import { sameWord, splitSentences, tokenize } from "./tfidf.js";
+import { sameWord, tokenize } from "./tfidf.js";
 
 // A note's keyword map: the note, its top keywords, and for each keyword the
 // words it appears alongside and the sentences it appears in. Ported from the
 // per-note graph in the Digital Second Brain prototype (note -> keywords ->
-// related words), with two changes: keyword importance is the note's own
-// stored keyword ranking (TextRank weighted by IDF, tfidf.js) rather than a
-// raw word count, and each keyword carries the sentences it came from, so a
-// student can see it in context. Rule-based and pure: no LLM, no database.
-
-// moved to tfidf.js, which splits sentences for TextRank the same way
-export { splitSentences };
+// related words), with two changes: keyword importance comes from the note's
+// own stored TF-IDF weights rather than a raw word count, and each keyword
+// carries the sentences it came from, so a student can see it in context.
+// Rule-based and pure: no LLM, no database.
 
 const SUB_KEYWORDS = 5; // related words shown per keyword
 const SENTENCES = 3; // example sentences per keyword
 const EXCERPT = 240; // longest sentence shown before trimming around the keyword
+
+export function splitSentences(text) {
+  return String(text || "")
+    .split(/(?<=[.!?])\s+|\n+/)
+    .map((s) => s.replace(/\s+/g, " ").trim())
+    .filter(Boolean);
+}
 
 // A long sentence (common in PDF text) trimmed to a window around the keyword.
 function excerpt(sentence, keyword) {
@@ -26,11 +30,10 @@ function excerpt(sentence, keyword) {
 /**
  * Returns one entry per keyword, in the note's own keyword order (strongest
  * first): { keyword, weight, subKeywords, sentences }.
- *   weight      - 0..1, falling evenly down the note's keyword order: 1 for
- *                 the first. (It was the keyword's TF-IDF weight relative to
- *                 the strongest; with keywords ranked by TextRank that would
- *                 draw the top keyword smaller than a lower one on 42 of the
- *                 link evaluation's 117 topics.)
+ *   weight      - 0..1, the keyword's TF-IDF weight relative to the note's
+ *                 strongest keyword, both forms of a word together ("cell"
+ *                 and "cells" are one keyword); rank order for notes stored
+ *                 without weights
  *   subKeywords - up to five words that appear in the same sentences, most
  *                 frequent first (ties: first to appear); never another of the
  *                 note's top keywords, which are already on the map, nor a
@@ -42,7 +45,11 @@ function excerpt(sentence, keyword) {
  */
 export function buildKeywordMap(note) {
   const keywords = note.keywords || [];
+  const vector = Object.entries(note.vector || {});
   const sentences = splitSentences(note.rawText).map((text) => ({ text, tokens: tokenize(text) }));
+  const weightOf = (keyword) => vector.reduce((sum, [term, w]) => (sameWord(term, keyword) ? sum + w : sum), 0);
+  const weights = keywords.map(weightOf);
+  const maxWeight = Math.max(0, ...weights);
 
   return keywords.map((keyword, rank) => {
     const containing = sentences.filter((s) => s.tokens.some((t) => sameWord(t, keyword)));
@@ -62,7 +69,7 @@ export function buildKeywordMap(note) {
       .slice(0, SUB_KEYWORDS)
       .map(([t]) => t);
 
-    const weight = 1 - rank / Math.max(1, keywords.length);
+    const weight = maxWeight > 0 ? weights[rank] / maxWeight : 1 - rank / Math.max(1, keywords.length);
     return {
       keyword,
       weight: Number(weight.toFixed(3)),

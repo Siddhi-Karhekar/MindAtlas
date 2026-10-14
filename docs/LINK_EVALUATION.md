@@ -11,6 +11,8 @@ are `server/test/linkEvaluation.test.mjs`.
 
 The first run (14 Oct 2026) is under "Results" below: it lowered the
 same-subject threshold from 0.12 to 0.11 and kept the cross-subject rule.
+The same ratings were then scored again to try TextRank keywords, which were
+not kept: "Keywords and TextRank", below.
 
 ## What is measured
 
@@ -18,9 +20,9 @@ The linking rule (`server/src/services/graphEngine.js`) has three numbers:
 
 | Constant | Now | What it does |
 | --- | --- | --- |
-| `SIMILARITY_THRESHOLD` | 0.12 | Two topics in the same subject are linked at this similarity or above. |
+| `SIMILARITY_THRESHOLD` | 0.11 | Two topics in the same subject are linked at this similarity or above. |
 | `CROSS_SUBJECT_THRESHOLD` | 0.25 | Topics in different subjects need this similarity... |
-| `CROSS_SUBJECT_MIN_SHARED` | 2 | ...and this many shared top keywords. |
+| `CROSS_SUBJECT_MIN_SHARED` | 2 | ...and this many shared top words: each topic's 12 highest TF-IDF terms (`linkTerms`). |
 
 They were set on a handful of hand-written notes. The evaluation measures, for
 every setting of them in a grid, how many of the links it makes are right
@@ -127,6 +129,26 @@ It reads every `ratings_*.csv` and writes `results.md` (the tables for the PR
 or a report), `results.json` and `grid.csv` (every setting with intervals).
 Options: `--flat 0.02`, `--min-linked 10`, `--min-precision 0.5`, `--reps 1000`.
 
+After a change to what the linking rule looks at (the words it compares, the
+vector), score the same ratings again instead of rating new pairs. The labels
+are about the notes, so they still apply:
+
+```
+npm run eval:links -- score D:\links-run1 --recompute D:\eval-notes
+```
+
+It reads the notes the run was generated from again, with the current code,
+finds every rated pair again by its topics' refs (`<subject>/<file>#<n>`),
+and scores the ratings on the features worked out now. The pairs keep their
+strata, so the sampling weights are the run's. It writes into
+`links-run1/recomputed/` (or `--out`), leaving the run's own results alone:
+`results.md`, `results.json` and `grid.csv` as above, `comparison.md`
+(before against after on the same ratings: precision, recall and F1 with the
+paired change in F1, how many cross-subject pairs share words, links made,
+and the rated pairs decided differently) and `key.recomputed.csv`. A pair
+whose topic is gone is listed and left out; if similarities have moved, it
+says so, because the notes are then not the ones that were rated.
+
 ### 5. Change the constants (if the results say so)
 
 Change the three constants in `graphEngine.js` to the recommended ones, with a
@@ -153,8 +175,8 @@ So pairs are drawn from **strata**:
 
 The last group can never be linked whatever the thresholds are. It is rated to
 see whether the shared-keyword requirement itself misses real links, for
-example two notes that say "cell" and "cells", which are different keywords
-today.
+example two notes that say "cell" and "cells", which are different words to
+the linking rule.
 
 Expect about 150-250 pairs to rate; at 20-30 seconds a pair, 1-1.5 hours per
 rater.
@@ -241,12 +263,103 @@ shared word with another meaning ("class", "support", "network", "layers",
   resamples (0.11: +0.10 F1, 95% interval +0.02 to +0.17); none is more
   precise than 0.11, so 0.11 was chosen.
 - **Cross subject.** Every looser setting that linked 10 or more rated pairs
-  was right only 30-40% of the time, so the rule was kept. The fix there is
-  better keywords (TextRank, stemming), not a lower bar.
+  was right only 30-40% of the time, so the rule was kept. The fix there
+  looked like better keywords (TextRank, stemming), not a lower bar; they
+  were tried next, and did not help ("Keywords and TextRank").
 - **Relink, dry run** on a local database of the same notes, uploaded
   through the API: before the change 237 same-subject, 3 cross-subject and 56
   rejected links after relinking; after it 278, 3 and 72 (as saved at upload:
   265, 2 and 76).
+
+## Keywords and TextRank (14 Oct 2026)
+
+TextRank keywords were Member 2's next step, expected to improve both the
+keyword map and the cross-subject rule, which counts shared words. They were
+built, measured on the same notes and ratings, and not kept.
+
+**What was tried.** TextRank (Mihalcea & Tarau, 2004): a note's words (after
+stopwords) are nodes, joined when they stand next to each other in a
+sentence (window 2), and weighted PageRank (damping 0.85) ranks them; the
+score was multiplied by the word's IDF within its subject, a word's singular
+and plural were one keyword, and numbers were never keywords. Window 2 was
+chosen before the ratings were looked at, on the keyword measures below;
+windows 3 and 4 were scored as a check. The attempt is commit `208d805` on
+`graph/textrank-keywords`: `score --recompute` there reproduces the linking
+numbers below.
+
+**The keywords themselves.** 117 topics, each against the rest of its
+subject (as after a relink). Two measures that do not use the ratings, and
+neither is the truth: how many keywords are words of the note's key terms
+(`keyTerms.js`: headings, bold type, repeated phrases - what the note view
+shows), and how many are weak words (function words, common verb forms,
+numbers and generic words, by `keyTerms.js`'s own lists, which also flag some
+real terms such as "table").
+
+| Keywords | Words of the note's key terms | Weak words | Plural duplicates | Numbers |
+| --- | --- | --- | --- | --- |
+| TF-IDF, top 12 (before) | 36.5% | 17.8% | 50 | 8 |
+| **TF-IDF, singular and plural as one, no numbers (now)** | 34.3% | 17.7% | 0 | 0 |
+| TextRank x IDF, window 2 | 29.1% | 15.0% | 0 | 0 |
+| TextRank x IDF, window 3 | 29.4% | 16.2% | 0 | 0 |
+| TextRank x IDF, window 4 | 30.3% | 17.1% | 0 | 0 |
+| TextRank alone, window 2 | 32.7% | 21.1% | 0 | 0 |
+
+The first column counts "cell" and "cells" twice; counting distinct words,
+a topic's keywords hold 4.03 of its key-term words before, 4.12 now and 3.49
+with TextRank. TextRank weighted by IDF favours what is distinctive to a note
+within its subject: Data Cleaning lost "missing", "values" and "binning" for
+"measured", "unimportant", "malfunction" and "thus". Nor did it drop "holds"
+and "enters" from the five-sentence Cell structure note in the tests: there
+every word but "cell" appears once, the graph is a few short chains, and
+"holds" went from 10th to 2nd.
+
+**Linking: the same ratings scored again** (`score --recompute`). All 293
+rated pairs were found again, at the same similarity (largest difference
+2e-16), so same-subject results could not change and did not. Cross-subject,
+with today's rule (0.25 and two shared words):
+
+| Words two topics share | Links made | Rated pairs linked | Precision | Recall | F1 | Related rated pairs sharing 1+ / 2+ | All cross-subject pairs sharing 2+ |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| **Top 12 TF-IDF terms (before, and now)** | 3 | 3 (1 related) | 33% | 5% | 0.09 | 12 / 5 | 37 |
+| TextRank x IDF, window 2 | 1 | 1 (0 related) | 0% | 0% | 0.00 | 6 / 1 | 13 |
+| TextRank x IDF, window 3 | 2 | 2 (1 related) | 50% | 5% | 0.10 | 6 / 2 | 14 |
+| TextRank x IDF, window 4 | 1 | 1 (1 related) | 100% | 5% | 0.10 | 7 / 1 | 13 |
+| The new keywords, singular and plural matched | 3 | 3 (1 related) | 33% | 5% | 0.09 | 12 / 5 | 55 |
+
+- The F1 differences rest on one pair: DEDV's and ML's data pre-processing
+  topics (similarity 0.33, related), which shared "data", "missing" and
+  "real-world". At window 2 they share only "data" and lose their link; at 3
+  and 4 they keep two words. Window 2's change in F1 is -0.09 (paired 95%
+  interval -0.19 to -0.05), but one pair cannot carry a conclusion either way.
+- What holds at every window: related pairs keep fewer words in common. Of
+  the 12 related cross-subject pairs, 5 share two or more TF-IDF terms and
+  only 1-2 shared two TextRank keywords. TextRank demotes exactly what two
+  subjects genuinely share ("data", "missing", "outliers"). And the wrong
+  matches it was meant to remove ("class" in IPv4 address classes and in
+  class-imbalanced data) are a question of meaning that no ranking of single
+  words settles; sentence embeddings (item 5) are the next thing to try.
+- Linking on the new keywords decided every rated pair as before but one
+  (rejected became no edge; not related), while 18 more cross-subject pairs
+  shared two words, few of them rated.
+
+**What was kept.**
+
+- **Keywords**: TF-IDF as before, with a word's singular and plural as one
+  keyword (weighted by both forms together, shown in the form the note uses
+  most) and no numbers (`tfidf.js`). On 93 of the 117 topics the 12 change,
+  by 1.5 words on average: the slot a plural or a number took goes to the
+  next word.
+- **Links**: they still compare each topic's 12 highest TF-IDF terms, read
+  from its vector (`graphEngine.js`, `linkTerms`) - exactly the words they
+  compared before. With nothing gained, the linking rule was not changed.
+- **Thresholds**: scored again with the final code, unchanged; the choice
+  rule keeps 0.11 and 0.25 with two shared words.
+- **Relink, dry run** on a local database of the same notes, uploaded
+  through `main`'s API: with `main`'s code and with this change alike, 278
+  same-subject, 3 cross-subject and 72 rejected links after relinking (317,
+  2 and 97 as saved at upload). Keywords change on 119 of the 127 notes,
+  against 58 with `main`'s code, whose relink recomputes keywords against the
+  whole subject.
 
 ## What to report
 
@@ -263,10 +376,12 @@ shared word with another meaning ("class", "support", "network", "layers",
 - **The keywords are the relink's.** Notes saved before the last relink on
   the live site may have different keywords, so their links can differ until
   Member 4 relinks.
-- **Shared keywords depend on the keyword method.** Changing it (TextRank,
-  item 4 of Member 2's list) changes which pairs share keywords. The labels
-  stay valid, because they are about the notes, so the same ratings can be
-  scored again; re-check the cross-subject rule after any such change.
+- **Shared words depend on what the rule compares.** Links compare each
+  topic's top TF-IDF terms (`linkTerms`), not its stored keywords, so how
+  keywords are ranked does not move a link; a change to the vector or to
+  `linkTerms` does. The labels stay valid, because they are about the notes:
+  score the same ratings again with `score --recompute` and re-check the
+  cross-subject rule after any such change.
 - **The sample notes were used while developing the rule.** Do not report
   numbers from them alone.
 - **The first run had one rater, an AI.** It judged consistently and without

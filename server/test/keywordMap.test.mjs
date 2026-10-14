@@ -53,13 +53,11 @@ const long = `${"Word ".repeat(80)}and here the enzyme finally appears ${"filler
 const longMap = buildKeywordMap({ rawText: long, keywords: ["enzyme"], vector: { enzyme: 0.5 } });
 check("a very long sentence is trimmed around the keyword", longMap[0].sentences[0].length <= 242 && /enzyme/.test(longMap[0].sentences[0]),
   `${longMap[0].sentences[0].length} chars`);
-// keywords are ranked by TextRank, so the TF-IDF weights in the vector would
-// contradict the order
-const againstVector = buildKeywordMap({ rawText: "Alpha beta. Beta gamma.", keywords: ["beta", "gamma"], vector: { beta: 0.1, gamma: 0.9 } });
-check("weights follow the keyword order, not the vector", againstVector[0].weight === 1 && againstVector[1].weight === 0.5,
-  againstVector.map((e) => e.weight).join(", "));
+const bothForms = buildKeywordMap({ rawText: "The cells divide. A cell grows. Growth needs energy.", keywords: ["cells", "energy"], vector: { cells: 0.2, cell: 0.1, energy: 0.25 } });
+check("a keyword's weight is both forms' together ('cells' and 'cell')", same(bothForms.map((e) => e.weight), [1, 0.833]),
+  bothForms.map((e) => e.weight).join(", "));
 const noVector = buildKeywordMap({ rawText: "Alpha beta. Beta gamma.", keywords: ["beta", "gamma"] });
-check("  ...also for a note stored without a vector", same(noVector.map((e) => e.weight), [1, 0.5]), noVector.map((e) => e.weight).join(", "));
+check("a note stored without weights falls back to keyword order", same(noVector.map((e) => e.weight), [1, 0.5]), noVector.map((e) => e.weight).join(", "));
 const plurals = buildKeywordMap({ rawText: "The cells divide. A cell grows. Membranes surround them.", keywords: ["cell"] });
 check("a keyword's sentences include the ones that use its plural", plurals[0].sentenceCount === 2 && plurals[0].sentences[0] === "The cells divide.",
   plurals[0].sentences.join(" | "));

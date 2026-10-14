@@ -1,7 +1,9 @@
 // Tests for knowledge-graph linking, in two parts:
 //   1. classifyPair's rules, on hand-made vectors (exact boundaries) and on
 //      realistic notes run through the real TF-IDF step, including the
-//      ambiguous "cell" pairs the cross-subject rule exists to turn down;
+//      ambiguous "cell" pairs the cross-subject rule exists to turn down,
+//      and that the words two notes share come from their vectors' top
+//      TF-IDF terms, not their stored keywords;
 //   2. the storage contract, against the in-memory database - same-subject
 //      edges stay where findEdgesBySubject has always found them, and
 //      cross-subject/rejected edges are visible from both subjects.
@@ -10,7 +12,7 @@ process.env.DB_FILE = "memory"; // a throwaway database: never write server/data
 
 import { computeTfidf } from "../src/services/tfidf.js";
 import {
-  classifyPair, clusterNotes, updateGraphForNote,
+  classifyPair, clusterNotes, linkTerms, updateGraphForNote,
   SIMILARITY_THRESHOLD, CROSS_SUBJECT_THRESHOLD, CROSS_SUBJECT_MIN_SHARED,
 } from "../src/services/graphEngine.js";
 import { connectDB, getCollection } from "../src/db/index.js";
@@ -25,30 +27,50 @@ const check = (label, cond, detail = "") => {
 const typeOf = (pair) => (pair ? pair.edgeType : "none");
 
 console.log("\n=== Rule boundaries (hand-made vectors) ===");
-const mk = (subjectId, vector, keywords) => ({ subjectId, vector, keywords });
-// cosine of these two is exactly 0.5
-const half = [{ a: 1, b: 1, c: 0 }, { a: 1, b: 0, c: 1 }];
-check("same subject at/above the threshold links", typeOf(classifyPair(mk("s1", half[0], ["a"]), mk("s1", half[1], ["a"]))) === "same-subject");
-check("same subject needs no shared keyword", typeOf(classifyPair(mk("s1", half[0], ["x"]), mk("s1", half[1], ["y"]))) === "same-subject");
+// The words two notes share are their top TF-IDF terms, read from the vector
+// (linkTerms), so these notes are just a subject and a vector.
+const mk = (subjectId, vector) => ({ subjectId, vector, keywords: [] });
+// cosine of these two is exactly 0.5, and they share the terms a and b
+const half = [{ a: 1, b: 1, x: 1, y: 1 }, { a: 1, b: 1, z: 1, w: 1 }];
+check("same subject at/above the threshold links", typeOf(classifyPair(mk("s1", half[0]), mk("s1", half[1]))) === "same-subject");
 check("same subject below the threshold does not link",
-  typeOf(classifyPair(mk("s1", { a: 1, b: 10 }, ["a"]), mk("s1", { a: 1, c: 10 }, ["a"]))) === "none");
-check(`cross subject with ${CROSS_SUBJECT_MIN_SHARED} shared keywords and high similarity links`,
-  typeOf(classifyPair(mk("s1", half[0], ["a", "b"]), mk("s2", half[1], ["a", "b"]))) === "cross-subject");
-check("cross subject with only ONE shared keyword is rejected, however similar",
-  typeOf(classifyPair(mk("s1", { a: 1 }, ["a"]), mk("s2", { a: 1 }, ["a"]))) === "rejected");
-check(`cross subject below ${CROSS_SUBJECT_THRESHOLD} similarity is rejected even with shared keywords`,
-  typeOf(classifyPair(mk("s1", { a: 1, b: 2 }, ["a", "b"]), mk("s2", { a: 1, c: 2.5 }, ["a", "b"]))) === "rejected");
+  typeOf(classifyPair(mk("s1", { a: 1, b: 10 }), mk("s1", { a: 1, c: 10 }))) === "none");
+check(`cross subject with ${CROSS_SUBJECT_MIN_SHARED} shared terms and high similarity links`,
+  typeOf(classifyPair(mk("s1", half[0]), mk("s2", half[1]))) === "cross-subject");
+check("cross subject with only ONE shared term is rejected, however similar",
+  typeOf(classifyPair(mk("s1", { a: 1 }), mk("s2", { a: 1 }))) === "rejected");
+// share a and b; cosine 2/11 = 0.18
+check(`cross subject below ${CROSS_SUBJECT_THRESHOLD} similarity is rejected even with ${CROSS_SUBJECT_MIN_SHARED} shared terms`,
+  typeOf(classifyPair(mk("s1", { a: 1, b: 1, x: 3 }), mk("s2", { a: 1, b: 1, y: 3 }))) === "rejected");
 check(`cross subject below ${SIMILARITY_THRESHOLD} is not stored at all`,
-  typeOf(classifyPair(mk("s1", { a: 1, b: 10 }, ["a"]), mk("s2", { a: 1, c: 10 }, ["a"]))) === "none");
-check("cross subject with no shared keyword is not stored",
-  typeOf(classifyPair(mk("s1", half[0], ["x"]), mk("s2", half[1], ["y"]))) === "none");
+  typeOf(classifyPair(mk("s1", { a: 1, b: 10 }), mk("s2", { a: 1, c: 10 }))) === "none");
+// 32 equally weighted terms each, 20 of them shared (similarity 0.625); the
+// shared ones come last, so ties leave them out of both top 12s
+const terms = (prefix, n) => Array.from({ length: n }, (_, i) => [`${prefix}${i}`, 1]);
+const outside = [mk("s1", Object.fromEntries([...terms("p", 12), ...terms("s", 20)])), mk("s2", Object.fromEntries([...terms("q", 12), ...terms("s", 20)]))];
+check("terms shared outside both notes' top 12 do not count, however similar the notes",
+  classifyPair(...outside) === null && classifyPair(outside[0], { ...outside[1], subjectId: "s1" })?.edgeType === "same-subject");
 // The link evaluation (docs/LINK_EVALUATION.md) lowered the same-subject
 // threshold from 0.12 to 0.11. Two vectors with cosine exactly `sim`:
 const atSim = (sim) => [{ a: 1, b: Math.sqrt(1 / sim - 1) }, { a: 1, c: Math.sqrt(1 / sim - 1) }];
 check("same subject at 0.115 links (it did not under the earlier 0.12)",
-  typeOf(classifyPair(mk("s1", atSim(0.115)[0], ["a"]), mk("s1", atSim(0.115)[1], ["a"]))) === "same-subject");
-check("  ...while across subjects, sharing one keyword, the same pair is only rejected",
-  typeOf(classifyPair(mk("s1", atSim(0.115)[0], ["a"]), mk("s2", atSim(0.115)[1], ["a"]))) === "rejected");
+  typeOf(classifyPair(mk("s1", atSim(0.115)[0]), mk("s1", atSim(0.115)[1]))) === "same-subject");
+check("  ...while across subjects, sharing one term, the same pair is only rejected",
+  typeOf(classifyPair(mk("s1", atSim(0.115)[0]), mk("s2", atSim(0.115)[1]))) === "rejected");
+
+console.log("\n=== Linking compares TF-IDF terms, not the stored keywords ===");
+const tfidfTop = (vector) => Object.entries(vector).sort((a, b) => b[1] - a[1]).slice(0, 12).map(([t]) => t);
+const sample = computeTfidf(
+  "Routing tables map a destination prefix to the next hop. Distance vector routing shares the table with neighbours; link state routing floods link costs.",
+  ["A switch forwards frames by MAC address.", "The network layer routes packets between networks."]
+);
+check("linkTerms are the vector's 12 highest terms, ties in the vector's order (the keywords until Oct 2026)",
+  JSON.stringify(linkTerms(sample)) === JSON.stringify(tfidfTop(sample.vector)), linkTerms(sample).join(", "));
+check("  ...and the stored keywords play no part in a link",
+  JSON.stringify(classifyPair(mk("s1", half[0]), mk("s2", half[1]))) ===
+    JSON.stringify(classifyPair({ ...mk("s1", half[0]), keywords: ["unrelated"] }, { ...mk("s2", half[1]), keywords: ["words"] })));
+check("  ...so shared words are reported from the vectors", JSON.stringify(classifyPair(mk("s1", half[0]), mk("s2", half[1])).sharedKeywords) === JSON.stringify(["a", "b"]),
+  JSON.stringify(classifyPair(mk("s1", half[0]), mk("s2", half[1])).sharedKeywords));
 
 console.log("\n=== Realistic notes (real TF-IDF, built like routes/notes.js) ===");
 const SUBJECTS = {

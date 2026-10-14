@@ -65,9 +65,10 @@ function parseArgs(argv) {
   return opts;
 }
 
-// The baseline was measured on TF-IDF keywords, and the app's are now ranked
-// by TextRank (services/tfidf.js), so it gets the frozen TF-IDF ones: each
-// topic against the file's other topics, as lib/ingest.js computes keywords.
+// The baseline was measured on the keywords of the time, and the app's have
+// changed since (services/tfidf.js: singular and plural are one keyword), so
+// it gets a frozen copy of the old ones: each topic against the file's other
+// topics, as lib/ingest.js computes keywords.
 export const withBaselineKeywords = (notes) =>
   notes.map((n) => ({ ...n, keywords: tfidfKeywords(n.rawText, notes.filter((m) => m !== n).map((m) => m.rawText)) }));
 

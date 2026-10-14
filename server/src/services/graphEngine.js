@@ -20,8 +20,8 @@ export const SIMILARITY_THRESHOLD = 0.11;
 // in Biology, Chemistry (electrochemical cell) and Computer Networks (ATM
 // cell), or "nucleus" in Biology and Chemistry. A pair is linked across
 // subjects only when BOTH hold:
-//   - at least CROSS_SUBJECT_MIN_SHARED of their top-12 keywords match (in
-//     singular or plural; sharedKeywords below),
+//   - at least CROSS_SUBJECT_MIN_SHARED of their top-12 TF-IDF terms match
+//     (linkTerms below),
 //   - and their cosine similarity is at least CROSS_SUBJECT_THRESHOLD.
 // CONTRIBUTING.md first proposed "at least one shared keyword"; on real notes
 // that still linked Biology "Cell structure" to Chemistry "Electrochemical
@@ -34,8 +34,10 @@ export const SIMILARITY_THRESHOLD = 0.11;
 // numbers: every looser setting that linked 10 or more rated pairs was right
 // only 30-40% of the time, so loosening would add more wrong links than
 // right ones. Pairs sharing only "class" (IPv4 address classes, class-
-// imbalanced datasets) are typical. Better cross-subject links need better
-// keywords, not a lower bar.
+// imbalanced datasets) are typical. Better cross-subject links need a better
+// signal, not a lower bar. TextRank keywords were tried as that signal and
+// were not one (see linkTerms below); a word's meaning, from sentence
+// embeddings, is the next thing to try (CONTRIBUTING.md, Member 2, item 5).
 export const CROSS_SUBJECT_THRESHOLD = 0.25;
 export const CROSS_SUBJECT_MIN_SHARED = 2;
 
@@ -46,34 +48,48 @@ export const LINK_RULE = Object.freeze({
   crossMinShared: CROSS_SUBJECT_MIN_SHARED,
 });
 
+// The words linking compares: a note's 12 highest TF-IDF terms, read from
+// its vector - what its stored keywords were until Oct 2026. Keywords now
+// count a word's singular and plural as one and leave out numbers
+// (tfidf.js). Linking on them, the link evaluation's rated pairs were all
+// decided as before but one, while 18 more cross-subject pairs shared two
+// words (docs/LINK_EVALUATION.md, "Keywords and TextRank"); with nothing
+// gained, links stay exactly as they were. TextRank keywords were tried for
+// linking too, and were worse: of the 12 rated cross-subject pairs that are
+// related, 5 share two or more TF-IDF terms, and only 1-2 shared two TextRank
+// keywords (weighted by IDF, whatever the window), because TextRank demotes
+// the words two subjects genuinely share - "data", "missing", "outliers".
+const LINK_TERMS = 12;
+const linkTermsOf = new WeakMap(); // vector -> its terms, worked out once
+
 /**
- * What the linking rule looks at for two notes: their similarity, the top
- * keywords they share, and whether they are in the same subject.
+ * A note's top TF-IDF terms, highest first (ties in the vector's own order),
+ * as computeTfidf ranked its keywords until Oct 2026.
  */
-export function pairFeatures(a, b) {
-  return {
-    weight: cosineSimilarity(a.vector, b.vector),
-    sharedKeywords: sharedKeywords(a.keywords, b.keywords),
-    sameSubject: String(a.subjectId) === String(b.subjectId),
-  };
+export function linkTerms(note) {
+  const vector = note.vector || {};
+  if (linkTermsOf.has(vector)) return linkTermsOf.get(vector);
+  const terms = Object.entries(vector)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, LINK_TERMS)
+    .map(([term]) => term);
+  linkTermsOf.set(vector, terms);
+  return terms;
 }
 
 /**
- * The keywords two notes share, in the first note's order. A word is shared
- * in singular or plural ("cells" in one note, "cell" in the other, see
- * sameWord in tfidf.js) and given in its shorter form, so the words are the
- * same whichever note comes first. Counted once even when a note saved
- * before plurals were merged has both forms.
+ * What the linking rule looks at for two notes: their similarity, the top
+ * TF-IDF terms they share (linkTerms), and whether they are in the same
+ * subject. `sharedKeywords` keeps its name: edges store it, and the graph
+ * page shows it as what two notes have in common.
  */
-export function sharedKeywords(a = [], b = []) {
-  const shared = [];
-  for (const k of a) {
-    const match = b.find((other) => sameWord(k, other));
-    if (match === undefined) continue;
-    const word = match.length < k.length ? match : k;
-    if (!shared.some((w) => sameWord(w, word))) shared.push(word);
-  }
-  return shared;
+export function pairFeatures(a, b) {
+  const termsOfB = linkTerms(b);
+  return {
+    weight: cosineSimilarity(a.vector, b.vector),
+    sharedKeywords: linkTerms(a).filter((k) => termsOfB.includes(k)),
+    sameSubject: String(a.subjectId) === String(b.subjectId),
+  };
 }
 
 /**
