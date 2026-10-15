@@ -12,6 +12,7 @@ import { spawn } from "node:child_process";
 import { createServer } from "node:http";
 import { fileURLToPath } from "node:url";
 import fs from "node:fs";
+import { pickFresh } from "../src/services/testEngine.js";
 
 let failures = 0;
 const check = (label, cond, detail = "") => {
@@ -85,6 +86,21 @@ async function run(label, env, port, tests) {
   } finally {
     server.kill();
   }
+}
+
+console.log("\n=== Which earlier questions come back first ===");
+{
+  const q = (prompt) => ({ prompt });
+  const earlier = ["Define the term \u201cdeadlock\u201d.", "Define the term \u201cmutex\u201d.", "Define the term \u201csemaphore\u201d."];
+  // deadlock: shown and right (band 2); mutex: never shown (band 0); semaphore: got wrong (band 1)
+  const rank = new Map([[earlier[0], 2e6 + 0], [earlier[1], 1], [earlier[2], 1e6 + 2]]);
+  const pick = pickFresh(earlier.map(q), earlier, 3, 3, rank);
+  check("a question never shown comes back before one answered wrongly, and that before one answered rightly",
+    pick.chosen.map((x) => x.prompt).join(" | ") === [earlier[1], earlier[2], earlier[0]].join(" | "), pick.chosen.map((x) => x.prompt).join(" | "));
+  const plain = pickFresh(earlier.map(q), earlier, 3, 3);
+  check("  ...and without a ranking they come back in the order written", plain.chosen.map((x) => x.prompt).join("|") === earlier.join("|"));
+  const fresh = pickFresh([...earlier.map(q), q("Define the term \u201cmonitor\u201d.")], earlier, 1, 1, rank);
+  check("  ...but a new question always comes before any repeat", fresh.chosen.length === 1 && fresh.chosen[0].prompt.includes("monitor"));
 }
 
 try {

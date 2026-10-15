@@ -1305,7 +1305,11 @@ export function sameQuestion(a, b) {
  * what to keep, the in-test duplicates (stored as discarded), and how many
  * repeats were used.
  */
-export function pickFresh(items, avoid, count, target = count) {
+/**
+ * `repeatRank` (optional): earlier prompt -> rank; when repeats are needed,
+ * lower ranks come back first (see routes/tests.js: unseen, then got wrong).
+ */
+export function pickFresh(items, avoid, count, target = count, repeatRank = null) {
   const kept = [];
   const duplicates = [];
   const fresh = [];
@@ -1318,6 +1322,14 @@ export function pickFresh(items, avoid, count, target = count) {
     kept.push(item);
     (avoid.some((p) => sameQuestion(p, item.prompt)) ? repeats : fresh).push(item);
   }
+  if (repeatRank?.size) {
+    const rankOf = (item) => {
+      const p = avoid.find((a) => sameQuestion(a, item.prompt));
+      return repeatRank.get(p) ?? Number.MAX_SAFE_INTEGER;
+    };
+    const ranked = repeats.map((item) => [rankOf(item), item]).sort((a, b) => a[0] - b[0]);
+    repeats.splice(0, repeats.length, ...ranked.map(([, item]) => item));
+  }
   const chosen = fresh.slice(0, count);
   const repeatsUsed = Math.max(0, Math.min(target - chosen.length, repeats.length));
   return { chosen: [...chosen, ...repeats.slice(0, repeatsUsed)], duplicates, repeatsUsed };
@@ -1325,7 +1337,7 @@ export function pickFresh(items, avoid, count, target = count) {
 
 export async function generateQuestions(
   notes,
-  { mcqCount = 0, theoryCount = 0, marksPerQuestion, theoryMarks = marksPerQuestion, masteryMap = new Map(), avoid = [], mcqTarget = mcqCount, theoryTarget = theoryCount }
+  { mcqCount = 0, theoryCount = 0, marksPerQuestion, theoryMarks = marksPerQuestion, masteryMap = new Map(), avoid = [], repeatRank = null, mcqTarget = mcqCount, theoryTarget = theoryCount }
 ) {
   const contextText = buildContext(notes);
   const accepted = [];
@@ -1372,7 +1384,7 @@ export async function generateQuestions(
       const item = toQuestionItem(d, type, type === "theory" ? theoryMarks : marksPerQuestion, notes, contextText, batch.generatedBy);
       (item.status === "accepted" ? passed : discarded).push(item);
     }
-    const pick = pickFresh(passed, avoid, count, target);
+    const pick = pickFresh(passed, avoid, count, target, repeatRank);
     accepted.push(...pick.chosen);
     discarded.push(...pick.duplicates);
     repeatsUsed += pick.repeatsUsed;

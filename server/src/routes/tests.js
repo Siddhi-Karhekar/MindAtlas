@@ -10,6 +10,8 @@ import { publicDoc } from "../services/noteView.js";
 import { isProduction } from "../config.js";
 import { generateQuestions } from "../services/testEngine.js";
 import { masteryMapForSubject } from "../models/Mastery.js";
+import { findAttemptsBySubject } from "../models/Attempt.js";
+import { findResponsesByAttempts } from "../models/Response.js";
 
 const router = safeRouter();
 router.use(requireAuth);
@@ -133,10 +135,31 @@ router.post("/subjects/:id/tests", once(), async (req, res) => {
   const earlierTests = (await findTestsBySubject(subject._id)).filter(
     (t) => String(t.ownerId) === String(req.user.id) && String(t._id) !== String(test._id)
   );
-  const avoid = (await findAcceptedQuestionsByTests(earlierTests.map((t) => t._id)))
-    .filter((q) => topicIds.has(String(q.topicId)))
-    .map((q) => q.prompt)
-    .filter(Boolean);
+  // oldest test first, so the list ends with what was asked most recently
+  const testTime = new Map(earlierTests.map((t) => [String(t._id), new Date(t.createdAt || 0).getTime()]));
+  const earlierQuestions = (await findAcceptedQuestionsByTests(earlierTests.map((t) => t._id)))
+    .filter((q) => q.prompt && topicIds.has(String(q.topicId)))
+    .sort((a, b) => (testTime.get(String(a.testId)) || 0) - (testTime.get(String(b.testId)) || 0));
+  const avoid = earlierQuestions.map((q) => q.prompt);
+
+  // When the notes run out of new questions, which earlier ones come back
+  // first: ones the student was never actually shown (the pool is larger than
+  // a test), then ones they got wrong, then the rest - oldest first in each.
+  // A repeat is then revision of what the student does not yet know, not
+  // simply the first questions ever written.
+  const attempts = (await findAttemptsBySubject(req.user.id, subject._id)).slice(0, 100);
+  const shownIds = new Set(attempts.flatMap((a) => (a.shownQuestionIds || []).map(String)));
+  const lowestScore = new Map();
+  for (const r of await findResponsesByAttempts(attempts.map((a) => a._id))) {
+    const id = String(r.questionId);
+    lowestScore.set(id, Math.min(lowestScore.get(id) ?? 1, typeof r.score === "number" ? r.score : 0));
+  }
+  const repeatRank = new Map();
+  earlierQuestions.forEach((q, i) => {
+    const id = String(q._id);
+    const band = !shownIds.has(id) ? 0 : (lowestScore.get(id) ?? 0) < 0.5 ? 1 : 2;
+    if (!repeatRank.has(q.prompt)) repeatRank.set(q.prompt, band * 1e6 + i);
+  });
 
   const { accepted, discarded, repeatsUsed, mcqGeneratedBy, theoryGeneratedBy, rankedBy } = await generateQuestions(notesInSubject, {
     mcqCount: poolSizeFor(safeMcqCount),
@@ -145,6 +168,7 @@ router.post("/subjects/:id/tests", once(), async (req, res) => {
     theoryMarks,
     masteryMap,
     avoid,
+    repeatRank,
     // earlier questions are used again only to reach these, never to fill the larger pool
     mcqTarget: safeMcqCount,
     theoryTarget: safeTheoryCount,
