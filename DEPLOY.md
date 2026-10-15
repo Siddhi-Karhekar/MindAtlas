@@ -56,7 +56,7 @@ Total cost: ₹0.
 | Name | `mindatlas-api` |
 | Region | Singapore (closest to the Mumbai database) |
 | Branch / Root Directory | `main` / `server` |
-| Build / Start Command | `npm ci && npm run semantic:install` / `npm start` (the second part adds the optional MiniLM model; plain `npm ci` works too, without links by meaning) |
+| Build / Start Command | `npm ci && npm run semantic:install` / `npm start` (the second part installs the optional MiniLM model; it stays off while `SEMANTIC_MODEL=off`) |
 | Health Check Path | `/api/health` |
 | Instance type | Free |
 
@@ -67,6 +67,7 @@ Environment - **spell the keys exactly**:
 | `NODE_ENV` | `production` |
 | `NODE_VERSION` | `22` |
 | `TRUST_PROXY` | `1` (so rate limits see each visitor's address, not Render's proxy) |
+| `SEMANTIC_MODEL` | `off` on the free plan: with the model loaded, a big phone photo peaked at ~576 MB during OCR (limit 512 MB) and Render killed the API. Notes get links by meaning from a relink run on a machine with the model: `npm run relink -- --live --all --yes` after a fresh `npm run db:backup` |
 | `MONGODB_URI` | the Atlas string from step 1 |
 | `JWT_SECRET` | 32+ random characters: `node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"` |
 | `CORS_ORIGIN` | `https://mindatlas.onrender.com` (after step 3; exact origin, no trailing `/`) |

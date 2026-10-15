@@ -20,10 +20,13 @@ services:
     plan: free
     region: singapore          # closest Render region to the Atlas cluster (AWS Mumbai)
     rootDir: server
-    # The optional MiniLM model (server/semantic/) links notes across subjects
-    # by meaning. It costs ~130 MB of the free plan's 512 MB (API idles at
-    # ~260 MB with it). If the service runs out of memory, set
-    # SEMANTIC_MODEL=off in Environment: links fall back to TF-IDF.
+    # The optional MiniLM model (server/semantic/) is installed but switched
+    # OFF on the free plan (SEMANTIC_MODEL below): loaded, it adds ~130 MB,
+    # and an 8.9 MB phone photo then peaked at ~576 MB during OCR - over the
+    # 512 MB limit, so Render killed the API mid-upload. Links by meaning are
+    # made instead by `npm run relink -- --live --all --yes` from a machine
+    # with the model (see DEPLOY.md). On a plan with more memory, delete
+    # SEMANTIC_MODEL to turn it back on.
     buildCommand: npm ci && npm run semantic:install
     startCommand: npm start
     healthCheckPath: /api/health
@@ -35,6 +38,8 @@ services:
         value: production      # also makes the server refuse to start without MONGODB_URI
       - key: TRUST_PROXY
         value: "1"
+      - key: SEMANTIC_MODEL
+        value: "off"           # see the build command comment: memory on the free plan
       - key: CORS_ORIGIN
         value: https://mindatlas.onrender.com   # the static site below - no trailing slash
       - key: JWT_SECRET
