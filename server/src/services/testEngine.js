@@ -1251,7 +1251,9 @@ async function generateBatch({ notes, count, generateLLM, generateFallback, mast
     // even when shown the ones already asked. Rule-based drafts go behind its
     // own, so a repeat it wrote is replaced by a new question rather than
     // asked again (pickFresh prefers new questions, in this order).
-    drafts = [...drafts, ...generateFallback(notes, count, masteryMap, studies, taken)];
+    // marked as rule-written, so the test and the admin page say who wrote each question
+    const extra = generateFallback(notes, count, masteryMap, studies, taken).map((d) => ({ ...d, writtenBy: "rule-based-fallback" }));
+    drafts = [...drafts, ...extra];
   }
   return { drafts, generatedBy };
 }
@@ -1381,10 +1383,17 @@ export async function generateQuestions(
   ]) {
     const passed = [];
     for (const d of batch.drafts) {
-      const item = toQuestionItem(d, type, type === "theory" ? theoryMarks : marksPerQuestion, notes, contextText, batch.generatedBy);
+      const { writtenBy, ...draft } = d || {};
+      const item = toQuestionItem(draft, type, type === "theory" ? theoryMarks : marksPerQuestion, notes, contextText, writtenBy || batch.generatedBy);
       (item.status === "accepted" ? passed : discarded).push(item);
     }
     const pick = pickFresh(passed, avoid, count, target, repeatRank);
+    // who wrote the questions the student gets: the AI, the rules, or both
+    // (the rules replace questions the AI repeated from earlier tests)
+    if (batch.generatedBy === "llm" && pick.chosen.length) {
+      const byAi = pick.chosen.filter((q) => q.generatedBy === "llm").length;
+      batch.generatedBy = byAi === pick.chosen.length ? "llm" : byAi === 0 ? "rule-based-fallback" : "mixed";
+    }
     accepted.push(...pick.chosen);
     discarded.push(...pick.duplicates);
     repeatsUsed += pick.repeatsUsed;

@@ -4,6 +4,9 @@ import { api } from "../lib/api.js";
 import { timeAgo, wordCount } from "../lib/format.js";
 import Icon from "../components/Icon.jsx";
 import { isTopicNote, noteTree } from "../lib/notes.js";
+
+// who wrote a test's questions, as the build result reports it
+const writer = (by) => (by === "llm" ? "LLM" : by === "mixed" ? "LLM and rules (new questions in place of the AI's repeats)" : "rule-based fallback");
 import { termsOf } from "../lib/noteFormat.js";
 
 // One selectable row in "Draw questions from these notes". Used for plain
@@ -593,13 +596,9 @@ export default function Tests() {
                     </span>
                   )}
                   <span className="opacity-80">
-                    {result.mcqGeneratedBy && result.mcqGeneratedBy !== "none"
-                      ? `MCQs via ${result.mcqGeneratedBy === "llm" ? "LLM" : "rule-based fallback"}`
-                      : ""}
+                    {result.mcqGeneratedBy && result.mcqGeneratedBy !== "none" ? `MCQs via ${writer(result.mcqGeneratedBy)}` : ""}
                     {result.mcqGeneratedBy !== "none" && result.theoryGeneratedBy !== "none" ? " · " : ""}
-                    {result.theoryGeneratedBy && result.theoryGeneratedBy !== "none"
-                      ? `Theory via ${result.theoryGeneratedBy === "llm" ? "LLM" : "rule-based fallback"}`
-                      : ""}
+                    {result.theoryGeneratedBy && result.theoryGeneratedBy !== "none" ? `Theory via ${writer(result.theoryGeneratedBy)}` : ""}
                     {result.rankedBy ? ` · relevance and key terms by ${result.rankedBy === "embeddings" ? "meaning (embedding model)" : "rules"}` : ""}
                   </span>
                 </div>
