@@ -9,6 +9,7 @@ import { idList, integer, text } from "../middleware/validate.js";
 import { publicDoc } from "../services/noteView.js";
 import { isProduction } from "../config.js";
 import { generateQuestions } from "../services/testEngine.js";
+import { conceptOf } from "../services/questionQuality.js";
 import { masteryMapForSubject } from "../models/Mastery.js";
 import { findAttemptsBySubject } from "../models/Attempt.js";
 import { findResponsesByAttempts } from "../models/Response.js";
@@ -22,6 +23,23 @@ router.use(requireAuth);
 // roughly 1.5x that many candidates (capped, so this stays a single LLM
 // call). Everything above `target` that gets accepted just sits unused in
 // the pool if the adaptive walk never needs it.
+const RECENT_TESTS = 2;
+
+// One test build at a time per student and subject. Two builds started
+// together (a double click, two tabs) would each read the same history and
+// pick the same questions; queued, the second sees the first's questions.
+const building = new Map();
+function oneAtATime(key, work) {
+  const before = building.get(key) || Promise.resolve();
+  const run = before.catch(() => {}).then(work);
+  const tail = run.catch(() => {});
+  building.set(key, tail);
+  tail.then(() => {
+    if (building.get(key) === tail) building.delete(key);
+  });
+  return run;
+}
+
 function poolSizeFor(target) {
   if (target <= 0) return 0;
   return Math.min(24, Math.max(target, Math.ceil(target * 1.5)));
@@ -61,7 +79,9 @@ async function resolveTopicNotes(selected) {
 // anything else a mixed test. Both counts are how many questions the
 // student will actually see; a larger pool is generated behind the scenes
 // for the adaptive controller to draw from.
-router.post("/subjects/:id/tests", once(), async (req, res) => {
+router.post("/subjects/:id/tests", once(), (req, res) => oneAtATime(`${req.user.id}|${req.params.id}`, () => buildTest(req, res)));
+
+async function buildTest(req, res) {
   const subject = await findOwnedSubject(req.params.id, req.user.id);
   if (!subject) return res.status(404).json({ error: "subject not found" });
 
@@ -154,12 +174,20 @@ router.post("/subjects/:id/tests", once(), async (req, res) => {
     const id = String(r.questionId);
     lowestScore.set(id, Math.min(lowestScore.get(id) ?? 1, typeof r.score === "number" ? r.score : 0));
   }
+  // Long-term policy: a question from one of the last two tests comes back
+  // only after everything older (it is too soon to be useful revision).
+  const recentTests = new Set(
+    [...earlierTests].sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0)).slice(0, RECENT_TESTS).map((t) => String(t._id))
+  );
   const repeatRank = new Map();
   earlierQuestions.forEach((q, i) => {
     const id = String(q._id);
-    const band = !shownIds.has(id) ? 0 : (lowestScore.get(id) ?? 0) < 0.5 ? 1 : 2;
+    const band = (recentTests.has(String(q.testId)) ? 3 : 0) + (!shownIds.has(id) ? 0 : (lowestScore.get(id) ?? 0) < 0.5 ? 1 : 2);
     if (!repeatRank.has(q.prompt)) repeatRank.set(q.prompt, band * 1e6 + i);
   });
+  // concepts tested in the last two tests: asked again in a new way only when
+  // the notes have no untested concept left
+  const recentConcepts = new Set(earlierQuestions.filter((q) => recentTests.has(String(q.testId))).map((q) => conceptOf(q, q.type)).filter(Boolean));
 
   const { accepted, discarded, repeatsUsed, mcqGeneratedBy, theoryGeneratedBy, rankedBy } = await generateQuestions(notesInSubject, {
     mcqCount: poolSizeFor(safeMcqCount),
@@ -169,6 +197,7 @@ router.post("/subjects/:id/tests", once(), async (req, res) => {
     masteryMap,
     avoid,
     repeatRank,
+    recentConcepts,
     // earlier questions are used again only to reach these, never to fill the larger pool
     mcqTarget: safeMcqCount,
     theoryTarget: safeTheoryCount,
@@ -209,7 +238,7 @@ router.post("/subjects/:id/tests", once(), async (req, res) => {
     // notes could not supply enough new ones
     repeatsUsed,
   });
-});
+}
 
 router.get("/subjects/:id/tests", async (req, res) => {
   const subject = await findOwnedSubject(req.params.id, req.user.id);

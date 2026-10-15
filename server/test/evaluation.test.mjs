@@ -115,6 +115,7 @@ check("the sheet does not say which strategy wrote a question", !/tfidf|terms|em
 check("  ...and has the empty rating columns", RATING_COLUMNS.every((c) => c in sheet[0] && sheet.every((r) => r[c] === "")));
 check("every question is in the key, and only those", new Set(key.map((k) => k.qid)).size === sheet.length && key.every((k) => sheet.some((r) => r.qid === k.qid)));
 check("fill-in-the-blank rows show a blank, four options and the marked answer", sheet.filter((r) => r.type === "fill in the blank").every((r) => r.question.includes("_____") && r.option_d && r.marked_answer));
+check("  ...and direct multiple-choice rows a question, four options and the marked answer", sheet.filter((r) => r.type === "multiple choice").every((r) => /\?$/.test(r.question) && r.option_d && r.marked_answer));
 check("theory rows carry the model answer", sheet.filter((r) => r.type === "theory").every((r) => r.model_answer && !r.marked_answer));
 const m = run.metrics.strategies;
 check("the current generator never blanks part of a term", m.terms.mcq.partial_term_rate === 0, String(m.terms.mcq.partial_term_rate));
@@ -163,7 +164,8 @@ const b = scored.strategies.tfidf.criteria;
 check("each strategy is scored on its own questions", t.usable.n === key.filter((k) => k.strategy === "terms").length && b.usable.n === key.filter((k) => k.strategy === "tfidf").length - 0, JSON.stringify([t.usable.n, b.usable.n]));
 check("the planted difference is found", t.usable.mean > b.usable.mean + 1 && t.clear.mean > b.clear.mean, JSON.stringify([t.usable.mean, b.usable.mean]));
 check("yes/no scores come with an interval inside 0..1", t.relevant.ci95[0] >= 0 && t.relevant.ci95[1] <= 1 && t.relevant.ci95[0] <= t.relevant.share && t.relevant.share <= t.relevant.ci95[1]);
-check("blank-only criteria count fill-in-the-blank questions only", t.whole_term.n === key.filter((k) => k.strategy === "terms" && k.type === "mcq").length, String(t.whole_term.n));
+const blankRows = new Set(sheet.filter((r) => r.type === "fill in the blank").map((r) => r.qid));
+check("blank-only criteria count fill-in-the-blank questions only", t.whole_term.n === key.filter((k) => k.strategy === "terms" && blankRows.has(k.qid)).length, String(t.whole_term.n));
 const usable = scored.comparisons.find((c) => c.strategy === "terms" && c.criterion === "usable");
 check("compared with the baseline by the right test", usable?.test === "Mann-Whitney U" && usable.p < 0.001 && usable.cliffs_delta > 0.5 && scored.comparisons.find((c) => c.criterion === "relevant").test === "Fisher exact", JSON.stringify(usable));
 check("corrected p-values are never smaller than raw ones", scored.comparisons.every((c) => c.p_holm >= c.p));

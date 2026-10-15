@@ -123,7 +123,8 @@ check("a subtopic saved before this, named after the batch, gives no sentences",
 const icsTest = await generateQuestions(ics.notes, { mcqCount: 12, theoryCount: 4, marksPerQuestion: 1 });
 const icsMcq = icsTest.accepted.filter((q) => Array.isArray(q.options));
 check("multiple-choice questions were made", icsMcq.length >= 6, `${icsMcq.length}`);
-const offTopic = icsTest.accepted.filter((q) => /slides|commercial|acknowledged|batch|semester|private key 9|mod 23|\?/i.test(q.prompt.replace(/^Fill in the blank: /, "")));
+// (a direct question ends in "?"; the exercise questions were a "?" inside a quoted sentence)
+const offTopic = icsTest.accepted.filter((q) => /slides|commercial|acknowledged|batch|semester|private key 9|mod 23/i.test(q.prompt) || /"[^"]*\?[^"]*"/.test(q.prompt));
 check("none is about the class, the usage notice or the worked numbers", offTopic.length === 0, offTopic.map((q) => q.prompt).join(" || "));
 check("no question is set on the paperwork 'topic'", !icsTest.accepted.some((q) => /batch|semester/i.test(q.topic || "")));
 const garbled = icsMcq.flatMap((q) => q.options).filter((o) => /(^|\s)[a-z]$|^[A-Z]{1,2}\s[a-z]$|\bcomputes\b|\bagree\b/.test(o));

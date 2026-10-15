@@ -92,8 +92,8 @@ try {
   const graph = () => call(`/subjects/${subject._id}/graph`, { token: me.token });
   const linked = (g, a, b) => g.edges.some((e) => [String(e.source), String(e.target)].sort().join() === [String(a), String(b)].sort().join());
 
-  const paging = (await add("Paging", "Paging splits memory into fixed frames and pages. The page table maps each page to a frame, and the TLB caches recent page table entries.")).note;
-  const tlb = (await add("TLB", "The TLB caches recent page table entries so that a page lookup avoids the page table. A TLB miss walks the page table to find the frame.")).note;
+  const paging = (await add("Paging", "Paging splits memory into fixed frames and pages. The page table maps each page to a frame, and the TLB caches recent page table entries. A page fault occurs when a process uses a page that is not in main memory. The swap space on disk holds the pages that are not in main memory.")).note;
+  const tlb = (await add("TLB", "The TLB caches recent page table entries so that a page lookup avoids the page table. A TLB miss walks the page table to find the frame. A TLB hit returns the frame number without reading the page table in main memory.")).note;
   const osmosis = (await add("Scheduling", "The scheduler picks the next process to run on the processor. Round robin gives each process a quantum of processor time in turn.")).note;
 
   console.log("\n=== Reading a note for editing ===");

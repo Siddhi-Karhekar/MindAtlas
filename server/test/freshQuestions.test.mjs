@@ -115,7 +115,8 @@ try {
   check("five tests on a 20-topic chapter repeat nothing", repeated.every((n) => n === 0), `repeats per test: ${repeated.join(", ")}`);
 
   const ai = await run("An AI that always writes the same questions", { GROQ_API_KEY: "test-key", LLM_API_URL: "http://localhost:4586/v1/chat/completions" }, 4584, 3);
-  check("the AI was asked", aiCalls > 0 && ai[0].by === "llm", `${aiCalls} calls`);
+  // the stand-in writes 5 where 8 are wanted, so the rules fill the pool behind its questions
+check("the AI was asked", aiCalls > 0 && ["llm", "mixed"].includes(ai[0].by), `${aiCalls} calls, ${ai[0].by}`);
   check("the first test uses the AI's questions", SAME.every((q) => ai[0].prompts.includes(q.prompt)));
   const again = ai.slice(1).map((t) => t.prompts.filter((p) => ai[0].prompts.includes(p)).length);
   check("later tests replace the AI's repeats with new questions", again.every((n) => n === 0) && ai.slice(1).every((t) => t.prompts.length >= 5), `repeats: ${again.join(", ")}`);
