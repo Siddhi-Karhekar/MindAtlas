@@ -20,7 +20,11 @@ services:
     plan: free
     region: singapore          # closest Render region to the Atlas cluster (AWS Mumbai)
     rootDir: server
-    buildCommand: npm ci
+    # The optional MiniLM model (server/semantic/) links notes across subjects
+    # by meaning. It costs ~130 MB of the free plan's 512 MB (API idles at
+    # ~260 MB with it). If the service runs out of memory, set
+    # SEMANTIC_MODEL=off in Environment: links fall back to TF-IDF.
+    buildCommand: npm ci && npm run semantic:install
     startCommand: npm start
     healthCheckPath: /api/health
     autoDeploy: true
