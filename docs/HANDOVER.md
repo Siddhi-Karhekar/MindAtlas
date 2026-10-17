@@ -1,6 +1,6 @@
 # MindAtlas: handover
 
-Everything a new team member, an evaluator or a future maintainer needs to understand, run, change and deploy MindAtlas. Written 17 October 2026, against `main` at `c9ec493` plus the open branch `fix-fresh-questions` (see §11).
+Everything a new team member, an evaluator or a future maintainer needs to understand, run, change and deploy MindAtlas. Written 17 October 2026, against `main` at `c9ec493` plus the open branch `quiz/generation-quality`, which contains `fix-fresh-questions` (see §11).
 
 For depth, each section points to the document that owns that topic.
 
@@ -120,7 +120,7 @@ Full rule list with code locations: `docs/ASSESSMENT.md`.
      - MCQ, asked directly where the notes allow: "Which of the following carries data as pulses of light…?", "What does CIDR stand for?". Otherwise a fill-in-the-blank that hides a whole key term.
      - Theory: define, explain, give an example, describe how it works, advantages and limitations, differentiate, list and briefly explain.
    - Rule-written questions always queue behind the AI's, so they replace any AI question that fails or repeats.
-5. **Quality gate** (`questionQuality.js`, branch `fix-fresh-questions`). Every question from either writer must pass:
+5. **Quality gate** (`questionQuality.js`, branch `quiz/generation-quality`). Every question from either writer must pass:
    - **Grounding:** its supporting passage exists word for word in the notes, and the answer is in that passage.
    - **Context and clarity:**
      - no opening "It / This / These …" that points at an unseen sentence;
@@ -180,7 +180,8 @@ Full rule list with code locations: `docs/ASSESSMENT.md`.
 | Feedback wording | AI wording of a fixed ranking | Template wording, same ranking |
 
 **How to tell which was used:**
-- After building a test, a grey line says `MCQs via LLM`, `rule-based fallback`, or `LLM and rules`.
+- After building a test, a line per question type says who wrote the questions, decided from the questions actually chosen: "written by AI (Groq)", "3 written by AI (Groq), 5 by MindAtlas's built-in rules", or "written by MindAtlas's built-in rules — <plain reason>" (usage limit reached, quota used up, did not respond, reply could not be used, questions failed the checks, no AI set up). Each test in the list carries an AI / AI + rules / Rules badge.
+- The server log has one `[testgen]` line per type: status, provider, outcome, fallback reason, counts and timings (never note text or keys).
 - The results page shows "Phrased via LLM / template".
 - `/api/auth/config` shows `"ai":{"enabled":true,"name":"Groq"}` when a key is set.
 
@@ -334,13 +335,21 @@ Also written outside the repo: a project report and an evaluation speech (Claude
 - support email shown;
 - graph linked by meaning, through offline relink.
 
-**Open branch to merge:** `fix-fresh-questions` (pushed, pull request not yet merged). It contains:
+**Open branch to merge:** `quiz/generation-quality` (pushed; builds on `fix-fresh-questions`, so merging it into `main` brings both). From `fix-fresh-questions` it contains:
 - subject-matter-only questions: no batch or semester lines, usage notices, exercise questions or garbled subscripts;
 - new questions on every test, with repeats ranked unseen → wrong → oldest;
 - an honest "LLM / rules / mixed" label;
 - the shared quality gate (`questionQuality.js`), direct-question MCQ forms and new theory forms;
 - concept-aware repeats, and one test build at a time per student;
 - the new tests `freshQuestions.test.mjs` and `questionPipeline.test.mjs`.
+
+And on top of that (`docs/ASSESSMENT.md` has each rule):
+- stricter gate: no stem without a subject, no blank in a negated clause or hiding part of a term, no generic options, NOT questions checked against their passage, answer positions balanced;
+- tests differ more: concepts never tested first, then least recently tested; recent concepts only to reach the test's length;
+- honest status with the reason for any fallback, and a 422 instead of an empty test;
+- upload limits in one place (`UPLOAD_MAX_MB`) and shown before upload;
+- fewer and better highlighted key terms; one bullet per line and correct nesting;
+- the new test `generationQuality.test.mjs`.
 
 **Settings not yet done:**
 - `ADMIN_USER_IDS` (check by signing in and looking for the Admin link under Settings → Account);
@@ -365,7 +374,7 @@ Also written outside the repo: a project report and an evaluation speech (Claude
 
 ## 12. Next steps (suggested order)
 
-1. Merge `fix-fresh-questions`, then check the live test builder shows the new question forms.
+1. Merge `quiz/generation-quality` (it includes `fix-fresh-questions`), then check the live test builder shows the new question forms and the AI / rules status.
 2. Set `ADMIN_USER_IDS` and the `SMTP_*` email settings; schedule `npm run db:backup`.
 3. Run the blind question-quality study (`docs/EVALUATION.md`) with real notes and two raters; report the results.
 4. Closed beta with 20–30 students; decide the age and consent policy first.

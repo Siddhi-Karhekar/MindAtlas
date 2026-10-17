@@ -15,4 +15,5 @@ server/backups/
 # question-quality evaluation runs (server/evaluation/): may contain your own notes and raters' names
 evaluation-output/
 Claude outputs/
-Claude outputs/
+# patch files passed around while working (the work itself is in the commits)
+*.patch

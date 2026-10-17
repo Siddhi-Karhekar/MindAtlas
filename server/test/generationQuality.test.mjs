@@ -107,14 +107,18 @@ const DEADLOCK = noteOf(
     "Mutual exclusion is the condition that at least one resource is held in a non-shareable mode.",
   ].join(" ")
 );
-const dl = await generateQuestions([DEADLOCK], { mcqCount: 8, theoryCount: 0, marksPerQuestion: 1 });
+// Wrong options are partly chosen at random, which changes which question
+// forms get built, so several builds are checked together.
+const dl = { accepted: [] };
+for (let run = 0; run < 6; run++) dl.accepted.push(...(await generateQuestions([DEADLOCK], { mcqCount: 8, theoryCount: 0, marksPerQuestion: 1 })).accepted);
 const multi = dl.accepted.filter((q) => q.type === "mcq" && /_____/.test(q.prompt) && q.answerKey.split(/\s+/).length > 1);
 const halves = multi.filter((q) => {
   const words = q.answerKey.toLowerCase().split(/\s+/);
   const p = q.prompt.toLowerCase();
   return words.some((w) => new RegExp(`(?:\\b${w}\\s+_____|_____\\s+${w}\\b)`).test(p));
 });
-check("fill-in-the-blank questions with multi-word answers are made", multi.length >= 1, dl.accepted.map((q) => q.answerKey).join(", "));
+check("fill-in-the-blank questions with multi-word answers are made", multi.length >= 1, [...new Set(dl.accepted.map((q) => q.answerKey))].join(", "));
+check("a word too broad to test anything is never a blank's answer ('system', 'data')", !dl.accepted.some((q) => /_____/.test(q.prompt) && /^(?:system|data|information|item)s?$/i.test(q.answerKey)));
 check("no blank hides only part of a multi-word term ('Deadlock _____', '_____ detection')", halves.length === 0, halves.map((q) => q.prompt).join(" | "));
 check("every blank's answer is a whole key term (one to four words)", dl.accepted.filter((q) => /_____/.test(q.prompt)).every((q) => q.answerKey.split(/\s+/).length <= 4));
 check("term matching respects word boundaries: 'net' is not found in 'network'", !termPattern("net", "i").test("a network of hosts") && termPattern("net", "i").test("the .net runtime is a net"));

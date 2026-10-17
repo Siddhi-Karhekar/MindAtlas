@@ -120,6 +120,9 @@ of the code.
 
 **Tests, attempts and feedback**
 
+[`docs/HANDOVER.md`](docs/HANDOVER.md) is the one document to read first when
+joining or taking over: what the app does, how each feature works, how to run,
+test and deploy it, and what is still open.
 [`docs/ASSESSMENT.md`](docs/ASSESSMENT.md) lists every rule below with where it
 lives: the server-kept time limit and resuming after a refresh, marks out of
 the whole paper, theory marking a student cannot steer, the question-by-question

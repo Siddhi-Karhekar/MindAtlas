@@ -160,7 +160,7 @@ function isMeaningfulAnswer(answer) {
   if (lower.every((x) => FUNCTION_ANSWERS.has(x))) return false;
   if (w.length === 1) {
     const x = lower[0];
-    if (x.length < 3 || FUNCTION_ANSWERS.has(x) || GENERIC.has(x)) return false;
+    if (x.length < 3 || FUNCTION_ANSWERS.has(x) || GENERIC.has(x) || BROAD_DISTRACTORS.has(x)) return false;
     // a verb form or adverb blanked out tests grammar, not knowledge
     if (!isContentWord(w[0]) || /(?:ly)$/.test(x)) return false;
   }
