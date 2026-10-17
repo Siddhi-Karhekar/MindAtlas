@@ -5,6 +5,7 @@ import { readingMinutes, wordCount } from "../lib/format.js";
 import Icon from "../components/Icon.jsx";
 import { flattenOutline, outlineTree } from "../lib/notes.js";
 import { topicClass } from "../lib/noteFormat.js";
+import { ACCEPT, DEFAULT_LIMITS, fileProblem, prettySize } from "../lib/uploads.js";
 
 // Small static preview of the subject's current graph: nodes on a circle, real
 // edges between them. Just enough to show where a new note will land.
@@ -87,30 +88,12 @@ function SplitPreview({ item, onToggle }) {
   );
 }
 
-const MAX_BYTES = 10 * 1024 * 1024;
-const ACCEPT = ".pdf,.docx,.pptx,.txt,.md,.markdown,.csv,image/*";
-const EXT_OK = /\.(pdf|docx|pptx|txt|md|markdown|text|csv|png|jpe?g|gif|webp|bmp|tiff?)$/i;
-
-function fileProblem(f) {
-  // the pre-2007 Office formats can't be read; say how to get past it
-  if (/\.doc$/i.test(f.name)) return "Old Word format (.doc) — open it in Word and Save As .docx, then upload that";
-  if (/\.ppt$/i.test(f.name)) return "Old PowerPoint format (.ppt) — open it in PowerPoint and Save As .pptx, then upload that";
-  if (!(EXT_OK.test(f.name) || f.type.startsWith("image/") || f.type.startsWith("text/")))
-    return "Unsupported type — use PDF, Word (.docx), PowerPoint (.pptx), text/markdown or an image";
-  if (f.size > MAX_BYTES) return "Larger than 10 MB";
-  return "";
-}
-
 function fileIcon(name, type) {
   if (type?.startsWith("image/")) return "image";
   if (/\.pdf$/i.test(name)) return "picture_as_pdf";
   if (/\.docx$/i.test(name)) return "description";
   if (/\.pptx$/i.test(name)) return "slideshow";
   return "article";
-}
-
-function prettySize(n) {
-  return n < 1024 * 1024 ? `${Math.max(1, Math.round(n / 1024))} KB` : `${(n / 1024 / 1024).toFixed(1)} MB`;
 }
 
 export default function NoteEditor() {
@@ -140,6 +123,14 @@ export default function NoteEditor() {
   const [dragOver, setDragOver] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [limits, setLimits] = useState(DEFAULT_LIMITS);
+
+  useEffect(() => {
+    api
+      .authConfig()
+      .then((c) => c?.uploads?.maxMb && setLimits({ ...DEFAULT_LIMITS, ...c.uploads }))
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     api.listSubjects().then((d) => setSubject(d.subjects.find((s) => String(s._id) === String(subjectId)) || null)).catch(() => {});
@@ -179,7 +170,7 @@ export default function NoteEditor() {
         const key = `${f.name}:${f.size}`;
         if (seen.has(key)) continue;
         seen.add(key);
-        const problem = fileProblem(f);
+        const problem = fileProblem(f, limits);
         const id = `${key}:${Math.random().toString(36).slice(2, 7)}`;
         const isImage = f.type.startsWith("image/") || /\.(png|jpe?g|gif|webp|bmp|tiff?)$/i.test(f.name);
         next.push({ id, file: f, status: problem ? "error" : "ready", error: problem, preview: null, previewing: !problem && !isImage, split: true });
@@ -214,7 +205,7 @@ export default function NoteEditor() {
   async function handleUpload() {
     // One note per file, uploaded one after another so the server links each
     // new note to the ones before it.
-    const queue = files.filter((f) => f.status === "ready" || (f.status === "error" && !fileProblem(f.file)));
+    const queue = files.filter((f) => f.status === "ready" || (f.status === "error" && !fileProblem(f.file, limits)));
     if (!queue.length) {
       setError("Nothing to upload — remove the files marked with a problem or choose others.");
       return;
@@ -454,8 +445,13 @@ export default function NoteEditor() {
                     <span>•</span>
                     <span>Photos (OCR)</span>
                     <span>•</span>
-                    <span>10 MB each</span>
+                    <span>{limits.maxMb} MB each</span>
                   </div>
+                  <p className="font-body-sm text-body-sm text-on-surface-variant max-w-md mx-auto" data-testid="upload-limits">
+                    PDF up to {limits.maxPdfPages} pages (text PDFs; for a scanned PDF upload its pages as photos) · photos up to{" "}
+                    {limits.maxImageMegapixels} megapixels · about {Number(limits.maxWords).toLocaleString("en-GB")} words per file · not
+                    the old .doc / .ppt formats
+                  </p>
                 </div>
               </div>
 

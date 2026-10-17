@@ -73,6 +73,8 @@ Environment - **spell the keys exactly**:
 | `CORS_ORIGIN` | `https://mindatlas.onrender.com` (after step 3; exact origin, no trailing `/`) |
 | `GROQ_API_KEY` | optional, free at https://console.groq.com/keys - AI-written questions and marking; blank = rule-based fallback |
 
+| `UPLOAD_MAX_MB` | optional, default `10` (capped at 25 because files are read in memory on a 512 MB instance). The upload screen shows this value. PDFs are also limited to 400 pages and photos to 50 megapixels (`server/src/config.js`) |
+
 More optional ones are under "Settings for running it for real" and "Email".
 
 When it is live the **Logs** show `[db] connected to MongoDB`, and

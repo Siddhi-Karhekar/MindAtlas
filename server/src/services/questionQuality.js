@@ -63,10 +63,53 @@ const FUNCTION_ANSWERS = new Set(
   "a an the of to in on for with as at by from into onto upon about than that this these those it its is are was were be been being and or but nor if then so not no can will would should may might must do does did has have had".split(" ")
 );
 
+const BROAD_DISTRACTORS = new Set("system systems data information item items thing things value values object objects element elements entity result results".split(" "));
+
 const COMMAND = /^(?:define|explain|describe|state|list|differentiate|distinguish|compare|contrast|why|how|what|discuss|illustrate|justify|analy[sz]e|outline|give|write|identify|evaluate|examine|summari[sz]e|mention|name|enumerate)\b/i;
 // "Explain the differences.", "Describe it.", "Discuss this topic."
 const VAGUE_THEORY =
   /^(?:explain|describe|discuss|state|define|write about|give|list)\s+(?:the\s+|these\s+|this\s+|it\b|them\b)?(?:differences?|advantages?|disadvantages?|concepts?|topic|it|this|them|details|points|above|following)?\s*[.?]?$/i;
+
+// ---- what a question asks about
+// Words that say what KIND of thing is asked for but not WHICH thing:
+// "Which of the following is a feature?" names no subject at all.
+const STEM_FILLER = new Set(
+  "which what who whom whose when where why how following option options statement statements true false correct incorrect right wrong best most least likely given above below select choose identify".split(" ")
+);
+// Content words of a stem that name its subject: not question words, not
+// generic words ("feature", "type", "advantage"), not the negation.
+function subjectWords(prompt) {
+  const stem = clean(prompt).replace(BLANK, " ").replace(/^(?:fill in the blank|question)\s*:\s*/i, "");
+  const tokens = tokenize(stem).filter((w) => !GENERIC.has(w) && !STEM_FILLER.has(w) && !/^(?:not|except|never)$/.test(w));
+  // acronyms of two letters ("IP", "OS") are names too; tokenize drops them
+  const acronyms = stem.match(/\b[A-Z][A-Z0-9]{1,}\b/g) || [];
+  return [...new Set([...tokens, ...acronyms.map((a) => a.toLowerCase())])];
+}
+
+// A negative stem: "Which of the following is NOT ...", "... does not ...",
+// "All of the following EXCEPT ...", "Which statement is false ...".
+// Only a stem that asks the student to pick the odd one out counts: "What
+// happens when a frame cannot be delivered?" is an ordinary question.
+const NEGATIVE_PICK = /^(?:(?:which|what)\b[^?]*?\b(?:not|except|false|incorrect|untrue)\b|all of the following\b[^?]*\bexcept\b|.*\bis (?:not|NOT) (?:true|correct)\b)/i;
+export const isNegativeStem = (prompt) => NEGATIVE_PICK.test(clean(prompt));
+// In a fill-in-the-blank, what matters is the clause the blank sits in:
+// "A switch does not repeat frames; it forwards them by _____" is fine,
+// "IT does not contain _____" is not.
+const NEGATION = /\b(?:not|never|cannot|no longer|neither|nor)\b|n['’]t\b/i;
+export function blankIsNegated(sentence) {
+  const clause = String(sentence || "")
+    .split(/[;:,]|\s(?:but|whereas|while|although|however)\s/i)
+    .find((c) => /_{3,}/.test(c));
+  return Boolean(clause && NEGATION.test(clause));
+}
+
+/** True when every content word of `option` is in `passage` (stems compared). */
+function optionIn(option, passage) {
+  const need = [...stemsOf(option)];
+  if (!need.length) return normalizeText(passage).includes(normalizeText(option));
+  const have = stemsOf(passage);
+  return need.every((s) => have.has(s));
+}
 
 const shapeOf = (s) => (/\d/.test(s) || /^[A-Z0-9/+.-]{2,}$/.test(clean(s)) ? "code" : words(s).length > 1 ? "phrase" : "word");
 
@@ -76,6 +119,30 @@ function phraseInside(small, big) {
   const b = normalizeText(big);
   if (!a || !b || a === b) return false;
   return ` ${b} `.includes(` ${a} `);
+}
+
+/**
+ * True when the blank hides only part of a longer term:
+ *   "Partially _____: after the final statement ..." (a lead-in of several
+ *   words, "partially committed", with one of them blanked), or
+ *   "... access to a data _____." when the notes say "data item" - the word
+ *   before the blank and the answer make a phrase the notes use.
+ */
+export function blankSplitsTerm(sentence, answer, contextText = "") {
+  const s = clean(sentence);
+  // the lead-in before a colon is one term; a blank inside it with other words beside it is half of it
+  const lead = s.match(/^([^:]{1,60}):\s/)?.[1];
+  // ("_____ (S):" is the whole term with its symbol, not half of one)
+  const besideBlank = lead ? words(lead.replace(/\([^)]*\)/g, " ").replace(/_{3,}/g, " ")).filter((w) => /[A-Za-z]{2}/.test(w)) : [];
+  if (lead && /_{3,}/.test(lead) && besideBlank.length >= 1 && words(lead).length <= 5) return true;
+  const ctx = ` ${normalizeText(contextText)} `;
+  const ans = normalizeText(answer);
+  if (!ans || ctx.trim() === "") return false;
+  // only the word BEFORE: modifiers come first in an English term ("data
+  // item", "secret key"); the word after a term is usually its verb
+  // ("router forwards"), which is no part of it
+  const before = s.match(/([A-Za-z][A-Za-z-]*)\s+_{3,}/)?.[1];
+  return Boolean(before && isContentWord(before) && !FUNCTION_ANSWERS.has(before.toLowerCase()) && ctx.includes(` ${normalizeText(`${before} ${ans}`)} `));
 }
 
 /** Stems of the content words in a text, for "is the answer in the passage" checks. */
@@ -164,10 +231,28 @@ export function validateQuestion(q, { type, contextText = "" } = {}) {
       }
     }
 
-    if (blanks.length) {
+    // a wrong option nobody would pick: a lone function word or generic word
+    // ("the", "system", "type") tests nothing
+    if (options.some((o) => words(o).length === 1 && (FUNCTION_ANSWERS.has(o.toLowerCase()) || GENERIC.has(o.toLowerCase())))) reasons.push("mcq:weak-option");
+    // ...or a word so broad it is never the answer to anything ("system", "data")
+    else if (options.some((o) => o !== answer && words(o).length === 1 && BROAD_DISTRACTORS.has(o.toLowerCase()))) reasons.push("mcq:weak-option");
+
+    // the question has to say what it is about: "Which of the following is
+    // not a feature?" or "It consists of _____." name nothing a student can
+    // answer from
+    const negative = !blanks.length && isNegativeStem(prompt);
+    // (a blank's sentence already has six words of context; one of them must
+    // name something)
+    if (subjectWords(blanks.length ? blankSentence : prompt).length < (blanks.length ? 1 : 2)) reasons.push("clarity:names-no-subject");
+
+    if (blanks.length && blankIsNegated(blankSentence)) {
+      // "IT does not contain _____.": countless things fit a negative blank
+      reasons.push("blank:negative-statement");
+    } else if (blanks.length) {
       if (blanks.length > 3) reasons.push("blank:too-many-blanks");
       if (!isMeaningfulAnswer(answer)) reasons.push("blank:meaningless");
       if (words(blankSentence.replace(BLANK, " ")).length < 6) reasons.push("blank:too-little-context");
+      if (blankSplitsTerm(blankSentence, answer, contextText)) reasons.push("blank:part-of-term");
       // ambiguity: a wrong option that also makes a sentence the notes say
       // ("a(n) _____" is tried with both articles)
       const fills = (o) => ["a", "an"].map((art) => normalizeText(blankSentence.replace(/\ba\(n\)(?=\s)/gi, art).replace(BLANK, o)));
@@ -179,6 +264,17 @@ export function validateQuestion(q, { type, contextText = "" } = {}) {
         const share = [...filled].filter((x) => have.has(x)).length / Math.max(1, filled.size);
         if (share < 0.9) reasons.push("correctness:answer-does-not-fill-the-passage");
       }
+    } else if (negative) {
+      // "Which of the following is NOT a property of a block cipher?" has one
+      // answer only when the notes say every other option IS one: the three
+      // wrong options must be in the supporting passage, and the answer not.
+      const passage = q?.supportingExcerpt || "";
+      if (!passage || !answer || !others.length || !others.every((o) => optionIn(o, passage)) || optionIn(answer, passage)) {
+        reasons.push("mcq:negative-not-verifiable");
+      }
+      if (!/[?:]$/.test(prompt) && !/^(?:which|what|who|when|where|why|how)\b/i.test(prompt)) reasons.push("clarity:not-a-question");
+      // repair: the negation is what the student must not miss
+      out.prompt = prompt.replace(/\b(not|except)\b/i, (w) => w.toUpperCase());
     } else if (q?.supportingExcerpt && answer) {
       // a direct question: the answer's content words are in the passage
       const need = [...stemsOf(answer)];

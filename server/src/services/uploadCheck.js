@@ -17,12 +17,13 @@
 // Every refusal is an Error whose message is meant for the student.
 
 import JSZip from "jszip";
+import { MAX_IMAGE_PIXELS } from "../config.js";
 
 const MB = 1024 * 1024;
 const MAX_ZIP_ENTRIES = 5_000;
 const MAX_UNPACKED = 150 * MB; // slides carry pictures; text is a small part
 const MAX_XML_PART = 25 * MB; // the parts the reader actually opens
-const MAX_PIXELS = 50_000_000; // a 50-megapixel photo
+const MAX_PIXELS = MAX_IMAGE_PIXELS; // a 50-megapixel photo (config.js)
 
 const startsWith = (buf, bytes, at = 0) => bytes.every((b, i) => buf[at + i] === b);
 const ascii = (s) => [...s].map((c) => c.charCodeAt(0));

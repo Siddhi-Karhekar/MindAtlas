@@ -12,7 +12,7 @@ import {
 import { endSession, mustVerifyEmail, requireAuth, requireSession, revokeSession, startSession } from "../middleware/auth.js";
 import { safeRouter } from "../middleware/safeRouter.js";
 import { InputError, LIMITS, email as emailField, text } from "../middleware/validate.js";
-import { envNumber, supportEmail } from "../config.js";
+import { envNumber, supportEmail, uploadLimits } from "../config.js";
 import { llmAvailable, llmProvider } from "../services/llm.js";
 import { MIN_LENGTH, passwordProblem } from "../services/passwordPolicy.js";
 import { beginAttempt, recordSuccess } from "../services/loginThrottle.js";
@@ -76,6 +76,9 @@ router.get("/config", (req, res) => {
     // whether notes and answers are sent to an AI service, and which: shown
     // to students on the Settings page
     ai: llmAvailable() ? { enabled: true, ...llmProvider() } : { enabled: false, name: null, trainsOnInputs: null },
+    // what may be uploaded, so the upload screen states the limits the
+    // server enforces (config.js)
+    uploads: uploadLimits(),
   });
 });
 

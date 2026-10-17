@@ -1,6 +1,6 @@
 import { findOwnedSubject } from "../models/Subject.js";
 import { findChildNotes, findNotesByIds, isSplitParent, topicLabelFor } from "../models/Note.js";
-import { createTest, findTestsBySubject, findOwnedTest, setTestLength } from "../models/Test.js";
+import { createTest, deleteTest, findTestsBySubject, findOwnedTest, setTestGeneration, setTestLength } from "../models/Test.js";
 import { createQuestions, findAcceptedQuestionsByTests, findQuestionsByTest } from "../models/Question.js";
 import { requireAuth } from "../middleware/auth.js";
 import { safeRouter } from "../middleware/safeRouter.js";
@@ -188,8 +188,25 @@ async function buildTest(req, res) {
   // concepts tested in the last two tests: asked again in a new way only when
   // the notes have no untested concept left
   const recentConcepts = new Set(earlierQuestions.filter((q) => recentTests.has(String(q.testId))).map((q) => conceptOf(q, q.type)).filter(Boolean));
+  // every concept tested on these notes: how often, and in which test last
+  // (0 = the oldest), so the concepts tested least and longest ago come back
+  // before the ones tested often and lately
+  const ordinal = new Map([...earlierTests].sort((a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0)).map((t, i) => [String(t._id), i]));
+  const conceptHistory = new Map();
+  for (const q of earlierQuestions) {
+    const c = conceptOf(q, q.type);
+    if (!c) continue;
+    const h = conceptHistory.get(c) || { count: 0, last: -1, tests: new Set() };
+    const t = String(q.testId);
+    if (!h.tests.has(t)) {
+      h.tests.add(t);
+      h.count += 1;
+    }
+    h.last = Math.max(h.last, ordinal.get(t) ?? -1);
+    conceptHistory.set(c, h);
+  }
 
-  const { accepted, discarded, repeatsUsed, mcqGeneratedBy, theoryGeneratedBy, rankedBy } = await generateQuestions(notesInSubject, {
+  const { accepted, discarded, repeatsUsed, mcqGeneratedBy, theoryGeneratedBy, generation, rankedBy } = await generateQuestions(notesInSubject, {
     mcqCount: poolSizeFor(safeMcqCount),
     theoryCount: poolSizeFor(safeTheoryCount),
     marksPerQuestion,
@@ -198,12 +215,32 @@ async function buildTest(req, res) {
     avoid,
     repeatRank,
     recentConcepts,
+    conceptHistory,
     // earlier questions are used again only to reach these, never to fill the larger pool
     mcqTarget: safeMcqCount,
     theoryTarget: safeTheoryCount,
   });
 
+  // Nothing passed the quality checks: there is no test to take. The empty
+  // test is removed and the student is told plainly; why each draft failed
+  // goes to the server log as counts (never the text).
+  if (accepted.length === 0) {
+    await deleteTest(test._id);
+    const reasons = {};
+    for (const q of discarded) for (const r of String(q.discardReason || "unknown").split(",")) reasons[r] = (reasons[r] || 0) + 1;
+    console.warn("[testgen] no question passed the checks:", JSON.stringify(reasons));
+    return res.status(422).json({
+      error: "No questions could be made from these notes. Try adding more notes on this topic, or choose more notes.",
+      code: "generation_failed",
+      generation,
+      mcqGeneratedBy,
+      theoryGeneratedBy,
+    });
+  }
+
   const stored = await createQuestions([...accepted, ...discarded].map((q) => ({ ...q, testId: test._id })));
+  await setTestGeneration(test._id, generation);
+  test.generation = generation;
   const acceptedCount = stored.filter((q) => q.status === "accepted").length;
   const available = (type) => stored.filter((q) => q.status === "accepted" && q.type === type).length;
   // Fewer good questions than asked for: the test is as long as what could be
@@ -217,6 +254,11 @@ async function buildTest(req, res) {
     test: publicDoc(test),
     mcqGeneratedBy,
     theoryGeneratedBy,
+    // per question type: status ("llm" | "rule-based-fallback" | "mixed" |
+    // "failed" | "none"), how many questions each writer supplied, and why
+    // the rules stepped in (fallbackReason) - decided from the questions
+    // actually chosen, not from whether an AI key is set
+    generation,
     // "embeddings" when the semantic model judged relevance and key terms,
     // "rules" when it is off, not installed or still loading
     rankedBy,

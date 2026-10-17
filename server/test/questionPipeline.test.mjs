@@ -255,10 +255,13 @@ try {
   const c = await build("Third");
   const qc = await questionsOf(c);
   const conceptsOf = (qs) => new Set(qs.map((q) => q.concept).filter(Boolean));
-  const before = new Set([...conceptsOf(qa), ...conceptsOf(qb)]);
-  const overlap = [...conceptsOf(qc)].filter((x) => before.has(x)).length;
-  check("a third test asks about concepts the first two did not", qc.length >= 8 && overlap <= 1, `${overlap} of ${conceptsOf(qc).size} concepts seen before`);
-  check("every stored question records its concept and form", [...qa, ...qb, ...qc].every((q) => q.concept && "form" in q));
+  // only questions a student can be asked count (rejected drafts are stored
+  // too, with their concept, for the admin page)
+  const asked = (qs) => qs.filter((q) => q.status === "accepted");
+  const before = new Set([...conceptsOf(asked(qa)), ...conceptsOf(asked(qb))]);
+  const overlap = [...conceptsOf(asked(qc))].filter((x) => before.has(x)).length;
+  check("a third test asks about concepts the first two did not", asked(qc).length >= 8 && overlap <= 1, `${overlap} of ${conceptsOf(asked(qc)).size} concepts seen before`);
+  check("every stored question records its concept and form", [...qa, ...qb, ...qc].every((q) => q.concept && "form" in q), [...qa, ...qb, ...qc].filter((q) => !(q.concept && "form" in q)).map((q) => `${q.status} ${q.discardReason} ${q.prompt}`).join(" | "));
 
   // a request larger than the notes can supply
   const { subject: small } = await call("/subjects", { method: "POST", body: { name: "Tiny" } });

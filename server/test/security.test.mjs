@@ -419,7 +419,9 @@ try {
   r = await call(`/notes/${note._id}`, { method: "PATCH", token: a.token, body: { title: "Framing", ownerId: b.id, subjectId: bobSubject._id, parentNoteId: note2._id } });
   check("a note cannot be moved to another owner or subject by editing it", r.status === 200 && (await asBob(`/subjects/${bobSubject._id}/notes`)).notes.length === 0 && (await call(`/notes/${note._id}`, { token: a.token })).note.subjectId === subj._id);
   r = await call(`/subjects/${subj._id}/tests`, { method: "POST", token: a.token, body: { title: "Big", noteIds: [note._id], mcqCount: 2, theoryCount: 0, targetQuestionCount: 999, ownerId: b.id, marksPerQuestion: 5 } });
-  check("a test's stored fields come from the checked ones only", r.status === 201 && r.test.targetQuestionCount === 2 && r.test.marksPerQuestion === 5 && (await asBob(`/tests/${r.test._id}`)).status === 404);
+  // (this three-sentence note gives fewer sound MCQs than asked for, so the
+  // test may be shorter than 2 - but never the 999 the client sent)
+  check("a test's stored fields come from the checked ones only", r.status === 201 && r.test.targetQuestionCount >= 1 && r.test.targetQuestionCount <= 2 && r.test.marksPerQuestion === 5 && (await asBob(`/tests/${r.test._id}`)).status === 404);
   // answer the first question wrongly while claiming it was right
   const q = started.question;
   const wrong = q.type === "mcq" ? "certainly not one of the options" : "no idea";
@@ -644,10 +646,12 @@ try {
   r = await pcall("/auth/login", { method: "POST", body: { email: carol, password: "lantern-Quilt-77" } });
   const t = r.token;
   const s = (await pcall("/subjects", { method: "POST", token: t, body: { name: "Chem" } })).subject;
-  const n = (await pcall(`/subjects/${s._id}/notes`, { method: "POST", token: t, body: { title: "Atoms", content: "An atom has a nucleus of protons and neutrons, surrounded by electrons in shells around it. Isotopes of an element differ in their number of neutrons." } })).note;
+  const n = (await pcall(`/subjects/${s._id}/notes`, { method: "POST", token: t, body: { title: "Atoms", content: "An atom is the smallest unit of a chemical element. A proton is a positively charged particle found in the nucleus of an atom. A neutron is an uncharged particle found in the nucleus of an atom. An electron is a negatively charged particle that moves in shells around the nucleus. Isotopes of an element differ in their number of neutrons." } })).note;
+  // (a note with enough to ask about: the check below means something only
+  // when the test has questions whose keys could leak)
   const tt = (await pcall(`/subjects/${s._id}/tests`, { method: "POST", token: t, body: { title: "Q", noteIds: [n._id], mcqCount: 1 } })).test;
   r = await pcall(`/tests/${tt._id}?keys=1`, { token: t });
-  check("the development switch for answer keys does nothing in production", r.status === 200 && !/"answerKey"/.test(r.text));
+  check("the development switch for answer keys does nothing in production", r.status === 200 && /"prompt"/.test(r.text) && !/"answerKey"/.test(r.text));
   r = await requester(PROD)("/subjects", { method: "POST", token: t, origin: "http://localhost:5173", body: { name: "x" }, headers: https });
   check("the local dev address is not an allowed origin in production", r.status === 403);
 } catch (err) {

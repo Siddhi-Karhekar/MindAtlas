@@ -491,6 +491,8 @@ export function clearStudyCache() {
 // ---------------------------------------------------------------------------
 
 const SHOWN_TERMS = 10;
+// most single unmarked words among the terms shown (see keyTermsFor)
+const MAX_PLAIN_WORDS = 3;
 
 const acronymTerm = (t) => /^[A-Z0-9][A-Z0-9/+.-]*[A-Z0-9+]$/.test(t.term) && /[A-Z]/.test(t.term);
 /**
@@ -501,6 +503,32 @@ const acronymTerm = (t) => /^[A-Z0-9][A-Z0-9/+.-]*[A-Z0-9+]$/.test(t.term) && /[
  */
 export const isStrongTerm = (t) => t.words > 1 || acronymTerm(t) || t.marks.length > 0 || t.standalone >= 3;
 const shownCache = new Map();
+
+// Nouns every note in a subject uses: "data", "system", "message". Said often,
+// they still say nothing about what a note is about, and highlighting them
+// buries the real terms. Shown only when the note defines or marks them.
+const BROAD = new Set(
+  "data information system item value user computer device node message network program result method problem input output level form object structure operation entity record file service application process state".split(" ")
+);
+// "A frame is the unit ...", "... is called a frame": the note says what the word is
+const definedIn = (term, text) =>
+  new RegExp(`(?:^|[.!?]\\s+|\\n)(?:an?\\s+|the\\s+)?${termPattern(term).source}\\s+(?:is|are)\\s+(?:an?|the|one|any|defined|called|known)\\b`, "i").test(text) ||
+  new RegExp(`\\b(?:called|termed|known as|referred to as)\\s+(?:an?\\s+|the\\s+)?${termPattern(term).source}`, "i").test(text);
+
+/**
+ * Whether a strong term is worth highlighting for a reader. A phrase or an
+ * acronym is. A single word is when the author marked it (bold, a heading of
+ * its own, a lead-in, a spelled-out acronym - the note's title alone does not
+ * count: "network" in a note titled "Computer Networks" is everywhere), or the
+ * note defines it, or it is used on its own often and is not one of the broad
+ * nouns every note uses.
+ */
+function worthShowing(t, text) {
+  if (t.words > 1 || acronymTerm(t)) return true;
+  const marked = t.marks.some((m) => m !== "title");
+  if (marked || definedIn(t.term, text)) return true;
+  return t.standalone >= 3 && !BROAD.has(t.key);
+}
 
 /**
  * A note's key terms for display, best first, as whole terms ("bus topology",
@@ -520,10 +548,24 @@ export function keyTermsFor(note, corpus = [], max = SHOWN_TERMS) {
 
   const terms = extractTerms(note, candidateSentences(note), others);
   const acronym = acronymTerm;
-  const strong = terms.filter(isStrongTerm);
+  const text = String(note.rawText);
+  // a possessive is a use of a term, not a term: "sender's private key"
+  const strong = terms.filter((t) => isStrongTerm(t) && !/['’]s\b/i.test(t.term) && worthShowing(t, text));
   const phrases = strong.filter((t) => t.words > 1);
   const partOfPhrase = (t) => t.words === 1 && phrases.some((p) => ` ${p.key} `.includes(` ${t.key} `));
-  const shown = strong.filter((t) => !partOfPhrase(t) || t.standalone >= 4 || acronym(t)).map((t) => t.term);
+  // "Remote Procedure" beside "Remote Procedure Call": a piece of a longer
+  // term that the note never uses on its own is not a term to show
+  const onlyInside = (t) =>
+    t.words > 1 &&
+    phrases.some((p) => p.words > t.words && ` ${p.key} `.includes(` ${t.key} `) && (text.match(termPattern(t.term)) || []).length <= (text.match(termPattern(p.term)) || []).length);
+  const candidates = strong.filter((t) => (!partOfPhrase(t) || t.standalone >= 4 || acronym(t)) && !onlyInside(t));
+  // Whole terms first: a single everyday word ("layer", "bit", "link") is at
+  // best a weak key term, so at most a few of them are shown - those the
+  // author set in bold or as a lead-in are not counted - and only behind the
+  // phrases and acronyms when there are enough of those to fill the list.
+  const plainWord = (t) => t.words === 1 && !acronym(t) && !t.marks.some((m) => m === "bold" || m === "lead" || m === "acronym");
+  let words = 0;
+  const shown = candidates.filter((t) => !plainWord(t) || ++words <= MAX_PLAIN_WORDS).map((t) => t.term);
 
   if (shownCache.size >= STUDY_CACHE_LIMIT) shownCache.delete(shownCache.keys().next().value);
   shownCache.set(cacheKey, shown);

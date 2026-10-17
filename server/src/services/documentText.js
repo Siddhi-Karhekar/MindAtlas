@@ -17,6 +17,7 @@
 import mammoth from "mammoth";
 import JSZip from "jszip";
 import { getDocument } from "pdfjs-dist/legacy/build/pdf.mjs";
+import { MAX_PDF_PAGES } from "../config.js";
 import { blocksFromPlainText, blocksToText, inferHeadings, listLine, looksLikeHeadingLine } from "./documentStructure.js";
 
 const TEXT_EXT = new Set([".txt", ".md", ".markdown", ".text", ".csv"]);
@@ -515,7 +516,6 @@ async function boldFontsOf(page, content) {
 
 // Parsing is done page by page on the one thread every request shares, so a
 // very long PDF would hold everyone else up.
-const MAX_PDF_PAGES = 400;
 class TooLong extends Error {
   constructor(pages) {
     super("too many pages");

@@ -5,9 +5,8 @@ import { timeAgo, wordCount } from "../lib/format.js";
 import Icon from "../components/Icon.jsx";
 import { isTopicNote, noteTree } from "../lib/notes.js";
 
-// who wrote a test's questions, as the build result reports it
-const writer = (by) => (by === "llm" ? "LLM" : by === "mixed" ? "LLM and rules (new questions in place of the AI's repeats)" : "rule-based fallback");
 import { termsOf } from "../lib/noteFormat.js";
+import { describeGeneration, generationBadge } from "../lib/generation.js";
 
 // One selectable row in "Draw questions from these notes". Used for plain
 // notes, split documents (checkbox selects all their subtopics, `partial` when
@@ -155,6 +154,8 @@ export default function Tests() {
   const [durationMinutes, setDurationMinutes] = useState(10);
   const [error, setError] = useState("");
   const [result, setResult] = useState(null);
+  // why the last build made no test, with who was asked to write it
+  const [failedGeneration, setFailedGeneration] = useState(null);
   const [busy, setBusy] = useState(false);
 
   function refresh() {
@@ -220,6 +221,7 @@ export default function Tests() {
     e.preventDefault();
     setError("");
     setResult(null);
+    setFailedGeneration(null);
     if (!title.trim()) return setError("title is required");
     if (selectedNoteIds.length === 0) return setError("pick at least one note to build the test from");
     if (total < 1) return setError("pick at least 1 MCQ or theory question");
@@ -244,6 +246,7 @@ export default function Tests() {
       refresh();
     } catch (err) {
       setError(err.message);
+      if (err.code === "generation_failed") setFailedGeneration(err.data?.generation || null);
     } finally {
       setBusy(false);
     }
@@ -568,6 +571,13 @@ export default function Tests() {
                   {error}
                 </p>
               )}
+              {failedGeneration && (
+                <p data-testid="generation-failed" className="font-body-sm text-body-sm text-on-surface-variant">
+                  {describeGeneration(failedGeneration)
+                    .map((l) => l.text)
+                    .join(" · ")}
+                </p>
+              )}
               {result && (
                 <div className="p-space-md rounded-lg bg-secondary-container/50 text-on-secondary-container font-body-sm text-body-sm flex flex-col gap-space-xs">
                   <span className="font-semibold">Test ready.</span>
@@ -595,11 +605,15 @@ export default function Tests() {
                       {result.repeatsUsed} question{result.repeatsUsed === 1 ? " is" : "s are"} from your earlier tests: these notes had no new ones left to ask.
                     </span>
                   )}
-                  <span className="opacity-80">
-                    {result.mcqGeneratedBy && result.mcqGeneratedBy !== "none" ? `MCQs via ${writer(result.mcqGeneratedBy)}` : ""}
-                    {result.mcqGeneratedBy !== "none" && result.theoryGeneratedBy !== "none" ? " · " : ""}
-                    {result.theoryGeneratedBy && result.theoryGeneratedBy !== "none" ? `Theory via ${writer(result.theoryGeneratedBy)}` : ""}
-                    {result.rankedBy ? ` · relevance and key terms by ${result.rankedBy === "embeddings" ? "meaning (embedding model)" : "rules"}` : ""}
+                  <span className="opacity-80 flex flex-col" data-testid="generation-status">
+                    {describeGeneration(result.generation, result).map((l) => (
+                      <span key={l.type} data-status={l.status}>
+                        {l.text}
+                      </span>
+                    ))}
+                    {result.rankedBy && (
+                      <span>Key terms chosen by {result.rankedBy === "embeddings" ? "meaning (embedding model)" : "rules"}</span>
+                    )}
                   </span>
                 </div>
               )}
@@ -654,6 +668,16 @@ export default function Tests() {
                   <div className="font-label-md text-label-md text-on-surface-variant">
                     {t.targetQuestionCount ? `${t.targetQuestionCount} questions · ` : ""}
                     {t.durationMinutes} min · {t.marksPerQuestion} marks/question · created {timeAgo(t.createdAt)}
+                    {generationBadge(t.generation) && (
+                      <span
+                        className="ml-space-xs px-space-xs rounded bg-surface-container text-on-surface-variant"
+                        title={describeGeneration(t.generation)
+                          .map((l) => l.text)
+                          .join("\n")}
+                      >
+                        {generationBadge(t.generation)}
+                      </span>
+                    )}
                   </div>
                 </div>
               </div>
