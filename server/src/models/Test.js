@@ -50,6 +50,19 @@ export async function setTestLength(id, { targetQuestionCount, mix }) {
   return tests().findOneAndUpdate({ _id: id }, { $set: { targetQuestionCount, mix } });
 }
 
+/**
+ * How the questions were made, for each type: who wrote them (the AI, the
+ * rules, or both), and why the rules stepped in. Shown beside the test.
+ */
+export async function setTestGeneration(id, generation) {
+  return tests().findOneAndUpdate({ _id: id }, { $set: { generation } });
+}
+
+/** A test that could not be built (no question could be made) is removed again. */
+export async function deleteTest(id) {
+  return tests().deleteMany({ _id: id });
+}
+
 export async function findOwnedTest(id, ownerId) {
   return tests().findOne({ _id: id, ownerId });
 }

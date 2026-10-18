@@ -214,7 +214,7 @@ export async function runGeneration(options) {
         qid,
         document: q.file,
         topic: q.subtopic || q.topic,
-        type: q.type === "mcq" ? "fill in the blank" : "theory",
+        type: q.type === "mcq" ? (String(q.prompt).includes("_____") ? "fill in the blank" : "multiple choice") : "theory",
         question: clozeOf(q) ?? `${q.prompt}${q.guidance ? ` (${q.guidance})` : ""}`,
         option_a: options[0] ?? "",
         option_b: options[1] ?? "",

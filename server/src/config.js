@@ -53,3 +53,39 @@ export const envNumber = (name, fallback) => {
   const n = Number(process.env[name]);
   return Number.isFinite(n) && n > 0 ? n : fallback;
 };
+
+// ---------------------------------------------------------------------------
+// Upload limits: one place, read by the upload routes, the readers and the
+// client (GET /api/auth/config sends them, so the upload screen states the
+// same numbers the server enforces).
+// ---------------------------------------------------------------------------
+
+// Largest file accepted, in MB (UPLOAD_MAX_MB, default 10). Files are held in
+// memory while they are read, and the free hosting plan has 512 MB for
+// everything, so the setting is capped at 25.
+export const uploadMaxMb = () => Math.min(25, envNumber("UPLOAD_MAX_MB", 10));
+// A PDF longer than this is refused before its pages are read.
+export const MAX_PDF_PAGES = 400;
+// A photo larger than this many pixels is refused before it is decoded.
+export const MAX_IMAGE_PIXELS = 50_000_000;
+// Text one upload may produce (about 250,000 words). Past this, splitting,
+// key-term extraction and linking hold up every other student's requests.
+export const MAX_UPLOAD_TEXT = 1_500_000;
+
+/** The upload limits as the client shows them. */
+export function uploadLimits() {
+  return {
+    maxMb: uploadMaxMb(),
+    maxPdfPages: MAX_PDF_PAGES,
+    maxImageMegapixels: MAX_IMAGE_PIXELS / 1_000_000,
+    maxWords: Math.round(MAX_UPLOAD_TEXT / 6 / 1000) * 1000,
+    readTimeoutSeconds: envNumber("EXTRACT_TIMEOUT_SECONDS", 25),
+    types: [
+      { label: "PDF", extensions: [".pdf"], note: `up to ${MAX_PDF_PAGES} pages; text PDFs only (a scanned PDF has no text - upload its pages as photos)` },
+      { label: "Word", extensions: [".docx"], note: "not the old .doc format - Save As .docx first" },
+      { label: "PowerPoint", extensions: [".pptx"], note: "not the old .ppt format - Save As .pptx first" },
+      { label: "Text / Markdown", extensions: [".txt", ".md", ".markdown", ".csv"], note: null },
+      { label: "Photo (OCR)", extensions: [".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff"], note: `up to ${MAX_IMAGE_PIXELS / 1_000_000} megapixels; printed text reads best` },
+    ],
+  };
+}

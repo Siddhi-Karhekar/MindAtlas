@@ -50,8 +50,8 @@ export const llmProvider = () => {
 // wording of that prompt changes. ("v1" was the wording before notes and
 // answers were passed as tagged data.)
 export const PROMPT_VERSIONS = Object.freeze({
-  mcq: "mcq-v2",
-  theory: "theory-v2",
+  mcq: "mcq-v4",
+  theory: "theory-v4",
   grade: "grade-v3",
   remark: "remark-v2",
   feedback: "feedback-v3",
@@ -84,6 +84,26 @@ export function asData(tag, text) {
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// Why a call produced no text, in a few words a log or a status line can use.
+// The key and the request body are never part of it.
+//   not-configured  no GROQ_API_KEY
+//   rate-limited    429: too many requests or tokens for now
+//   quota           429/402 saying the plan's quota is used up
+//   auth            401/403: the key is wrong, revoked or not allowed
+//   bad-request     400/404/413/422: the request or model name was refused
+//   server-error    5xx from the provider
+//   timeout         no answer within LLM_TIMEOUT_MS
+//   network         the provider could not be reached
+//   empty-response  an answer with no text in it
+function failureKind(status, code) {
+  const c = String(code || "").toLowerCase();
+  if (status === 402 || /quota|insufficient|billing|limit_exceeded_for_plan/.test(c)) return "quota";
+  if (status === 429) return "rate-limited";
+  if (status === 401 || status === 403) return "auth";
+  if (status >= 500) return "server-error";
+  return "bad-request";
+}
+
 async function once(body) {
   const res = await fetch(apiUrl(), {
     method: "POST",
@@ -92,45 +112,66 @@ async function once(body) {
     signal: AbortSignal.timeout(TIMEOUT_MS()),
   });
   if (res.ok) {
-    const data = await res.json();
-    return { text: data.choices?.[0]?.message?.content ?? null };
+    const data = await res.json().catch(() => null);
+    const text = data?.choices?.[0]?.message?.content ?? null;
+    return text ? { text } : { error: { kind: "empty-response", status: res.status } };
   }
-  // 429 (rate limited) and 5xx (provider trouble) are worth one more try;
-  // anything else (bad key, bad request) will fail the same way again
-  const retryable = res.status === 429 || res.status >= 500;
   const after = Number(res.headers.get("retry-after"));
   // the status and the provider's error type only: an error body can echo
   // back part of the request, which is a student's notes or answer
   const detail = await res.json().catch(() => ({}));
-  console.error("[llm] request failed:", res.status, redact(detail?.error?.type || detail?.error?.code || "", 80));
-  return { retryable, waitMs: Number.isFinite(after) && after > 0 ? Math.min(5000, after * 1000) : 1000 };
+  const code = redact(detail?.error?.code || detail?.error?.type || "", 80);
+  const kind = failureKind(res.status, code);
+  console.error("[llm] request failed:", res.status, kind, code);
+  // 429 (rate limited) and 5xx (provider trouble) are worth one more try;
+  // a used-up quota, a bad key or a bad request will fail the same way again
+  const retryable = kind === "rate-limited" || kind === "server-error";
+  return { retryable, error: { kind, status: res.status, code }, waitMs: Number.isFinite(after) && after > 0 ? Math.min(5000, after * 1000) : 1000 };
 }
 
 /**
- * Send one prompt and get back the raw text response, or null if the LLM
- * isn't configured, timed out, or failed twice.
+ * Send one prompt and report what happened:
+ *   { text, attempts, durationMs }                on success
+ *   { text: null, error: { kind, status?, code? }, attempts, durationMs }
+ * `error.kind` is one of the kinds listed at failureKind. Never throws.
  *   system       the instructions (kept apart from student text)
  *   temperature  0..1
  */
-export async function callLLM(prompt, { temperature = 0.3, system = null } = {}) {
-  if (!llmAvailable()) return null;
+export async function callLLMDetailed(prompt, { temperature = 0.3, system = null } = {}) {
+  const started = Date.now();
+  if (!llmAvailable()) return { text: null, error: { kind: "not-configured" }, attempts: 0, durationMs: 0 };
   const body = {
     model: llmModel(),
     temperature,
     messages: [...(system ? [{ role: "system", content: system }] : []), { role: "user", content: prompt }],
   };
+  let error = null;
+  let attempts = 0;
   for (let attempt = 1; attempt <= 2; attempt++) {
+    attempts = attempt;
     try {
       const out = await once(body);
-      if (!out.retryable) return out.text ?? null;
+      if (out.text) return { text: out.text, attempts, durationMs: Date.now() - started };
+      error = out.error;
+      if (!out.retryable) break;
       if (attempt === 1) await wait(out.waitMs);
     } catch (err) {
       // a timeout or a dropped connection: one more try, then give up
-      console.error("[llm] request errored:", err.name === "TimeoutError" ? "timed out" : redact(err.message, 120));
+      const timedOut = err?.name === "TimeoutError" || err?.name === "AbortError";
+      error = { kind: timedOut ? "timeout" : "network" };
+      console.error("[llm] request errored:", timedOut ? "timed out" : redact(err?.message, 120));
       if (attempt === 1) await wait(500);
     }
   }
-  return null;
+  return { text: null, error, attempts, durationMs: Date.now() - started };
+}
+
+/**
+ * Send one prompt and get back the raw text response, or null if the LLM
+ * isn't configured, timed out, or failed twice. (callLLMDetailed says why.)
+ */
+export async function callLLM(prompt, options = {}) {
+  return (await callLLMDetailed(prompt, options)).text;
 }
 
 /** Best-effort JSON parse of an LLM response that may be wrapped in prose or a ```json fence. */

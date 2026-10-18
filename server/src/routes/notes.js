@@ -5,7 +5,7 @@ import { safeRouter } from "../middleware/safeRouter.js";
 import { LIMITS, text } from "../middleware/validate.js";
 import { uploadSingle } from "../middleware/upload.js";
 import { once } from "../middleware/once.js";
-import { envNumber } from "../config.js";
+import { MAX_UPLOAD_TEXT, envNumber, uploadMaxMb } from "../config.js";
 import { markActivity } from "../models/User.js";
 import { extractTextFromImage } from "../services/ocr.js";
 import { blocksFromOcrLines, classifyUpload, titleFromFilename } from "../services/documentText.js";
@@ -46,9 +46,6 @@ async function readUpload(file) {
   return read;
 }
 
-// About 250,000 words. Past this, splitting, keyword extraction and linking
-// take long enough to hold up every other student's requests.
-const MAX_UPLOAD_TEXT = 1_500_000;
 
 async function readUploadOfKind(file, kind) {
   if (kind === "image") {
@@ -86,7 +83,7 @@ async function readUploadOfKind(file, kind) {
 // POST /api/subjects/:id/notes/preview - read an uploaded file and report how
 // it WOULD be split, without saving anything. Lets the upload screen show the
 // detected subtopics before the student commits.
-router.post("/:id/notes/preview", uploadSingle("file", 10), async (req, res) => {
+router.post("/:id/notes/preview", uploadSingle("file", uploadMaxMb), async (req, res) => {
   const subject = await findOwnedSubject(req.params.id, req.user.id);
   if (!subject) return res.status(404).json({ error: "subject not found" });
   if (!req.file) return res.status(400).json({ error: "attach a file to preview" });
@@ -127,7 +124,7 @@ router.post("/:id/notes/preview", uploadSingle("file", 10), async (req, res) => 
 // per subtopic. Send the form field split=false to keep it as a single note.
 const storageLimit = (name, fallback) => Math.max(1, envNumber(name, fallback));
 
-router.post("/:id/notes", uploadSingle("file", 10), once(), async (req, res) => {
+router.post("/:id/notes", uploadSingle("file", uploadMaxMb), once(), async (req, res) => {
   const subject = await findOwnedSubject(req.params.id, req.user.id);
   if (!subject) return res.status(404).json({ error: "subject not found" });
 

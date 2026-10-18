@@ -270,7 +270,7 @@ export function resultsMarkdown(r) {
   for (const c of CRITERIA) lines.push(`| ${LABELS[c]} | ${names.map((n) => cellFor(r.strategies[n].criteria[c], c)).join(" | ")} |`);
   const four = (s) => (s?.n ? `${pct(s.share_4_or_more)} [${ci(s.ci95_4_or_more)}]` : "-");
   lines.push(`| Usable rated 4 or more | ${names.map((n) => four(r.strategies[n].criteria.usable)).join(" | ")} |`);
-  lines.push(`| Usable, fill in the blank | ${names.map((n) => cellFor(r.strategies[n].usable_by_type.fill_in_the_blank, "usable")).join(" | ")} |`);
+  lines.push(`| Usable, multiple choice | ${names.map((n) => cellFor(r.strategies[n].usable_by_type.fill_in_the_blank, "usable")).join(" | ")} |`);
   lines.push(`| Usable, theory | ${names.map((n) => cellFor(r.strategies[n].usable_by_type.theory, "usable")).join(" | ")} |`);
 
   if (r.comparisons.length) {
@@ -291,7 +291,7 @@ export function resultsMarkdown(r) {
   if (r.lowest_rated.length) {
     lines.push("", "## Lowest-rated questions", "", "Where to look first when improving the generator.", "");
     for (const q of r.lowest_rated) {
-      lines.push(`- **${q.qid}** (${q.strategies.join(", ")}; ${q.type === "mcq" ? "fill in the blank" : "theory"}; usable ${q.usable}${q.relevant === 0 ? "; not relevant" : ""}${q.correct === 0 ? "; answer wrong" : ""}) ${q.question}${q.answer ? ` - answer: ${q.answer}` : ""}${q.comments.length ? ` - ${q.comments.join("; ")}` : ""}`);
+      lines.push(`- **${q.qid}** (${q.strategies.join(", ")}; ${q.type === "mcq" ? "multiple choice" : "theory"}; usable ${q.usable}${q.relevant === 0 ? "; not relevant" : ""}${q.correct === 0 ? "; answer wrong" : ""}) ${q.question}${q.answer ? ` - answer: ${q.answer}` : ""}${q.comments.length ? ` - ${q.comments.join("; ")}` : ""}`);
     }
   }
   if (r.problems.length) lines.push("", "## Cells that were ignored", "", ...r.problems.map((p) => `- ${p}`));

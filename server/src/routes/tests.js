@@ -1,6 +1,6 @@
 import { findOwnedSubject } from "../models/Subject.js";
 import { findChildNotes, findNotesByIds, isSplitParent, topicLabelFor } from "../models/Note.js";
-import { createTest, findTestsBySubject, findOwnedTest, setTestLength } from "../models/Test.js";
+import { createTest, deleteTest, findTestsBySubject, findOwnedTest, setTestGeneration, setTestLength } from "../models/Test.js";
 import { createQuestions, findAcceptedQuestionsByTests, findQuestionsByTest } from "../models/Question.js";
 import { requireAuth } from "../middleware/auth.js";
 import { safeRouter } from "../middleware/safeRouter.js";
@@ -9,7 +9,10 @@ import { idList, integer, text } from "../middleware/validate.js";
 import { publicDoc } from "../services/noteView.js";
 import { isProduction } from "../config.js";
 import { generateQuestions } from "../services/testEngine.js";
+import { conceptOf } from "../services/questionQuality.js";
 import { masteryMapForSubject } from "../models/Mastery.js";
+import { findAttemptsBySubject } from "../models/Attempt.js";
+import { findResponsesByAttempts } from "../models/Response.js";
 
 const router = safeRouter();
 router.use(requireAuth);
@@ -20,6 +23,23 @@ router.use(requireAuth);
 // roughly 1.5x that many candidates (capped, so this stays a single LLM
 // call). Everything above `target` that gets accepted just sits unused in
 // the pool if the adaptive walk never needs it.
+const RECENT_TESTS = 2;
+
+// One test build at a time per student and subject. Two builds started
+// together (a double click, two tabs) would each read the same history and
+// pick the same questions; queued, the second sees the first's questions.
+const building = new Map();
+function oneAtATime(key, work) {
+  const before = building.get(key) || Promise.resolve();
+  const run = before.catch(() => {}).then(work);
+  const tail = run.catch(() => {});
+  building.set(key, tail);
+  tail.then(() => {
+    if (building.get(key) === tail) building.delete(key);
+  });
+  return run;
+}
+
 function poolSizeFor(target) {
   if (target <= 0) return 0;
   return Math.min(24, Math.max(target, Math.ceil(target * 1.5)));
@@ -59,7 +79,9 @@ async function resolveTopicNotes(selected) {
 // anything else a mixed test. Both counts are how many questions the
 // student will actually see; a larger pool is generated behind the scenes
 // for the adaptive controller to draw from.
-router.post("/subjects/:id/tests", once(), async (req, res) => {
+router.post("/subjects/:id/tests", once(), (req, res) => oneAtATime(`${req.user.id}|${req.params.id}`, () => buildTest(req, res)));
+
+async function buildTest(req, res) {
   const subject = await findOwnedSubject(req.params.id, req.user.id);
   if (!subject) return res.status(404).json({ error: "subject not found" });
 
@@ -133,24 +155,92 @@ router.post("/subjects/:id/tests", once(), async (req, res) => {
   const earlierTests = (await findTestsBySubject(subject._id)).filter(
     (t) => String(t.ownerId) === String(req.user.id) && String(t._id) !== String(test._id)
   );
-  const avoid = (await findAcceptedQuestionsByTests(earlierTests.map((t) => t._id)))
-    .filter((q) => topicIds.has(String(q.topicId)))
-    .map((q) => q.prompt)
-    .filter(Boolean);
+  // oldest test first, so the list ends with what was asked most recently
+  const testTime = new Map(earlierTests.map((t) => [String(t._id), new Date(t.createdAt || 0).getTime()]));
+  const earlierQuestions = (await findAcceptedQuestionsByTests(earlierTests.map((t) => t._id)))
+    .filter((q) => q.prompt && topicIds.has(String(q.topicId)))
+    .sort((a, b) => (testTime.get(String(a.testId)) || 0) - (testTime.get(String(b.testId)) || 0));
+  const avoid = earlierQuestions.map((q) => q.prompt);
 
-  const { accepted, discarded, repeatsUsed, mcqGeneratedBy, theoryGeneratedBy, rankedBy } = await generateQuestions(notesInSubject, {
+  // When the notes run out of new questions, which earlier ones come back
+  // first: ones the student was never actually shown (the pool is larger than
+  // a test), then ones they got wrong, then the rest - oldest first in each.
+  // A repeat is then revision of what the student does not yet know, not
+  // simply the first questions ever written.
+  const attempts = (await findAttemptsBySubject(req.user.id, subject._id)).slice(0, 100);
+  const shownIds = new Set(attempts.flatMap((a) => (a.shownQuestionIds || []).map(String)));
+  const lowestScore = new Map();
+  for (const r of await findResponsesByAttempts(attempts.map((a) => a._id))) {
+    const id = String(r.questionId);
+    lowestScore.set(id, Math.min(lowestScore.get(id) ?? 1, typeof r.score === "number" ? r.score : 0));
+  }
+  // Long-term policy: a question from one of the last two tests comes back
+  // only after everything older (it is too soon to be useful revision).
+  const recentTests = new Set(
+    [...earlierTests].sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0)).slice(0, RECENT_TESTS).map((t) => String(t._id))
+  );
+  const repeatRank = new Map();
+  earlierQuestions.forEach((q, i) => {
+    const id = String(q._id);
+    const band = (recentTests.has(String(q.testId)) ? 3 : 0) + (!shownIds.has(id) ? 0 : (lowestScore.get(id) ?? 0) < 0.5 ? 1 : 2);
+    if (!repeatRank.has(q.prompt)) repeatRank.set(q.prompt, band * 1e6 + i);
+  });
+  // concepts tested in the last two tests: asked again in a new way only when
+  // the notes have no untested concept left
+  const recentConcepts = new Set(earlierQuestions.filter((q) => recentTests.has(String(q.testId))).map((q) => conceptOf(q, q.type)).filter(Boolean));
+  // every concept tested on these notes: how often, and in which test last
+  // (0 = the oldest), so the concepts tested least and longest ago come back
+  // before the ones tested often and lately
+  const ordinal = new Map([...earlierTests].sort((a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0)).map((t, i) => [String(t._id), i]));
+  const conceptHistory = new Map();
+  for (const q of earlierQuestions) {
+    const c = conceptOf(q, q.type);
+    if (!c) continue;
+    const h = conceptHistory.get(c) || { count: 0, last: -1, tests: new Set() };
+    const t = String(q.testId);
+    if (!h.tests.has(t)) {
+      h.tests.add(t);
+      h.count += 1;
+    }
+    h.last = Math.max(h.last, ordinal.get(t) ?? -1);
+    conceptHistory.set(c, h);
+  }
+
+  const { accepted, discarded, repeatsUsed, mcqGeneratedBy, theoryGeneratedBy, generation, rankedBy } = await generateQuestions(notesInSubject, {
     mcqCount: poolSizeFor(safeMcqCount),
     theoryCount: poolSizeFor(safeTheoryCount),
     marksPerQuestion,
     theoryMarks,
     masteryMap,
     avoid,
+    repeatRank,
+    recentConcepts,
+    conceptHistory,
     // earlier questions are used again only to reach these, never to fill the larger pool
     mcqTarget: safeMcqCount,
     theoryTarget: safeTheoryCount,
   });
 
+  // Nothing passed the quality checks: there is no test to take. The empty
+  // test is removed and the student is told plainly; why each draft failed
+  // goes to the server log as counts (never the text).
+  if (accepted.length === 0) {
+    await deleteTest(test._id);
+    const reasons = {};
+    for (const q of discarded) for (const r of String(q.discardReason || "unknown").split(",")) reasons[r] = (reasons[r] || 0) + 1;
+    console.warn("[testgen] no question passed the checks:", JSON.stringify(reasons));
+    return res.status(422).json({
+      error: "No questions could be made from these notes. Try adding more notes on this topic, or choose more notes.",
+      code: "generation_failed",
+      generation,
+      mcqGeneratedBy,
+      theoryGeneratedBy,
+    });
+  }
+
   const stored = await createQuestions([...accepted, ...discarded].map((q) => ({ ...q, testId: test._id })));
+  await setTestGeneration(test._id, generation);
+  test.generation = generation;
   const acceptedCount = stored.filter((q) => q.status === "accepted").length;
   const available = (type) => stored.filter((q) => q.status === "accepted" && q.type === type).length;
   // Fewer good questions than asked for: the test is as long as what could be
@@ -164,6 +254,11 @@ router.post("/subjects/:id/tests", once(), async (req, res) => {
     test: publicDoc(test),
     mcqGeneratedBy,
     theoryGeneratedBy,
+    // per question type: status ("llm" | "rule-based-fallback" | "mixed" |
+    // "failed" | "none"), how many questions each writer supplied, and why
+    // the rules stepped in (fallbackReason) - decided from the questions
+    // actually chosen, not from whether an AI key is set
+    generation,
     // "embeddings" when the semantic model judged relevance and key terms,
     // "rules" when it is off, not installed or still loading
     rankedBy,
@@ -185,7 +280,7 @@ router.post("/subjects/:id/tests", once(), async (req, res) => {
     // notes could not supply enough new ones
     repeatsUsed,
   });
-});
+}
 
 router.get("/subjects/:id/tests", async (req, res) => {
   const subject = await findOwnedSubject(req.params.id, req.user.id);

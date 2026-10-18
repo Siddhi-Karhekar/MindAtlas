@@ -95,7 +95,49 @@ export function blocksToText(blocks) {
 
 // Headings deeper than this inside one note all render the same size.
 const MAX_CONTENT_LEVELS = 4;
-const MAX_LIST_DEPTH = 3;
+// Three levels of bullets - main point, supporting detail, example - and no
+// deeper: anything nested further is shown at the third level.
+const MAX_LIST_DEPTH = 2;
+
+// Bullet glyphs that only ever mean "a new entry". A line holding several of
+// them ("• Fast • Cheap • Reliable", as text copied from slides or a PDF
+// often arrives) is several entries, not one. A hyphen is not among them:
+// "client-server" and "A - B" are not lists.
+const INLINE_BULLET = /\s+[•●▪◦■□➢➤►▶✓✔]\s+/;
+const LEADING_BULLET = /^[•●▪◦■□➢➤►▶✓✔]\s+/;
+
+/**
+ * One block whose text holds several bullet entries -> one block per entry.
+ * Text before the first bullet stays a paragraph ("Features:" becomes the
+ * list's label); the entries are items one level below an item they came
+ * from, or at the top level when they came from a paragraph. Bold terms go
+ * with the entry they are in.
+ */
+export function splitInlineBullets(b) {
+  if ((b.type !== "para" && b.type !== "item") || !INLINE_BULLET.test(` ${b.text}`)) return [b];
+  const text = String(b.text);
+  const parts = text.split(INLINE_BULLET).map((x) => x.replace(LEADING_BULLET, "").trim()).filter(Boolean);
+  const startsWithBullet = LEADING_BULLET.test(text.trim());
+  if (parts.length < 2 && !startsWithBullet) return [b];
+  const strongFor = (t) => (b.strong || []).filter((x) => t.includes(x));
+  const out = [];
+  let entries = parts;
+  if (!startsWithBullet && b.type === "para") {
+    const head = parts[0];
+    out.push(head.endsWith(":") && countWords(head) <= 6 ? { type: "label", text: head } : { type: "para", text: head, ...(strongFor(head).length ? { strong: strongFor(head) } : {}) });
+    entries = parts.slice(1);
+  }
+  const depth = b.type === "item" ? b.depth || 0 : 0;
+  entries.forEach((t, i) => {
+    // an item's own first entry keeps its place and marker; the rest are its siblings
+    const first = b.type === "item" && i === 0 && !startsWithBullet;
+    const item = { type: "item", text: t, depth, ordered: first ? Boolean(b.ordered) : false };
+    if (first && b.marker) item.marker = b.marker;
+    if (strongFor(t).length) item.strong = strongFor(t);
+    out.push(item);
+  });
+  return out;
+}
 
 /**
  * Body blocks -> the `content` a note stores for display.
@@ -126,16 +168,28 @@ export function normalizeContent(blocks, { title = null } = {}) {
   const levels = [...new Set(list.filter((b) => b.type === "heading").map((b) => b.level))].sort((a, b) => a - b);
   const rank = new Map(levels.map((l, i) => [l, Math.min(i + 1, MAX_CONTENT_LEVELS)]));
 
+  // several entries run together on one line are separate entries
+  list = list.flatMap(splitInlineBullets);
+
   const out = [];
   let prevDepth = -1; // depth of the previous item in the current run, -1 = no run
-  let base = 0;
+  // the source indents of the levels open in the current list: an entry
+  // indented like an earlier one is at that one's level, however deep the
+  // entries between them went ("- A / - B / - C / - D" back at B's indent
+  // is B's sibling, not C's child)
+  let indents = [];
   for (const b of list) {
     const text = squeeze(String(b.text).trim());
     const strong = (b.strong || []).slice(0, MAX_STRONG_PER_BLOCK).map(squeeze).filter((t) => t && text.includes(t));
     if (b.type === "item") {
       const raw = Math.max(0, b.depth || 0);
-      if (prevDepth < 0) base = raw;
-      const depth = Math.min(MAX_LIST_DEPTH, Math.max(0, raw - base), prevDepth + 1);
+      if (prevDepth < 0) indents = [raw];
+      else {
+        while (indents.length && raw < indents[indents.length - 1]) indents.pop();
+        if (!indents.length) indents = [raw];
+        else if (raw > indents[indents.length - 1]) indents.push(raw);
+      }
+      const depth = Math.min(MAX_LIST_DEPTH, indents.length - 1);
       prevDepth = depth;
       const item = { type: "item", text, depth, ordered: Boolean(b.ordered) };
       if (b.marker) item.marker = b.marker;
@@ -283,6 +337,20 @@ function finalizeSections(raw) {
  * Split on headings. Returns { docTitle, sections } where sections is [] when
  * the document has no usable heading structure.
  */
+// A heading that names the class or the document's paperwork, not a topic:
+// "B. Tech CSE Batch 2023-2027 Semester-VII (AY 2026-27)", "Prepared by",
+// "Disclaimer", "References". Such a heading never becomes a subtopic - its
+// text stays in the whole document only - and nothing under it is asked about.
+const ADMIN_HEADING = new RegExp(
+  [
+    "\\b[bm]\\.\\s?(?:tech|e|sc|com)\\b", "\\bbatch\\b", "\\bsem(?:ester)?[-\\s]+(?:[ivx]+|\\d)\\b", "\\ba\\.?y\\.?\\s*(?:19|20)\\d\\d",
+    "\\bacademic\\s+year\\b", "\\b(?:19|20)\\d\\d\\s*[-–/]\\s*(?:19|20)?\\d\\d\\b", "\\bdepartment\\s+of\\b", "\\b(?:prepared|submitted|compiled|presented)\\s+by\\b",
+    "\\bcourse\\s+(?:code|outcomes?|objectives?)\\b", "^(?:disclaimer|acknowledg(?:e)?ments?|references|bibliography|further\\s+reading|about\\s+the\\s+author|thank\\s+you|questions\\??|any\\s+questions\\??)\\s*:?$",
+  ].join("|"),
+  "i"
+);
+export const isAdminHeading = (text) => ADMIN_HEADING.test(String(text || "").replace(/^\s*\d+(\.\d+)*\.?\s+/, "").trim());
+
 function splitOnHeadings(blocks) {
   let working = blocks.filter((b) => b.text && b.text.trim());
   let docTitle = null;
@@ -305,7 +373,9 @@ function splitOnHeadings(blocks) {
     }
   }
 
-  const level = chooseSplitLevel(working);
+  // paperwork headings are not topics: they and what follows them are set aside
+  working = working.map((b) => (b.type === "heading" && isAdminHeading(b.text) ? { ...b, type: "admin" } : b));
+  const level = chooseSplitLevel(working.filter((b) => b.type !== "admin"));
   if (level === null) return { docTitle, sections: [] };
 
   const raw = [];
@@ -314,7 +384,16 @@ function splitOnHeadings(blocks) {
   // outermost first - a subtopic's place in the document's outline
   const above = [];
   const intro = [];
+  let setAside = false; // under a paperwork heading, until the next real one
   for (const b of working) {
+    if (b.type === "admin") {
+      // a paperwork heading above the split level ends the section it sat in
+      // only for what follows it at that depth
+      setAside = true;
+      continue;
+    }
+    if (b.type === "heading" && b.level <= level) setAside = false;
+    if (setAside) continue;
     if (b.type === "heading" && b.level < level) {
       while (above.length && above[above.length - 1].level >= b.level) above.pop();
       current = { title: b.text, group: null, path: above.map((a) => a.text), level: b.level, groupIntro: true, body: [] };
@@ -634,8 +713,15 @@ export function blocksFromPlainText(text, { ocr = false } = {}) {
           ...(lines.length === 1 ? { alone: true } : {}),
         };
         blocks.push(item);
+      } else if (item && (/^\s/.test(line) || !/[.!?:]["')]?$/.test(item.text.trim()) || !/^[A-Z0-9"“(]/.test(line.trim()))) {
+        // a long entry wrapped onto the next line: indented under it, or the
+        // entry has not finished its sentence yet
+        item.text += ` ${line.trim()}`;
       } else if (item) {
-        item.text += ` ${line.trim()}`; // a long entry wrapped onto the next line
+        // a new sentence starting at the margin after a finished entry is the
+        // paragraph that follows the list, not more of the last bullet
+        closeItem();
+        buf.push(line.trim());
       } else {
         buf.push(line.trim());
       }

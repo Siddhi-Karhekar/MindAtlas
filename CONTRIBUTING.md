@@ -255,7 +255,7 @@ to show.
 > | OCR with no network on first use | **crashed the server** | 400, same message |
 > | Photo of a blank page | 400 "content is required" | 400 "no readable text found in this image..." |
 > | Photo with no text that OCR reads as junk (a texture, a carpet) | saved a junk note ("Sal en I OE es Ap ae...") | 400, same message |
-> | File over 10 MB | 500 "internal server error" | 413 "file too large - the limit is 10 MB" |
+> | File over 10 MB | 500 "internal server error" | 413 "file too large - the limit is 10 MB per file" (`UPLOAD_MAX_MB`) |
 > | UTF-16 `.txt` (Windows Notepad "Unicode") | note full of NUL characters, no keywords | read correctly |
 > | Binary file renamed `.txt` | junk note | 400 "this does not look like a text file..." |
 > | Empty `.txt` / `.docx` | message about scanned PDFs | 400 "...it is empty" |

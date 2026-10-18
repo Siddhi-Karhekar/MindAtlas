@@ -21,6 +21,12 @@ export async function findResponsesByAttempt(attemptId) {
   return responses().find({ attemptId });
 }
 
+/** Every response in several attempts (an array filter is matched as $in). */
+export async function findResponsesByAttempts(attemptIds) {
+  if (!attemptIds.length) return [];
+  return responses().find({ attemptId: attemptIds });
+}
+
 /**
  * Persist a grading result computed after the fact (theory questions only):
  * the score, how it was marked, the one-line reason shown to the student, and

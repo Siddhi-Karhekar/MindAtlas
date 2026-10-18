@@ -42,11 +42,16 @@ export const GENERIC = new Set([
   "possible", "available", "single", "multiple", "large", "small", "high", "low", "good", "simple", "basic", "overview",
   "advantages", "advantage", "disadvantages", "disadvantage", "features", "feature", "characteristics", "properties", "property",
   "steps", "step", "points", "point", "concept", "concepts", "definition", "term", "terms", "topic", "topics", "detail", "details",
+  "start", "end", "top", "bottom", "middle", "side", "beginning",
 ]);
 
 // The generic words that are nouns, so can end a longer term ("sequence
 // number", "routing table", "page table"); "younger one" or "two phases first" cannot.
-const NOUN_GENERIC = new Set(["number", "table", "set", "type", "unit", "point", "time", "step", "case", "part", "page", "property", "detail", "section", "feature", "concept"]);
+const NOUN_GENERIC = new Set(["start", "end", "number", "table", "set", "type", "unit", "point", "time", "step", "case", "part", "page", "property", "detail", "section", "feature", "concept"]);
+
+// Generic adjectives that also open real terms when the phrase recurs:
+// "main memory", "high availability", "low latency", "common bus"
+const TERM_ADJECTIVES = new Set(["main", "single", "large", "small", "high", "low", "simple", "basic", "common", "general", "new", "multiple"]);
 
 // Words a term never contains: function words, and verbs that are almost never
 // nouns in notes. Words that are both ("lock", "process", "address", "cache")
@@ -62,7 +67,7 @@ const FUNCTION_WORDS = [
   "after", "above", "below", "within", "without", "across", "against", "along", "around", "per", "via", "both", "either",
   "whether", "however", "therefore", "thus", "hence", "instead", "rather", "often", "usually", "always", "never", "sometimes",
   "generally", "typically", "simply", "already", "now", "later", "together", "apart", "away", "back", "etc", "eg", "ie", "e.g", "i.e",
-  "cont", "contd", "continued", "like", "unlike", "towards", "toward", "become", "becomes", "became",
+  "cont", "contd", "continued", "like", "unlike", "towards", "toward", "become", "becomes", "became", "modulo",
   // quantifiers: "a bus topology every device is attached to" holds the term
   // "bus topology", not "topology every device"
   "every", "all", "some", "any", "many", "much", "few", "several", "another", "other", "such", "most", "more", "less",
@@ -79,6 +84,8 @@ const VERBS = [
   "leave", "become", "lead", "cause", "break", "span", "cover", "join", "split", "rely", "lie", "wound", "roll", "fail",
   "force", "arise", "differ", "vary", "act", "behave", "exceed", "suffer", "tend", "aim", "expect", "want", "help",
 ];
+// finite forms only: "computes", "agrees" - their -ing forms are nouns as often ("computing", "finding")
+const FINITE_ONLY = "agree compute recompute encrypt decrypt verify discard publish recover demonstrate find raise".split(" ");
 const inflect = (v) => {
   const forms = [v, `${v}s`, `${v}ing`, `${v}ed`];
   if (v.endsWith("e")) forms.push(`${v}d`, `${v.slice(0, -1)}ing`);
@@ -89,10 +96,13 @@ const inflect = (v) => {
 const IRREGULAR = "made gave given took taken sent held kept meant known began begun got put saw seen shown told said wrote written ran came went gone left led broke broken chose chosen brought".split(" ");
 const VERB_FORMS = new Set([
   ...VERBS.flatMap(inflect),
+  ...FINITE_ONLY.flatMap((v) => inflect(v).filter((f) => !f.endsWith("ing"))),
   ...IRREGULAR,
   ..."is are was were has have had can cannot could will would may might must should does do".split(" "),
 ]);
 const BREAK = new Set([...FUNCTION_WORDS, ...VERB_FORMS]);
+/** A word that can be part of a term (not a function word or a common verb). */
+export const isContentWord = (w) => /^[A-Za-z][A-Za-z0-9-]*$/.test(w) && !BREAK.has(w.toLowerCase());
 
 // ---------------------------------------------------------------------------
 // Text -> runs of content words
@@ -223,7 +233,9 @@ export function extractTerms(note, sentences, corpus = []) {
           // data as pulses of light", "Coaxial cable has a central conductor"
           // - and only when a known verb follows, so "Subnetting borrows bits"
           // (a verb the word lists do not know) is not taken for a term
-          if (ri === 0 && from === 0 && to === run.length - 1 && words.length >= 2 && words.length <= 3 && s.text.trimStart().startsWith(words[0].raw) && /^[A-Z]/.test(words[0].raw) && !words.some((w) => /['’]/.test(w.raw))) {
+          // ("A page fault occurs when ...": an article may come first)
+          const opening = s.text.trimStart().replace(/^(?:A|An|The)\s+/, "");
+          if (ri === 0 && from === 0 && to === run.length - 1 && words.length >= 2 && words.length <= 3 && opening.startsWith(words[0].raw) && (/^[A-Z]/.test(words[0].raw) || opening !== s.text.trimStart()) && !words.some((w) => /['’]/.test(w.raw))) {
             const lastWord = words[words.length - 1];
             const next = s.text.slice(lastWord.at + lastWord.raw.length).match(/^\s+([A-Za-z]+)/)?.[1]?.toLowerCase();
             if (next && VERB_FORMS.has(next)) c.subject = true;
@@ -245,9 +257,17 @@ export function extractTerms(note, sentences, corpus = []) {
       if (c) c.marks.add(label);
     }
   };
-  [note?.title, ...(Array.isArray(note?.path) ? note.path : [])].filter(Boolean).forEach((t) => mark(String(t).replace(/^\s*\d+(\.\d+)*\.?\s+/, ""), "title"));
+  // "Symmetric and Asymmetric Key Cryptography" names two terms: "asymmetric
+  // key cryptography" and "symmetric key cryptography"
+  const markHeading = (text, label) => {
+    const t = String(text).replace(/^\s*\d+(\.\d+)*\.?\s+/, "");
+    mark(t, label);
+    const shared = t.match(/^([A-Za-z-]+)\s+(?:and|or|&|vs\.?|versus)\s+[A-Za-z-]+((?:\s+[A-Za-z-]+){1,3})$/i);
+    if (shared) mark(`${shared[1]}${shared[2]}`, label);
+  };
+  [note?.title, ...(Array.isArray(note?.path) ? note.path : [])].filter(Boolean).forEach((t) => markHeading(t, "title"));
   for (const b of blocksOf(note)) {
-    if (b.type === "heading" || b.type === "label") mark(String(b.text).replace(/^\s*\d+(\.\d+)*\.?\s+/, ""), "heading");
+    if (b.type === "heading" || b.type === "label") markHeading(b.text, "heading");
     for (const t of b.strong || []) mark(t, "bold");
   }
   sentences.forEach((s) => s.lead && mark(s.lead, "lead"));
@@ -302,7 +322,10 @@ export function extractTerms(note, sentences, corpus = []) {
     const words = c.key.split(" ");
     const first = words[0];
     const last = words[words.length - 1];
-    if (GENERIC.has(first) || words.every((w) => GENERIC.has(w))) continue;
+    const nounish = c.n >= 2 && (c.count >= 2 || c.marks.size > 0 || c.subject);
+    if (words.every((w) => GENERIC.has(w)) && !(nounish && words.every((w) => NOUN_GENERIC.has(w)))) continue;
+    // a generic noun can open a longer term that recurs or is marked ("page table", "time slice")
+    if (GENERIC.has(first) && !(nounish && (NOUN_GENERIC.has(first) || TERM_ADJECTIVES.has(first)))) continue;
     // a generic word can end a longer term ("sequence number", "routing
     // table") when the phrase recurs or is marked, never a single word
     if (GENERIC.has(last) && !(c.n >= 2 && NOUN_GENERIC.has(last) && (c.count >= 2 || c.marks.size))) continue;
@@ -321,6 +344,11 @@ export function extractTerms(note, sentences, corpus = []) {
       if (c.count < 2 && !c.marks.size && !family.has(c.key) && !c.subject) continue;
       // "block cipher encrypts": the last word is the term's verb, not part of it
       const lastSurface = surface.split(/\s+/).pop();
+      // a word ending in -s before the last word is a verb or a plural
+      // subject, not a modifier: "computes key", "users agree"
+      if (!c.marks.size && surface.split(/\s+/).slice(0, -1).some((w) => /^[a-z]+s$/i.test(w) && !/(ss|us|is|ics|ies|ws|as|os|ous)$/i.test(w) && !/^[A-Z0-9]+s$/.test(w))) continue;
+      // a garbled subscript ("PU e" from PU_e, "K s" from K_s): a lone small letter is no word
+      if (surface.split(/\s+/).some((w) => /^[a-z]$/.test(w)) || surface.split(/\s+/).every((w) => w.length <= 2)) continue;
       // ("a topology every device uses" is not one: a word the note also uses as a noun is a noun)
       if (!c.marks.size && ((verbEvidence(lastSurface, body) && !nounEvidence(lastSurface, body) && !family.has(c.key)) || looksLikeVerbS(lastSurface, body))) continue;
     }
@@ -463,7 +491,44 @@ export function clearStudyCache() {
 // ---------------------------------------------------------------------------
 
 const SHOWN_TERMS = 10;
+// most single unmarked words among the terms shown (see keyTermsFor)
+const MAX_PLAIN_WORDS = 3;
+
+const acronymTerm = (t) => /^[A-Z0-9][A-Z0-9/+.-]*[A-Z0-9+]$/.test(t.term) && /[A-Z]/.test(t.term);
+/**
+ * A term that is a term by its form or by what the author did, not only
+ * because a word recurs: several words, an acronym, marked by the author, or
+ * a word the note keeps using on its own. These are what is highlighted, and
+ * (without the meaning model) what a blank or a wrong option may be.
+ */
+export const isStrongTerm = (t) => t.words > 1 || acronymTerm(t) || t.marks.length > 0 || t.standalone >= 3;
 const shownCache = new Map();
+
+// Nouns every note in a subject uses: "data", "system", "message". Said often,
+// they still say nothing about what a note is about, and highlighting them
+// buries the real terms. Shown only when the note defines or marks them.
+const BROAD = new Set(
+  "data information system item value user computer device node message network program result method problem input output level form object structure operation entity record file service application process state".split(" ")
+);
+// "A frame is the unit ...", "... is called a frame": the note says what the word is
+const definedIn = (term, text) =>
+  new RegExp(`(?:^|[.!?]\\s+|\\n)(?:an?\\s+|the\\s+)?${termPattern(term).source}\\s+(?:is|are)\\s+(?:an?|the|one|any|defined|called|known)\\b`, "i").test(text) ||
+  new RegExp(`\\b(?:called|termed|known as|referred to as)\\s+(?:an?\\s+|the\\s+)?${termPattern(term).source}`, "i").test(text);
+
+/**
+ * Whether a strong term is worth highlighting for a reader. A phrase or an
+ * acronym is. A single word is when the author marked it (bold, a heading of
+ * its own, a lead-in, a spelled-out acronym - the note's title alone does not
+ * count: "network" in a note titled "Computer Networks" is everywhere), or the
+ * note defines it, or it is used on its own often and is not one of the broad
+ * nouns every note uses.
+ */
+function worthShowing(t, text) {
+  if (t.words > 1 || acronymTerm(t)) return true;
+  const marked = t.marks.some((m) => m !== "title");
+  if (marked || definedIn(t.term, text)) return true;
+  return t.standalone >= 3 && !BROAD.has(t.key);
+}
 
 /**
  * A note's key terms for display, best first, as whole terms ("bus topology",
@@ -482,11 +547,25 @@ export function keyTermsFor(note, corpus = [], max = SHOWN_TERMS) {
   if (shownCache.has(cacheKey)) return shownCache.get(cacheKey).slice(0, max);
 
   const terms = extractTerms(note, candidateSentences(note), others);
-  const acronym = (t) => /^[A-Z0-9][A-Z0-9/+.-]*[A-Z0-9+]$/.test(t.term) && /[A-Z]/.test(t.term);
-  const strong = terms.filter((t) => t.words > 1 || acronym(t) || t.marks.length || t.standalone >= 3);
+  const acronym = acronymTerm;
+  const text = String(note.rawText);
+  // a possessive is a use of a term, not a term: "sender's private key"
+  const strong = terms.filter((t) => isStrongTerm(t) && !/['’]s\b/i.test(t.term) && worthShowing(t, text));
   const phrases = strong.filter((t) => t.words > 1);
   const partOfPhrase = (t) => t.words === 1 && phrases.some((p) => ` ${p.key} `.includes(` ${t.key} `));
-  const shown = strong.filter((t) => !partOfPhrase(t) || t.standalone >= 4 || acronym(t)).map((t) => t.term);
+  // "Remote Procedure" beside "Remote Procedure Call": a piece of a longer
+  // term that the note never uses on its own is not a term to show
+  const onlyInside = (t) =>
+    t.words > 1 &&
+    phrases.some((p) => p.words > t.words && ` ${p.key} `.includes(` ${t.key} `) && (text.match(termPattern(t.term)) || []).length <= (text.match(termPattern(p.term)) || []).length);
+  const candidates = strong.filter((t) => (!partOfPhrase(t) || t.standalone >= 4 || acronym(t)) && !onlyInside(t));
+  // Whole terms first: a single everyday word ("layer", "bit", "link") is at
+  // best a weak key term, so at most a few of them are shown - those the
+  // author set in bold or as a lead-in are not counted - and only behind the
+  // phrases and acronyms when there are enough of those to fill the list.
+  const plainWord = (t) => t.words === 1 && !acronym(t) && !t.marks.some((m) => m === "bold" || m === "lead" || m === "acronym");
+  let words = 0;
+  const shown = candidates.filter((t) => !plainWord(t) || ++words <= MAX_PLAIN_WORDS).map((t) => t.term);
 
   if (shownCache.size >= STUDY_CACHE_LIMIT) shownCache.delete(shownCache.keys().next().value);
   shownCache.set(cacheKey, shown);
