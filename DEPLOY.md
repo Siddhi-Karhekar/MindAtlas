@@ -227,7 +227,7 @@ or `graphEngine.js`), bring the existing notes onto the new rules:
 | Logs: `not authorized on mindatlas` | The Atlas user lacks `readWrite` on the `mindatlas` database |
 | Site says "Failed to fetch" | `CORS_ORIGIN` is not exactly `https://mindatlas.onrender.com`, or the API is still waking up |
 | Refreshing a page gives "Not Found" | The static site's `/*` → `/index.html` rewrite rule is missing |
-| Events show "Out of memory", or the API keeps restarting | The MiniLM model (~130 MB) plus big OCR/PDF uploads exceeded 512 MB: set `SEMANTIC_MODEL=off` in Environment. `/api/health` then shows `"semantic":{"active":false}` and cross-subject links use TF-IDF |
+| Events show "Out of memory", or the API keeps restarting | The MiniLM model (~130 MB) plus big OCR/PDF uploads exceeded 512 MB: set `SEMANTIC_MODEL=off` in Environment. `/api/health` then shows `"semantic":{"active":false}`; notes saved from then on get no embedding, so their cross-subject links use TF-IDF, while pairs whose notes both already have a stored embedding stay linked by meaning (stored vectors cost no memory) |
 | AI questions are off | `GROQ_API_KEY` is blank - `/api/auth/config` shows `"ai":{"enabled":false}` |
 
 ## Rebuilding from the Blueprint

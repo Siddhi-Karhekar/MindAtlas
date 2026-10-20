@@ -109,7 +109,8 @@ try {
   const unknown = edges.filter((e) => e.owner === null).length;
   if (unknown) console.log(`Edges whose subject is not in the backup (owner unknown): ${unknown}`);
 
-  const owners = new Set(edges.filter((e) => e.owner).map((e) => e.owner));
+  // a rejected pair was never a link, so an account with only those has none
+  const owners = new Set(edges.filter((e) => e.owner && typeOf(e) !== "rejected").map((e) => e.owner));
   const perOwner = new Map();
   for (const e of removed) perOwner.set(e.owner, (perOwner.get(e.owner) || 0) + 1);
   const counts = [...perOwner.values()].sort((a, b) => b - a);

@@ -72,7 +72,8 @@ import {
 } from "./lib/clusters.js";
 import {
   bootstrapDraws, CHOICE, choosePairs, chooseSetting, excerpt, f1Bootstrap, gridSearch, isLink, loadTopics,
-  gridFor, pairLabels, raterAgreement, readRelated, rescorePairs, ruleMetrics, SAMPLING, scorePairs, stratumOf, stratumWeights, todaysEdge,
+  gridFor, pairedF1Differences, pairLabels, quantileOf, raterAgreement, readRelated, rescorePairs, ruleMetrics, SAMPLING, scorePairs, stratumOf,
+  stratumWeights, todaysEdge,
 } from "./lib/links.js";
 import { parseCsv, seededRandom, shuffled, toCsv } from "./lib/stats.js";
 
@@ -532,11 +533,9 @@ export async function runLinkRescoring(options) {
   // F1 after minus before in each resample: both runs score the same pairs,
   // in the same order and strata, from the same seed, so the draws match
   const f1Change = (group) => {
-    const [b, a] = [before.grid.current[group].f1Draws, after.grid.current[group].f1Draws];
-    const diffs = a.map((x, i) => (x === null || b[i] === null ? null : x - b[i])).filter((d) => d !== null).sort((x, y) => x - y);
+    const diffs = pairedF1Differences(after.grid.current[group], before.grid.current[group]);
     if (!diffs.length || after.results.current[group].f1 === null) return null;
-    const at = (q) => diffs[Math.min(diffs.length - 1, Math.floor(q * diffs.length))];
-    return { change: round4(after.results.current[group].f1 - before.results.current[group].f1), ci: [round4(at(0.025)), round4(at(0.975))] };
+    return { change: round4(after.results.current[group].f1 - before.results.current[group].f1), ci: [round4(quantileOf(diffs, 0.025)), round4(quantileOf(diffs, 0.975))] };
   };
   const sharing = (pairs) => [1, 2, 3].map((n) => pairs.filter((p) => !p.sameSubject && p.sharedKeywords.length >= n).length);
   // today's rule decides on TF-IDF similarity, whatever the run measures

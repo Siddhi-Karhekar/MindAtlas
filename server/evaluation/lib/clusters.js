@@ -8,7 +8,7 @@
 // test/linkEvaluation.test.mjs can check every step.
 
 import { clusterNotes } from "../../src/services/graphEngine.js";
-import { CHOICE, notClearlyBelow } from "./links.js";
+import { CHOICE, notClearlyBelow, pairedF1Differences, quantileOf } from "./links.js";
 import { round } from "./stats.js";
 
 // The resolutions tried, written down before the first run (PLAN.md).
@@ -83,14 +83,10 @@ export const together = (clusterOf) => (it) => (clusterOf.get(it.a) === clusterO
 
 /** `row`'s F1 minus `ref`'s, with its paired 95% interval over their bootstrap draws (f1Draws). */
 export function pairedDifference(row, ref) {
-  if (row.f1 === null || ref.f1 === null || !row.f1Draws || !ref.f1Draws) return null;
-  const diffs = row.f1Draws
-    .map((x, i) => (x === null || ref.f1Draws[i] === null ? null : x - ref.f1Draws[i]))
-    .filter((d) => d !== null)
-    .sort((x, y) => x - y);
+  if (row.f1 === null || ref.f1 === null) return null;
+  const diffs = pairedF1Differences(row, ref);
   if (!diffs.length) return null;
-  const at = (q) => diffs[Math.min(diffs.length - 1, Math.floor(q * diffs.length))];
-  return { change: round(row.f1 - ref.f1, 4), ci: [round(at(0.025), 4), round(at(0.975), 4)] };
+  return { change: round(row.f1 - ref.f1, 4), ci: [round(quantileOf(diffs, 0.025), 4), round(quantileOf(diffs, 0.975), 4)] };
 }
 
 /**

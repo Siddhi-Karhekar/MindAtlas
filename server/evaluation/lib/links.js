@@ -484,8 +484,7 @@ export function f1Bootstrap(items, draws, rule, decide = (it) => decideEdge(it, 
   });
   const valid = f1s.filter((x) => x !== null).sort((x, y) => x - y);
   if (valid.length < draws.length / 2) return { ci: null, draws: f1s };
-  const at = (q) => valid[Math.min(valid.length - 1, Math.floor(q * valid.length))];
-  return { ci: [round(at(0.025)), round(at(0.975))], draws: f1s };
+  return { ci: [round(quantileOf(valid, 0.025)), round(quantileOf(valid, 0.975))], draws: f1s };
 }
 
 // thresholds 0.01 apart, as exact two-place numbers
@@ -547,21 +546,33 @@ export function gridSearch({ items, population, draws, current = LINK_RULE, grid
 
 export const CHOICE = Object.freeze({ flat: 0.02, minLinked: 10, minPrecision: 0.5 });
 
+/** The value at quantile `q` (0-1) of sorted values: how the evaluation reads its resamples. */
+export const quantileOf = (sorted, q) => sorted[Math.min(sorted.length - 1, Math.floor(q * sorted.length))];
+
+/**
+ * `row`'s F1 minus `ref`'s in every bootstrap draw where both have one
+ * (f1Draws, from gridSearch or f1Bootstrap), sorted. Paired, because both are
+ * scored on the same pairs. The choice of a setting (notClearlyBelow) and
+ * every difference the reports give read their percentiles from this one
+ * list, so a reported interval always matches the test behind the choice.
+ */
+export function pairedF1Differences(row, ref) {
+  if (!row?.f1Draws || !ref?.f1Draws) return [];
+  return row.f1Draws
+    .map((x, i) => (x === null || ref.f1Draws[i] === null ? null : x - ref.f1Draws[i]))
+    .filter((d) => d !== null)
+    .sort((x, y) => x - y);
+}
+
 /**
  * Whether `row`'s F1 is not clearly below `ref`'s: across the same bootstrap
- * draws (f1Draws, from gridSearch or f1Bootstrap), row's F1 minus ref's stays
- * at -`flat` or above at the 97.5th percentile. Paired, because both are
- * scored on the same pairs. Rows without draws fall back to "no more than
+ * draws, row's F1 minus ref's (pairedF1Differences) stays at -`flat` or above
+ * at the 97.5th percentile. Rows without draws fall back to "no more than
  * `flat` below".
  */
 export function notClearlyBelow(row, ref, flat = CHOICE.flat) {
-  if (row.f1Draws && ref.f1Draws) {
-    const diffs = row.f1Draws
-      .map((x, i) => (x === null || ref.f1Draws[i] === null ? null : x - ref.f1Draws[i]))
-      .filter((d) => d !== null)
-      .sort((x, y) => x - y);
-    if (diffs.length) return diffs[Math.min(diffs.length - 1, Math.floor(0.975 * diffs.length))] >= -flat - 1e-9;
-  }
+  const diffs = pairedF1Differences(row, ref);
+  if (diffs.length) return quantileOf(diffs, 0.975) >= -flat - 1e-9;
   return row.f1 >= ref.f1 - flat - 1e-9;
 }
 
