@@ -23,7 +23,7 @@ import { once } from "../middleware/once.js";
 import { InputError, LIMITS, id, oneOf, text } from "../middleware/validate.js";
 import { publicDoc } from "../services/noteView.js";
 import { computeDocumentRollup, computeTopicScores, computeMarksSummary, markEvidence, phraseFeedback, templateFeedback } from "../services/feedbackEngine.js";
-import { gradeAttemptResponses, keyPointMatches, quickTheoryScore, remarkTheoryResponse } from "../services/gradingEngine.js";
+import { gradeAttemptResponses, gradeTheoryWithImages, keyPointMatches, quickTheoryScore } from "../services/gradingEngine.js";
 import { nextDifficulty, pickNextQuestion, startingDifficulty, typesOwed } from "../services/adaptiveEngine.js";
 import { MIN_OBSERVATIONS_FOR_VERDICT, applyAttemptToMastery, difficultyForMastery } from "../services/masteryEngine.js";
 import { findMasteryByOwner, findMasteryBySubject, masteryMapForSubject, upsertMastery } from "../models/Mastery.js";
@@ -33,6 +33,21 @@ import { markActivity } from "../models/User.js";
 import { findTestsBySubject } from "../models/Test.js";
 import { findNotesByIds, findNotesBySubject, topicLabelFor } from "../models/Note.js";
 import { topicRevealsAnswer } from "../services/testEngine.js";
+import { uploadSingle } from "../middleware/upload.js";
+import { answerImageLimits } from "../config.js";
+import { checkUploadContent, imageSize } from "../services/uploadCheck.js";
+import {
+  countAnswerImagesByOwner,
+  createAnswerImage,
+  deleteDraftAnswerImage,
+  findAnswerImages,
+  findAnswerImagesByAttempt,
+  findOwnedAnswerImage,
+  markAnswerImagesSubmitted,
+  readAnswerImageData,
+  saveImageReading,
+} from "../models/AnswerImage.js";
+import { readAnswerImages } from "../services/answerImages.js";
 
 const router = safeRouter();
 router.use(requireAuth);
@@ -300,6 +315,9 @@ router.post("/attempts/:id/responses", loadOwnedAttempt, async (req, res) => {
   const isMcq = question.type === "mcq";
   const isCorrect = isMcq ? answer === question.answerKey : null;
   const score = isMcq ? (isCorrect ? 1 : 0) : null; // null = "not graded yet"
+  // a theory answer carries the pictures uploaded for it (worked out here, from
+  // what is stored for this attempt and question - never from the request)
+  const imageIds = isMcq ? [] : (await findAnswerImages(req.attempt._id, questionId)).map((im) => im._id);
 
   let response;
   try {
@@ -309,8 +327,10 @@ router.post("/attempts/:id/responses", loadOwnedAttempt, async (req, res) => {
       answer,
       isCorrect,
       score,
+      imageIds,
       timeMs: serverTimeMs(req.attempt, body.timeMs),
     });
+    if (imageIds.length) await markAnswerImagesSubmitted(req.attempt._id, questionId);
   } catch (err) {
     if (tracked) await setAwaitedQuestion(req.attempt._id, questionId); // not saved: it is still waiting
     throw err;
@@ -336,6 +356,152 @@ router.post("/attempts/:id/responses", loadOwnedAttempt, async (req, res) => {
     ...clockOf(attempt),
   });
 });
+
+// ---------------------------------------------------------------------------
+// Pictures attached to a theory answer
+// ---------------------------------------------------------------------------
+// A student can add up to three pictures to a theory answer - a photo of
+// handwritten working, a formula, a diagram - while the question is the one
+// the attempt is waiting on. They are stored at once (models/AnswerImage.js),
+// so a refresh or a dropped connection keeps them; saved with the answer when
+// it is sent (and no longer removable then); read and marked with it at
+// submission (services/answerImages.js, gradingEngine.gradeTheoryWithImages).
+// Only the student who owns the attempt can add, list, remove or see them.
+
+const publicImage = (im) => ({ _id: im._id, questionId: im.questionId, mime: im.mime, size: im.size, width: im.width, height: im.height, status: im.status, createdAt: im.createdAt });
+
+// What a picture really is, from its first bytes (the name and the type the
+// browser reports are the sender's word).
+function pictureType(buf) {
+  if (buf.length > 8 && buf[0] === 0x89 && buf.toString("latin1", 1, 4) === "PNG") return "image/png";
+  if (buf.length > 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return "image/jpeg";
+  if (buf.length > 12 && buf.toString("latin1", 0, 4) === "RIFF" && buf.toString("latin1", 8, 12) === "WEBP") return "image/webp";
+  return null;
+}
+
+/** The question an image request is for, when it may still be answered; otherwise sends the error and returns null. */
+async function awaitedTheoryQuestion(req, res) {
+  if (req.attempt.status !== "in_progress") {
+    res.status(409).json({ error: "this attempt has already been submitted", code: "submitted" });
+    return null;
+  }
+  if (isPastDeadline(req.attempt)) {
+    res.status(409).json({ error: "time is up for this test", code: "time_up" });
+    return null;
+  }
+  const questionId = req.params.questionId;
+  const shownIds = req.attempt.shownQuestionIds.map(String);
+  if (shownIds[shownIds.length - 1] !== String(questionId)) {
+    res.status(409).json({ error: "pictures can only be added to the question you are answering", code: "not_current" });
+    return null;
+  }
+  if ((await findResponsesByAttempt(req.attempt._id)).some((r) => String(r.questionId) === String(questionId))) {
+    res.status(409).json({ error: "this question has already been answered", code: "already_answered" });
+    return null;
+  }
+  const [question] = await findQuestionsByIds([questionId]);
+  if (!question || String(question.testId) !== String(req.attempt.testId)) {
+    res.status(404).json({ error: "question not found on this test" });
+    return null;
+  }
+  if (question.type !== "theory") {
+    res.status(400).json({ error: "pictures can only be added to theory answers" });
+    return null;
+  }
+  return question;
+}
+
+// POST /api/attempts/:id/questions/:questionId/images  (multipart, field "image")
+router.post(
+  "/attempts/:id/questions/:questionId/images",
+  loadOwnedAttempt,
+  uploadSingle("image", () => answerImageLimits().maxMb),
+  async (req, res) => {
+    const limits = answerImageLimits();
+    const question = await awaitedTheoryQuestion(req, res);
+    if (!question) return;
+    if (!req.file) return res.status(400).json({ error: "attach a picture in the field named \"image\"" });
+    const type = pictureType(req.file.buffer);
+    if (!type) {
+      return res.status(400).json({ error: "use a JPG, PNG or WebP picture (an iPhone HEIC photo can be shared as JPG)", code: "unsupported_type" });
+    }
+    try {
+      await checkUploadContent(req.file, "image"); // a size in pixels that can be read, and is not huge
+    } catch (err) {
+      return res.status(400).json({ error: err.message, code: "unreadable_image" });
+    }
+    const existing = await findAnswerImages(req.attempt._id, question._id);
+    if (existing.length >= limits.maxPerAnswer) {
+      return res.status(409).json({ error: `an answer can have at most ${limits.maxPerAnswer} pictures - remove one to add another`, code: "too_many_images" });
+    }
+    if ((await countAnswerImagesByOwner(req.user.id)) >= limits.maxPerStudent) {
+      return res.status(413).json({ error: "you have reached the limit of answer pictures on your account", code: "image_storage_full" });
+    }
+    const size = imageSize(req.file.buffer) || {};
+    const image = await createAnswerImage({
+      ownerId: req.user.id,
+      attemptId: req.attempt._id,
+      questionId: question._id,
+      mime: type,
+      size: req.file.buffer.length,
+      width: size.width || null,
+      height: size.height || null,
+      data: req.file.buffer.toString("base64"),
+    });
+    res.status(201).json({ image: publicImage(image), count: existing.length + 1, max: limits.maxPerAnswer });
+  }
+);
+
+// GET /api/attempts/:id/questions/:questionId/images - the pictures already
+// added to an answer (after a refresh, or opening the test again)
+router.get("/attempts/:id/questions/:questionId/images", loadOwnedAttempt, async (req, res) => {
+  if (!req.attempt.shownQuestionIds.map(String).includes(String(req.params.questionId))) {
+    return res.status(404).json({ error: "question not found on this attempt" });
+  }
+  const list = await findAnswerImages(req.attempt._id, req.params.questionId);
+  res.json({ images: list.map(publicImage), max: answerImageLimits().maxPerAnswer });
+});
+
+// DELETE /api/attempts/:id/images/:imageId - remove a picture before the answer is sent
+router.delete("/attempts/:id/images/:imageId", loadOwnedAttempt, async (req, res) => {
+  const image = await findOwnedAnswerImage(id(req.params.imageId, "imageId"), req.user.id);
+  if (!image || String(image.attemptId) !== String(req.attempt._id)) return res.status(404).json({ error: "picture not found" });
+  req.params.questionId = String(image.questionId);
+  const question = await awaitedTheoryQuestion(req, res);
+  if (!question) return;
+  if (!(await deleteDraftAnswerImage(image._id, req.user.id))) return res.status(409).json({ error: "this picture is part of a saved answer" });
+  res.json({ removed: true });
+});
+
+// GET /api/answer-images/:imageId - the picture itself, to its owner only
+router.get("/answer-images/:imageId", async (req, res) => {
+  const image = await findOwnedAnswerImage(id(req.params.imageId, "imageId"), req.user.id);
+  const data = image ? await readAnswerImageData(image) : null;
+  if (!data) return res.status(404).json({ error: "picture not found" });
+  res.setHeader("Content-Type", image.mime);
+  res.setHeader("Content-Length", data.length);
+  res.setHeader("Cache-Control", "private, max-age=3600");
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("Content-Security-Policy", "default-src 'none'; sandbox");
+  res.setHeader("Content-Disposition", "inline");
+  res.end(data);
+});
+
+/** For closing an attempt: read the pictures of a theory answer, and keep what was read with each. */
+function imageReader(attempt) {
+  return async (response, question) => {
+    const images = await findAnswerImages(attempt._id, response.questionId);
+    const pages = [];
+    for (const im of images) {
+      const buffer = await readAnswerImageData(im);
+      if (buffer) pages.push({ mime: im.mime, buffer });
+    }
+    const reading = await readAnswerImages(pages, { question: question?.prompt || "" });
+    const kept = { text: reading.text, legibility: reading.legibility, by: reading.by, model: reading.model, readAt: new Date() };
+    await Promise.all(images.map((im) => saveImageReading(im._id, kept)));
+    return reading;
+  };
+}
 
 // Work out an attempt's scores from its responses: the per-topic ranking
 // (unanswered questions count as 0 for their topic), the document roll-up and
@@ -402,7 +568,7 @@ async function closeAttempt(attempt, ownerId, { closedBy = "student" } = {}) {
   try {
     const [responses, allQuestions] = await Promise.all([findResponsesByAttempt(attempt._id), findQuestionsByTest(attempt.testId)]);
     const questionsById = new Map(allQuestions.map((q) => [String(q._id), q]));
-    const gradeUpdates = await gradeAttemptResponses(responses, questionsById);
+    const gradeUpdates = await gradeAttemptResponses(responses, questionsById, { readImages: imageReader(attempt) });
     await Promise.all(
       gradeUpdates.map((u) =>
         updateResponseGrade({
@@ -415,6 +581,8 @@ async function closeAttempt(attempt, ownerId, { closedBy = "student" } = {}) {
           flagged: u.flagged,
           promptVersion: u.promptVersion,
           model: u.model,
+          needsReview: u.needsReview,
+          imageReading: u.imageReading || null,
         })
       )
     );
@@ -529,11 +697,18 @@ router.get("/attempts/:id/review", loadOwnedAttempt, async (req, res) => {
   if (req.attempt.status !== "submitted") {
     return res.status(409).json({ error: "the answers are shown once the test is submitted" });
   }
-  const [questions, responses, reports] = await Promise.all([
+  const [questions, responses, reports, images] = await Promise.all([
     findQuestionsByIds(req.attempt.shownQuestionIds),
     findResponsesByAttempt(req.attempt._id),
     findReportsByOwner(req.user.id, { testId: req.attempt.testId }),
+    findAnswerImagesByAttempt(req.attempt._id),
   ]);
+  const imagesBy = new Map();
+  for (const im of images.filter((x) => x.status === "submitted")) {
+    const key = String(im.questionId);
+    if (!imagesBy.has(key)) imagesBy.set(key, []);
+    imagesBy.get(key).push({ _id: im._id, width: im.width, height: im.height });
+  }
   const test = await findOwnedTest(req.attempt.testId, req.user.id);
   const negative = test?.negativeMarks || 0;
   const byId = new Map(questions.map((q) => [String(q._id), q]));
@@ -570,6 +745,11 @@ router.get("/attempts/:id/review", loadOwnedAttempt, async (req, res) => {
         answered: answered && !skipped,
         skipped,
         answer: answered && !skipped ? r.answer : null,
+        // pictures attached to a theory answer, what was read from them, and
+        // whether that left the mark uncertain (flagged for review)
+        images: theory ? imagesBy.get(String(qid)) || [] : [],
+        imageReading: theory && r?.imageReading ? { text: r.imageReading.text, legibility: r.imageReading.legibility, by: r.imageReading.by } : null,
+        needsReview: Boolean(r?.needsReview),
         isCorrect: theory ? null : answered ? Boolean(r.isCorrect) : false,
         correctAnswer: theory ? null : q.answerKey,
         modelAnswer: theory ? q.answerKey : null,
@@ -586,7 +766,7 @@ router.get("/attempts/:id/review", loadOwnedAttempt, async (req, res) => {
         // the passage of the notes this question was written from
         source: q.supportingExcerpt || null,
         remark: r?.remark ? { requestedAt: r.remark.requestedAt, before: r.remark.before, after: r.remark.after } : null,
-        canRemark: theory && answered && Boolean(String(r.answer || "").trim()) && !r.remark,
+        canRemark: theory && answered && (Boolean(String(r.answer || "").trim()) || Boolean(r.imageIds?.length)) && !r.remark,
         reported: reportBy.get(String(qid))?.reason || null,
       };
     })
@@ -620,7 +800,7 @@ router.post("/attempts/:id/questions/:questionId/remark", loadOwnedAttempt, asyn
   }
   const responses = await findResponsesByAttempt(req.attempt._id);
   const response = responses.find((r) => String(r.questionId) === String(questionId));
-  if (!response || !String(response.answer || "").trim()) {
+  if (!response || (!String(response.answer || "").trim() && !response.imageIds?.length)) {
     return res.status(400).json({ error: "there is no answer to mark again" });
   }
   if (response.remark) return res.status(409).json({ error: "this answer has already been marked again" });
@@ -632,7 +812,15 @@ router.post("/attempts/:id/questions/:questionId/remark", loadOwnedAttempt, asyn
   let graded;
   const before = typeof response.score === "number" ? response.score : 0;
   try {
-    graded = await remarkTheoryResponse(question, response.answer);
+    // pictures: what was read from them is used again when it was read
+    // cleanly; otherwise they are read again (the AI service may be back)
+    let reading = null;
+    if (response.imageIds?.length) {
+      const clean = response.imageReading?.by === "vision" && response.imageReading?.legibility === "clear";
+      reading = clean ? response.imageReading : await imageReader(req.attempt)(response, question);
+    }
+    graded = await gradeTheoryWithImages(question, response.answer, reading, { remark: true });
+    if (reading) graded.imageReading = { text: reading.text, legibility: reading.legibility, by: reading.by, model: reading.model || null };
     await recordRemark({ attemptId: req.attempt._id, questionId: question._id, before, reason, graded });
   } finally {
     remarking.delete(key);
@@ -662,7 +850,7 @@ router.post("/attempts/:id/questions/:questionId/remark", loadOwnedAttempt, asyn
   });
 
   res.json({
-    remark: { before, after: graded.score, gradedBy: graded.gradedBy, note: graded.note, keyPoints: graded.keyPointResults },
+    remark: { before, after: graded.score, gradedBy: graded.gradedBy, note: graded.note, keyPoints: graded.keyPointResults, needsReview: Boolean(graded.needsReview) },
     marks: { marksAwarded: marks.marksAwarded, marksPossible: marks.marksPossible },
     feedback: updated ? publicDoc(updated) : null,
   });

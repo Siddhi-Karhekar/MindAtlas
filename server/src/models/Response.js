@@ -9,10 +9,12 @@ const responses = () => getCollection("responses");
 // what lets feedbackEngine.computeTopicScores treat mcq and theory
 // questions uniformly - partial credit and binary correctness are both
 // just a score.
-export async function upsertResponse({ attemptId, questionId, answer, isCorrect, score, timeMs }) {
+// `imageIds`: the pictures attached to a theory answer (models/AnswerImage.js),
+// worked out by the server from what was uploaded for that question.
+export async function upsertResponse({ attemptId, questionId, answer, isCorrect, score, timeMs, imageIds = [] }) {
   return responses().findOneAndUpdate(
     { attemptId, questionId },
-    { $set: { attemptId, questionId, answer, isCorrect, score, timeMs, answeredAt: new Date() } },
+    { $set: { attemptId, questionId, answer, isCorrect, score, timeMs, imageIds, answeredAt: new Date() } },
     { upsert: true }
   );
 }
@@ -32,11 +34,13 @@ export async function findResponsesByAttempts(attemptIds) {
  * the score, how it was marked, the one-line reason shown to the student, and
  * per key point whether the answer covered it.
  */
-export async function updateResponseGrade({ attemptId, questionId, score, gradedBy, graderNote, keyPointResults = null, flagged = false, promptVersion = null, model = null }) {
+export async function updateResponseGrade({ attemptId, questionId, score, gradedBy, graderNote, keyPointResults = null, flagged = false, promptVersion = null, model = null, needsReview = false, imageReading = null }) {
   return responses().findOneAndUpdate(
     { attemptId, questionId },
-    // promptVersion / model: which prompt and model marked it, when an LLM did
-    { $set: { score, gradedBy, graderNote, keyPointResults, flagged: Boolean(flagged), promptVersion, model } },
+    // promptVersion / model: which prompt and model marked it, when an LLM did;
+    // needsReview / imageReading: what was read from the answer's pictures, and
+    // whether that leaves the mark uncertain (gradingEngine.gradeTheoryWithImages)
+    { $set: { score, gradedBy, graderNote, keyPointResults, flagged: Boolean(flagged), promptVersion, model, needsReview: Boolean(needsReview), imageReading } },
     { upsert: false }
   );
 }
@@ -56,6 +60,7 @@ export async function recordRemark({ attemptId, questionId, before, reason, grad
         keyPointResults: graded.keyPointResults || null,
         promptVersion: graded.promptVersion || null,
         model: graded.model || null,
+        ...(graded.imageReading ? { imageReading: graded.imageReading, needsReview: Boolean(graded.needsReview) } : {}),
         remark: { requestedAt: new Date(), reason, before, after: graded.score, gradedBy: graded.gradedBy, promptVersion: graded.promptVersion || null, model: graded.model || null },
       },
     },

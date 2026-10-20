@@ -88,9 +88,15 @@ export default function Admin() {
             <Stat label="Took a test" value={pct(w.testedInWeek1)} sub={`${w.testedInWeek1.count} finished one in week 1`} />
             <Stat label="Came back" value={pct(w.returnedInWeek2)} sub={`${w.returnedInWeek2.count} of ${w.returnedInWeek2.of} used it in week 2`} />
           </div>
-        ) : (
-          <p className="text-on-surface-variant">Loading…</p>
+        ) : null}
+        {w && typeof overview.answersFlaggedForReview === "number" && (
+          <p className="font-body-sm text-body-sm text-on-surface-variant" data-testid="flagged-answers">
+            {overview.answerImages} handwritten answer {overview.answerImages === 1 ? "picture" : "pictures"} stored ·{" "}
+            {overview.answersFlaggedForReview} {overview.answersFlaggedForReview === 1 ? "answer" : "answers"} flagged for review because the
+            handwriting could not be read with confidence (each student sees the flag on their own review).
+          </p>
         )}
+        {!w && <p className="text-on-surface-variant">Loading…</p>}
       </section>
 
       <section className="flex flex-col gap-space-md">

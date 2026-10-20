@@ -222,12 +222,12 @@ export default function Settings() {
                 <p>
                   <strong>Where it goes:</strong>{" "}
                   {config?.ai?.enabled
-                    ? `to write questions and mark written answers, the text of the notes you pick and your written answers are sent to ${config.ai.name}. ${
+                    ? `to write questions and mark written answers, the text of the notes you pick, your written answers and any photos you attach to an answer (so the handwriting can be read) are sent to ${config.ai.name}. ${
                         config.ai.trainsOnInputs === false
                           ? "Its terms say it does not use them to train its models."
                           : "What it may do with them is set by its own terms."
                       } Your email address is never sent.`
-                    : "nowhere: this server writes questions and marks answers itself, without an outside AI service."}
+                    : "nowhere: this server writes questions and marks answers itself, without an outside AI service (photos attached to answers are read on this server)."}
                 </p>
                 <p>
                   <strong>Uploading:</strong> upload your own notes, or material you are allowed to use. Do not upload a

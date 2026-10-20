@@ -45,6 +45,41 @@ export const normalizeText = (s) =>
     .trim();
 
 const clean = (s) => String(s ?? "").replace(/\s+/g, " ").trim();
+
+// ---- formatting
+// What an LLM (or a PDF) can leave in a question that must never reach the
+// screen: control characters (a "\frac" read as a form feed), HTML, entities,
+// escapes printed as text ("\n", "\u00e9"), and formulas or code whose
+// delimiters do not close. Small things are repaired; the rest rejects.
+const ENTITIES = { "&amp;": "&", "&lt;": "<", "&gt;": ">", "&quot;": '"', "&#39;": "'", "&nbsp;": " " };
+export function repairFormatting(text) {
+  return String(text ?? "")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/?(?:p|div|span|b|strong|i|em|u|sup|sub|code|pre)(?:\s[^>]*)?>/gi, "")
+    .replace(/&(?:amp|lt|gt|quot|#39|nbsp);/g, (e) => ENTITIES[e])
+    // control characters (intended: "\frac" read as form feed + "rac")
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "")
+    .replace(/[ \t]+/g, " ")
+    .replace(/ *\n */g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+/** The formatting faults of one piece of text, as reasons. */
+export function formattingProblems(text) {
+  const t = String(text ?? "");
+  const reasons = [];
+  // a "$" that opens a formula and never closes (prices like "$5" are not formulas)
+  const dollars = (t.replace(/\\\$/g, "").match(/\$/g) || []).length;
+  if (dollars % 2 && /\$[^$]*[\\^_{}=]/.test(t)) reasons.push("format:unclosed-formula");
+  if ((t.match(/```/g) || []).length % 2 || (t.replace(/```/g, "").match(/`/g) || []).length % 2) reasons.push("format:unclosed-code");
+  if (/\\[ntr](?![a-z])|\\u[0-9a-fA-F]{4}|\\"/.test(t)) reasons.push("format:escapes-as-text");
+  if (/<\/?[a-z][^>]*>/i.test(t) && !/\$[^$]*<[^$]*\$/.test(t)) reasons.push("format:html");
+  if (/^\s*[#>*-]\s|\*\*[^*]+$|^\*\*/m.test(t)) reasons.push("format:markdown");
+  return reasons;
+}
+
+const cleanLines = (s) => repairFormatting(s).replace(/[ \t]+/g, " ");
 const words = (s) => clean(s).split(" ").filter(Boolean);
 
 // A sentence or question that opens by pointing back at something earlier.
@@ -114,7 +149,13 @@ function optionIn(option, passage) {
 const shapeOf = (s) => (/\d/.test(s) || /^[A-Z0-9/+.-]{2,}$/.test(clean(s)) ? "code" : words(s).length > 1 ? "phrase" : "word");
 
 // One phrase inside another, as whole words: "key" in "public key".
+// How two options are compared: by their words, except that a formula or code
+// keeps its symbols ("$B + D$" and "$B - D$" are different answers).
+const hasSymbols = (s) => /\$|`|[=+\-*/^<>≤≥≠×÷√∑∫]/.test(String(s));
+const optionKey = (s) => (hasSymbols(s) ? String(s).toLowerCase().replace(/\s+/g, "") : normalizeText(s));
+
 function phraseInside(small, big) {
+  if (hasSymbols(small) || hasSymbols(big)) return false;
   const a = normalizeText(small);
   const b = normalizeText(big);
   if (!a || !b || a === b) return false;
@@ -177,7 +218,8 @@ function isMeaningfulAnswer(answer) {
 export function validateQuestion(q, { type, contextText = "" } = {}) {
   const reasons = [];
   const out = { ...q };
-  out.prompt = clean(q?.prompt);
+  // line breaks are kept (code, steps, a matrix); everything else is tidied
+  out.prompt = cleanLines(q?.prompt);
   out.difficulty = DIFFICULTIES.includes(q?.difficulty) ? q.difficulty : "medium";
   const prompt = out.prompt;
   const context = normalizeText(contextText);
@@ -187,6 +229,7 @@ export function validateQuestion(q, { type, contextText = "" } = {}) {
   if (prompt.length > 600) reasons.push("clarity:too-long");
   if (/\b(?:undefined|null|NaN)\b|\{\{|\}\}|\[object /.test(prompt)) reasons.push("clarity:template-text");
   if (/\b(\w{2,})\s+\1\b/i.test(prompt.replace(/_+/g, ""))) reasons.push("language:doubled-word");
+  reasons.push(...formattingProblems(prompt));
   for (const [open, close] of [["(", ")"], ["“", "”"], ["[", "]"]]) {
     if (prompt.split(open).length !== prompt.split(close).length) reasons.push("language:unbalanced");
   }
@@ -201,8 +244,9 @@ export function validateQuestion(q, { type, contextText = "" } = {}) {
   if (opensWithReference(asked)) reasons.push("context:refers-back");
 
   if (type === "mcq") {
-    let options = Array.isArray(q?.options) ? q.options.map(clean).filter(Boolean) : [];
-    let answer = clean(q?.answerKey ?? q?.correctAnswer);
+    let options = Array.isArray(q?.options) ? q.options.map((o) => clean(repairFormatting(o))).filter(Boolean) : [];
+    let answer = clean(repairFormatting(q?.answerKey ?? q?.correctAnswer));
+    if (options.some((o) => formattingProblems(o).length)) reasons.push("format:option");
     // repair: an answer differing from its option only in case or spacing
     const exact = options.filter((o) => o === answer);
     if (exact.length === 0) {
@@ -212,7 +256,7 @@ export function validateQuestion(q, { type, contextText = "" } = {}) {
     // repair: more than four options - keep the answer and the first three others
     if (options.length > 4 && options.includes(answer)) options = [answer, ...options.filter((o) => o !== answer).slice(0, 3)];
     if (options.length !== 4) reasons.push("mcq:not-four-options");
-    if (new Set(options.map(normalizeText)).size !== options.length) reasons.push("mcq:duplicate-options");
+    if (new Set(options.map(optionKey)).size !== options.length) reasons.push("mcq:duplicate-options");
     if (options.filter((o) => o === answer).length !== 1) reasons.push("mcq:answer-not-an-option");
     if (options.some((o) => /\b(?:all|none|both|neither) of (?:the )?(?:above|these|them)\b/i.test(o))) reasons.push("mcq:all-or-none-of-the-above");
     if (options.some((o, i) => options.some((p, j) => i !== j && phraseInside(o, p)))) reasons.push("mcq:overlapping-options");
@@ -234,6 +278,10 @@ export function validateQuestion(q, { type, contextText = "" } = {}) {
     // a wrong option nobody would pick: a lone function word or generic word
     // ("the", "system", "type") tests nothing
     if (options.some((o) => words(o).length === 1 && (FUNCTION_ANSWERS.has(o.toLowerCase()) || GENERIC.has(o.toLowerCase())))) reasons.push("mcq:weak-option");
+    // ...or a roman numeral or a lone letter ("II", "b"), or a word in capitals
+    // beside a lower-case answer ("LOADER" beside "program": a table header)
+    else if (options.some((o) => /^(?:[ivxlcdm]{1,4}|[a-z])$/i.test(o) && !/^[A-Z]{2,4}$/.test(o.replace(/^(?:I{1,3}|IV|VI{0,3}|IX|X{1,3})$/, "")))) reasons.push("mcq:weak-option");
+    else if (/[a-z]/.test(answer) && options.some((o) => o !== answer && /^[A-Z][A-Z\s-]{4,}$/.test(o))) reasons.push("mcq:weak-option");
     // ...or a word so broad it is never the answer to anything ("system", "data")
     else if (options.some((o) => o !== answer && words(o).length === 1 && BROAD_DISTRACTORS.has(o.toLowerCase()))) reasons.push("mcq:weak-option");
 

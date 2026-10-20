@@ -24,6 +24,7 @@
 // file always splits the same way and the split can be explained in a demo.
 
 import { computeTfidf, tokenSet } from "./tfidf.js";
+import { comparisonToTable, opensLikeComparison, parseFlattenedComparison } from "./comparisonTable.js";
 
 // A section shorter than this is merged into its neighbour rather than kept as
 // its own subtopic: too little text to generate a grounded question from.
@@ -156,6 +157,13 @@ export function splitInlineBullets(b) {
 const squeeze = (text) => String(text).replace(/[ \t\u00a0]{2,}/g, " ");
 const MAX_STRONG_PER_BLOCK = 40;
 
+/** A flattened comparison table back as a table block, or null. */
+export function restoredTable(text) {
+  if (!opensLikeComparison(text)) return null;
+  const parsed = parseFlattenedComparison(text);
+  return parsed ? comparisonToTable(parsed) : null;
+}
+
 export function normalizeContent(blocks, { title = null } = {}) {
   let list = (blocks || []).filter((b) => b && b.type !== "title" && String(b.text || "").trim());
   // a leading heading that only repeats the note's own title is dropped
@@ -198,6 +206,13 @@ export function normalizeContent(blocks, { title = null } = {}) {
       continue;
     }
     prevDepth = -1;
+    // a comparison table a PDF flattened into one run of text ("BASIS FOR
+    // COMPARISON LINKER LOADER Basic It generates ...") is put back into rows
+    const table = b.type === "para" ? restoredTable(text) : null;
+    if (table) {
+      out.push(table);
+      continue;
+    }
     if (b.type === "heading") out.push({ type: "heading", level: rank.get(b.level), text: cleanHeading(text) });
     else if (b.type === "label") out.push({ type: "label", text });
     else if (b.type === "table" && Array.isArray(b.rows)) out.push({ type: "table", text, rows: b.rows });

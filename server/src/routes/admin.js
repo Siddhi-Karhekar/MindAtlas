@@ -49,6 +49,11 @@ router.get("/overview", async (req, res) => {
       returnedInWeek2: { count: returned, of: matured.length, percent: pct(returned, matured.length) },
     },
     suspended: cohort.filter((u) => u.suspended).length,
+    // theory answers whose handwriting could not be read with confidence
+    // (gradingEngine.gradeTheoryWithImages): a count only - no answer, picture
+    // or student is shown here; the student sees the flag on their review
+    answersFlaggedForReview: (await getCollection("responses").find({ needsReview: true })).length,
+    answerImages: (await getCollection("answer_images").find({})).length,
   });
 });
 

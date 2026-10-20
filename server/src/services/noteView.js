@@ -7,7 +7,7 @@
 //     can edit - the same light markdown the typed-note box accepts, so an
 //     edited note goes through exactly the path a new typed note does.
 
-import { blocksFromPlainText, normalizeContent, splitInlineBullets } from "./documentStructure.js";
+import { blocksFromPlainText, normalizeContent, restoredTable, splitInlineBullets } from "./documentStructure.js";
 import { keyTermsFor } from "./keyTerms.js";
 import { isSplitParent } from "../models/Note.js";
 
@@ -22,7 +22,8 @@ export function withContent(note) {
     Array.isArray(note.content) && note.content.length
       ? // saved before entries run together on one line were split apart
         // ("• Fast • Cheap"), and before lists stopped at three levels
-        note.content.flatMap(splitInlineBullets).map((b) => (b.type === "item" && b.depth > 2 ? { ...b, depth: 2 } : b))
+        // ...and before flattened comparison tables were put back into rows
+        note.content.flatMap(splitInlineBullets).map((b) => (b.type === "item" && b.depth > 2 ? { ...b, depth: 2 } : b.type === "para" ? restoredTable(b.text) || b : b))
       : normalizeContent(blocksFromPlainText(note.rawText, { ocr: note.sourceType === "image" }), { title: note.title });
   const path = Array.isArray(note.path) && note.path.length ? note.path : note.sectionGroup ? [note.sectionGroup] : [];
   return { ...note, content, path };

@@ -185,7 +185,7 @@ Full rule list with code locations: `docs/ASSESSMENT.md`.
 - The results page shows "Phrased via LLM / template".
 - `/api/auth/config` shows `"ai":{"enabled":true,"name":"Groq"}` when a key is set.
 
-**Privacy:** Groq receives note text and written answers only, never names or emails. Groq's terms say it does not train on inputs (§4.2), and make the app owner responsible for users under 18 (§6.3).
+**Privacy:** Groq receives note text, written answers and photos attached to theory answers (to read the handwriting), never names or emails. Groq's terms say it does not train on inputs (§4.2), and make the app owner responsible for users under 18 (§6.3).
 
 **Prompt versions** (`llm.js` `PROMPT_VERSIONS`): `mcq-v3`, `theory-v3`, `grade-v3`, `remark-v2`, `feedback-v3`. Every AI-written item stores `promptVersion` and `model`. Bump a version whenever its prompt's wording changes.
 

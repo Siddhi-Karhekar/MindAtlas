@@ -4,6 +4,8 @@ import { api } from "../lib/api.js";
 import { getLastSubject, setLastAttempt } from "../lib/recent.js";
 import Icon from "../components/Icon.jsx";
 import ReportQuestion from "../components/ReportQuestion.jsx";
+import RichText from "../components/RichText.jsx";
+import AnswerImages from "../components/AnswerImages.jsx";
 
 function clock(totalSeconds) {
   const s = Math.max(0, totalSeconds);
@@ -39,7 +41,7 @@ function QuestionText({ question }) {
         <h1 className={heading} style={{ textWrap: "balance" }}>
           {parts.map((part, i) => (
             <span key={i}>
-              {part}
+              <RichText text={part} inline />
               {i < parts.length - 1 && (
                 <span className="inline-block align-baseline w-24 mx-space-xs border-b-2 border-primary" aria-label="blank">
                   &nbsp;
@@ -54,11 +56,11 @@ function QuestionText({ question }) {
   return (
     <div className="mb-space-2xl">
       <h1 className={heading} style={{ textWrap: "balance" }}>
-        {question.prompt}
+        <RichText text={question.prompt} />
       </h1>
       {question.guidance && (
         <p className="mt-space-md font-body-md text-body-md text-on-surface-variant" data-testid="question-guidance">
-          {question.guidance}
+          <RichText text={question.guidance} inline />
         </p>
       )}
     </div>
@@ -105,12 +107,14 @@ export default function TestAttempt() {
   const [confirmExit, setConfirmExit] = useState(false);
   const [resumed, setResumed] = useState(false);
   const [expired, setExpired] = useState(null);
+  // pictures attached to the theory answer on screen (uploaded already)
+  const [imageCount, setImageCount] = useState(0);
   const started = useRef(false);
   const finishing = useRef(false);
   const timeoutFired = useRef(false);
   const deadline = useRef(null);
   const latest = useRef({});
-  latest.current = { attempt, question, selected };
+  latest.current = { attempt, question, selected, imageCount };
 
   const backTo = testInfo?.subjectId || getLastSubject();
   const exitPath = backTo ? `/subjects/${backTo}/tests` : "/";
@@ -134,7 +138,7 @@ export default function TestAttempt() {
     async (opts = {}) => {
       if (finishing.current) return;
       finishing.current = true;
-      const { attempt: a, question: q, selected: ans } = latest.current;
+      const { attempt: a, question: q, selected: ans, imageCount: pictures } = latest.current;
       const toResults = () => {
         if (q) writeDraft(a._id, q._id, "");
         setLastAttempt(a._id);
@@ -143,8 +147,9 @@ export default function TestAttempt() {
       // Record the answer that was in progress when time ran out, if any.
       // The server allows a short grace for exactly this.
       if (opts.timedOut && a && q) {
-        const has = q.type === "theory" ? ans?.trim() : ans;
-        if (has) await api.submitResponse(a._id, { questionId: q._id, answer: ans }).catch(() => {});
+        // a theory answer with only pictures attached is an answer too
+        const has = q.type === "theory" ? ans?.trim() || pictures > 0 : ans;
+        if (has) await api.submitResponse(a._id, { questionId: q._id, answer: ans || "" }).catch(() => {});
       }
       // A dropped connection is tried again, waiting longer each time (2, 4,
       // 8 s); "already submitted / being marked" (409) means the results page
@@ -230,7 +235,7 @@ export default function TestAttempt() {
   }, [attempt, finish]);
 
   const isTheory = question?.type === "theory";
-  const canAdvance = isTheory ? selected?.trim() : selected;
+  const canAdvance = isTheory ? selected?.trim() || imageCount > 0 : selected;
   const isLast = progress && progress.shown >= progress.target;
 
   function choose(value) {
@@ -244,7 +249,7 @@ export default function TestAttempt() {
     if ((!canAdvance && !blank) || finishing.current) return;
     setBusy(true);
     setError("");
-    const send = () => api.submitResponse(attempt._id, { questionId: question._id, answer: blank ? "" : selected });
+    const send = () => api.submitResponse(attempt._id, { questionId: question._id, answer: blank ? "" : selected || "" });
     try {
       let out;
       // a dropped connection is tried again twice before giving up; the
@@ -446,9 +451,10 @@ export default function TestAttempt() {
                 onChange={(e) => choose(e.target.value)}
                 rows={6}
                 disabled={timeUp}
-                placeholder="Write your answer here… use the key terms from your notes."
+                placeholder="Write your answer here… use the key terms from your notes. Formulas or diagrams that are hard to type? Attach a photo of your page below."
                 className="w-full rounded-xl bg-surface-container-lowest border border-outline-variant p-space-lg font-body-md text-body-md text-on-surface text-left focus:outline-none focus:border-primary shadow-sm"
               />
+              <AnswerImages key={question._id} attemptId={attempt._id} questionId={question._id} disabled={timeUp || busy} onCountChange={setImageCount} />
             </>
           ) : (
             <div className="flex flex-col gap-space-sm">
@@ -473,7 +479,7 @@ export default function TestAttempt() {
                     >
                       {String.fromCharCode(65 + i)}
                     </span>
-                    <span>{opt}</span>
+                    <RichText text={opt} inline className="min-w-0 break-words" />
                   </button>
                 );
               })}

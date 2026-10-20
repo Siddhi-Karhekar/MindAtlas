@@ -3,6 +3,8 @@ import { Link } from "react-router-dom";
 import { api } from "../lib/api.js";
 import Icon from "./Icon.jsx";
 import ReportQuestion from "./ReportQuestion.jsx";
+import RichText from "./RichText.jsx";
+import { AnswerImageThumbs } from "./AnswerImages.jsx";
 
 const fmt = (n) => String(Number(Number(n).toFixed(2))); // 1, 0.25, -1
 const marksText = (item) => `${fmt(item.marksAwarded)} / ${fmt(item.marks)} ${item.marks === 1 ? "mark" : "marks"}`;
@@ -32,7 +34,7 @@ function McqAnswer({ item }) {
             }`}
           >
             <span className="w-5 shrink-0 font-label-md">{String.fromCharCode(65 + i)}</span>
-            <span className="flex-1">{opt}</span>
+            <RichText text={opt} inline className="flex-1 min-w-0 break-words" />
             {right && (
               <span className="flex items-center gap-space-2xs font-label-md text-secondary">
                 <Icon name="check" className="text-sm" /> correct answer
@@ -56,7 +58,30 @@ function TheoryAnswer({ item }) {
     <div className="flex flex-col gap-space-sm">
       <div>
         <p className="font-label-md text-label-md uppercase tracking-wider text-on-surface-variant">Your answer</p>
-        <p className="font-body-sm text-body-sm text-on-surface whitespace-pre-wrap">{item.answer || "Not answered."}</p>
+        <div className="font-body-sm text-body-sm text-on-surface">
+          {item.answer ? <RichText text={item.answer} /> : item.images?.length ? null : "Not answered."}
+        </div>
+        {item.images?.length > 0 && (
+          <div className="flex flex-col gap-space-xs mt-space-xs">
+            <AnswerImageThumbs images={item.images} />
+            {item.imageReading?.text && (
+              <details className="font-body-sm text-body-sm text-on-surface-variant">
+                <summary className="cursor-pointer">
+                  What was read from your {item.images.length === 1 ? "picture" : "pictures"}
+                  {item.imageReading.by === "ocr" ? " (text recognition)" : ""}
+                </summary>
+                <div className="mt-space-xs p-space-sm rounded bg-surface-container-low text-on-surface">
+                  <RichText text={item.imageReading.text} />
+                </div>
+              </details>
+            )}
+          </div>
+        )}
+        {item.needsReview && (
+          <p className="mt-space-xs font-body-sm text-body-sm text-tertiary" data-testid="needs-review">
+            <Icon name="flag" className="text-sm align-middle" /> Flagged for review: the mark is provisional because your handwriting could not be read with confidence.
+          </p>
+        )}
       </div>
       {item.keyPoints?.length > 0 && (
         <div>
@@ -65,7 +90,7 @@ function TheoryAnswer({ item }) {
             {item.keyPoints.map((k) => (
               <li key={k.point} className="flex items-center gap-space-xs font-body-sm text-body-sm">
                 <Icon name={k.covered ? "check_circle" : "cancel"} className={`text-sm ${k.covered ? "text-secondary" : "text-error"}`} />
-                <span className={k.covered ? "text-on-surface" : "text-on-surface-variant"}>{k.point}</span>
+                <RichText text={k.point} inline className={k.covered ? "text-on-surface" : "text-on-surface-variant"} />
                 <span className="font-label-sm text-label-sm text-on-surface-variant">{k.covered ? "covered" : "missing"}</span>
               </li>
             ))}
@@ -74,7 +99,9 @@ function TheoryAnswer({ item }) {
       )}
       <div>
         <p className="font-label-md text-label-md uppercase tracking-wider text-on-surface-variant">Model answer</p>
-        <p className="font-body-sm text-body-sm text-on-surface">{item.modelAnswer}</p>
+        <div className="font-body-sm text-body-sm text-on-surface">
+          <RichText text={item.modelAnswer} />
+        </div>
       </div>
     </div>
   );
@@ -210,7 +237,9 @@ export default function AnswerReview({ attemptId, subjectId, onMarksChanged }) {
                 {item.type === "theory" ? " · Theory" : ""} · {item.subtopic || item.topic}
                 {item.parentTopic ? <span> in {item.parentTopic}</span> : null}
               </p>
-              <p className="font-ui-title text-ui-title text-on-surface mt-space-2xs">{item.prompt}</p>
+              <div className="font-ui-title text-ui-title text-on-surface mt-space-2xs">
+                <RichText text={item.prompt} />
+              </div>
             </div>
             <MarksBadge item={item} />
           </div>
@@ -233,7 +262,7 @@ export default function AnswerReview({ attemptId, subjectId, onMarksChanged }) {
 
           {item.source && (
             <blockquote className="border-l-4 border-secondary pl-space-md font-body-sm text-body-sm text-on-surface-variant">
-              <span className="block font-label-sm text-label-sm uppercase tracking-wider mb-space-2xs">From your notes</span>“{item.source}”
+              <span className="block font-label-sm text-label-sm uppercase tracking-wider mb-space-2xs">From your notes</span>“<RichText text={item.source} inline />”
               {subjectId && item.topicId && (
                 <Link to={`/subjects/${subjectId}?note=${item.topicId}`} className="block mt-space-2xs text-secondary hover:underline font-label-md text-label-md">
                   Re-read this section

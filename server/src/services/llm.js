@@ -50,8 +50,8 @@ export const llmProvider = () => {
 // wording of that prompt changes. ("v1" was the wording before notes and
 // answers were passed as tagged data.)
 export const PROMPT_VERSIONS = Object.freeze({
-  mcq: "mcq-v4",
-  theory: "theory-v4",
+  mcq: "mcq-v5",
+  theory: "theory-v5",
   grade: "grade-v3",
   remark: "remark-v2",
   feedback: "feedback-v3",
@@ -138,13 +138,43 @@ async function once(body) {
  *   temperature  0..1
  */
 export async function callLLMDetailed(prompt, { temperature = 0.3, system = null } = {}) {
-  const started = Date.now();
   if (!llmAvailable()) return { text: null, error: { kind: "not-configured" }, attempts: 0, durationMs: 0 };
-  const body = {
+  return sendWithRetry({
     model: llmModel(),
     temperature,
     messages: [...(system ? [{ role: "system", content: system }] : []), { role: "user", content: prompt }],
-  };
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Reading pictures (handwritten theory answers)
+// ---------------------------------------------------------------------------
+// The same provider and key, a model that accepts images. On Groq that is
+// qwen/qwen3.8-27b (up to 3 images a request, each counted as 2,048 input
+// tokens - see console.groq.com/docs/vision). LLM_VISION_MODEL=off turns it
+// off, and pictures are then read with OCR (services/ocr.js) and flagged.
+const DEFAULT_VISION_MODEL = "qwen/qwen3.8-27b";
+export const visionModel = () => process.env.LLM_VISION_MODEL?.trim() || DEFAULT_VISION_MODEL;
+export const visionAvailable = () => llmAvailable() && visionModel().toLowerCase() !== "off";
+export const MAX_VISION_IMAGES = 3;
+
+/**
+ * Send instructions, text and up to three pictures ({ mime, data: base64 }) to
+ * the vision model. Same result shape as callLLMDetailed. The pictures are
+ * sent as data URLs, never as links, so nothing about them is public.
+ */
+export async function callVisionDetailed(prompt, images, { temperature = 0, system = null } = {}) {
+  if (!visionAvailable()) return { text: null, error: { kind: "not-configured" }, attempts: 0, durationMs: 0 };
+  const parts = [{ type: "text", text: prompt }, ...images.slice(0, MAX_VISION_IMAGES).map((im) => ({ type: "image_url", image_url: { url: `data:${im.mime};base64,${im.data}` } }))];
+  return sendWithRetry({
+    model: visionModel(),
+    temperature,
+    messages: [...(system ? [{ role: "system", content: system }] : []), { role: "user", content: parts }],
+  });
+}
+
+async function sendWithRetry(body) {
+  const started = Date.now();
   let error = null;
   let attempts = 0;
   for (let attempt = 1; attempt <= 2; attempt++) {
@@ -174,11 +204,47 @@ export async function callLLM(prompt, options = {}) {
   return (await callLLMDetailed(prompt, options)).text;
 }
 
+// LaTeX commands that begin with a letter JSON also uses as an escape (\b \f
+// \n \r \t \u): written with one backslash inside a JSON string, "\frac" would
+// be read as a form feed and "rac", "\theta" as a tab and "heta".
+const LATEX_AFTER_JSON_ESCAPE =
+  /^(?:b(?:eta|ar|f|ig|inom|igcup|igcap|ullet|ackslash|oldsymbol|ot|ox|egin)|f(?:rac|orall|lat|rown)|n(?:abla|eq|e|u|ot|otin|eg|i|ewline|less|parallel)|r(?:ho|ightarrow|ight|m|angle|ceil|floor|e)|t(?:au|heta|imes|ext|extbf|extit|an|anh|o|op|riangle|ilde|frac|imes)|u(?:nderline|parrow|nion|psilon))(?![A-Za-z])/;
+
+/**
+ * An LLM writing formulas inside JSON strings usually escapes the backslash
+ * once, not twice: "\frac{a}{b}" arrives as \frac{a}{b}. JSON then either
+ * fails to parse (\sqrt, \alpha: not escapes at all, so every question in the
+ * reply was lost) or silently corrupts it (\frac, \theta, \beta, \neq: read as
+ * control characters). Backslashes that start a LaTeX command are doubled
+ * here, before parsing; real escapes (\" \\ \n between words, \u00e9) are kept.
+ */
+export function escapeLatexBackslashes(text) {
+  const s = String(text ?? "");
+  let out = "";
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (c !== "\\") {
+      out += c;
+      continue;
+    }
+    const next = s[i + 1] ?? "";
+    if (next === "\\" || next === '"' || next === "/") {
+      out += c + next; // an escape that is already right
+      i++;
+      continue;
+    }
+    const rest = s.slice(i + 1, i + 24);
+    const latex = /^[a-zA-Z]/.test(next) && (!/^[bfnrtu]/.test(next) || LATEX_AFTER_JSON_ESCAPE.test(rest)) && !/^u[0-9a-fA-F]{4}/.test(rest);
+    out += latex ? "\\\\" : c;
+  }
+  return out;
+}
+
 /** Best-effort JSON parse of an LLM response that may be wrapped in prose or a ```json fence. */
 export function parseJsonLoose(text) {
   if (!text) return null;
   const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  const candidate = fenced ? fenced[1] : text;
+  const candidate = escapeLatexBackslashes(fenced ? fenced[1] : text);
   try {
     return JSON.parse(candidate);
   } catch {

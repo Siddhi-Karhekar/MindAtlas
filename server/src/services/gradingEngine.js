@@ -223,8 +223,57 @@ function byKeyPoints(question, answerText, note = null) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Answers with pictures (handwriting, formulas, diagrams)
+// ---------------------------------------------------------------------------
+// What was read from the student's pictures (services/answerImages.js) is
+// added to the typed answer and marked with it, by the same rules. The marker
+// is told which part came from handwriting, so a transcription slip in a
+// symbol is not held against the student. A reading that is not clean
+// (partial, or OCR) gives a provisional mark and flags the answer for review;
+// a page that could not be read is not marked on the picture at all.
+const FROM_IMAGE = "[Written on the student's attached page]";
+const IMAGE_NOTE = `
+
+Part of this answer was transcribed from the student's handwriting (after "${FROM_IMAGE}"). A misread symbol, a formatting slip in a formula or an [unreadable] gap there comes from the transcription, not the student: do not reduce marks for it, and judge the ideas that can be read.`;
+
+/** The typed answer and what was read from its pictures, as one text to mark. */
+export function answerWithImages(answerText, reading) {
+  const typed = String(answerText ?? "").trim();
+  const read = String(reading?.text ?? "").trim();
+  return read ? `${typed}${typed ? "\n\n" : ""}${FROM_IMAGE}\n${read}` : typed;
+}
+
+/**
+ * Grade a theory answer that may have pictures. `reading` is what
+ * answerImages.readAnswerImages made of them (null when there are none).
+ * Adds `needsReview` and a word on it to the note when the reading leaves the
+ * mark uncertain.
+ */
+export async function gradeTheoryWithImages(question, answerText, reading, { remark = false } = {}) {
+  if (!reading) return remark ? remarkTheoryResponse(question, answerText) : gradeTheoryResponse(question, answerText);
+  const combined = answerWithImages(answerText, reading);
+  const uncertain = reading.by !== "vision" || reading.legibility !== "clear";
+  if (!normalize(combined)) {
+    return {
+      score: 0,
+      note: "Your picture could not be read, so this answer could not be marked from it. It is flagged for review - a clearer photo of the page would help.",
+      keyPointResults: keyPointMatches("", question.keyPoints),
+      gradedBy: "rule",
+      needsReview: true,
+    };
+  }
+  const graded = remark ? await remarkTheoryResponse(question, combined, { imageNote: true }) : await gradeTheoryResponse(question, combined, { imageNote: true });
+  if (!uncertain) return { ...graded, needsReview: false };
+  const why =
+    reading.by === "ocr"
+      ? "Your handwriting was read by text recognition, which can misread symbols, so this mark is provisional and the answer is flagged for review."
+      : "Part of your handwriting could not be read clearly, so this mark is provisional and the answer is flagged for review.";
+  return { ...graded, note: [graded.note, why].filter(Boolean).join(" "), needsReview: true };
+}
+
 /** Grade a single theory response against its question's rubric. */
-export async function gradeTheoryResponse(question, answerText) {
+export async function gradeTheoryResponse(question, answerText, { imageNote = false } = {}) {
   if (!normalize(answerText)) {
     return { score: 0, note: "No answer was given.", keyPointResults: keyPointMatches("", question.keyPoints), gradedBy: "rule" };
   }
@@ -237,7 +286,7 @@ export async function gradeTheoryResponse(question, answerText) {
     };
   }
   if (llmAvailable()) {
-    const graded = await gradeWithLLM(question, answerText);
+    const graded = await gradeWithLLM(question, answerText, imageNote ? { rules: MARKING_RULES + IMAGE_NOTE } : undefined);
     if (graded && mostlyOtherScript(answerText)) return capByOwnFlags(graded); // see mostlyOtherScript
     if (graded) {
       if (graded.score > 0 && !sharesWordsWithRubric(question, answerText)) {
@@ -262,10 +311,10 @@ This is a second marking, requested by the student. Mark strictly and independen
  * request but never shown to the marker: it is their text, and the marking
  * must not be argued with.
  */
-export async function remarkTheoryResponse(question, answerText) {
+export async function remarkTheoryResponse(question, answerText, { imageNote = false } = {}) {
   if (!normalize(answerText)) return gradeTheoryResponse(question, answerText);
-  if (addressesTheMarker(answerText) || !llmAvailable()) return gradeTheoryResponse(question, answerText);
-  const graded = await gradeWithLLM(question, answerText, { temperature: 0, rules: REMARK_RULES, kind: "remark" });
+  if (addressesTheMarker(answerText) || !llmAvailable()) return gradeTheoryResponse(question, answerText, { imageNote });
+  const graded = await gradeWithLLM(question, answerText, { temperature: 0, rules: REMARK_RULES + (imageNote ? IMAGE_NOTE : ""), kind: "remark" });
   if (!graded) return byKeyPoints(question, answerText);
   if (mostlyOtherScript(answerText)) return capByOwnFlags(graded);
   if (graded.score > 0 && !sharesWordsWithRubric(question, answerText)) {
@@ -290,7 +339,7 @@ export async function remarkTheoryResponse(question, answerText) {
  * already-graded theory responses are left untouched. Up to four answers are
  * marked at a time, so a long theory paper does not wait on each call in turn.
  */
-export async function gradeAttemptResponses(responses, questionsById) {
+export async function gradeAttemptResponses(responses, questionsById, { readImages = null } = {}) {
   const todo = responses.filter((r) => {
     const q = questionsById.get(String(r.questionId));
     return q && q.type === "theory" && (r.score === null || r.score === undefined);
@@ -299,7 +348,11 @@ export async function gradeAttemptResponses(responses, questionsById) {
   const worker = async () => {
     for (let r = todo.shift(); r; r = todo.shift()) {
       const q = questionsById.get(String(r.questionId));
-      const graded = await gradeTheoryResponse(q, r.answer);
+      // pictures attached to the answer are read first (readImages: the
+      // caller's, so this file stays free of storage), then marked with it
+      const reading = r.imageIds?.length && readImages ? await readImages(r, q) : null;
+      const graded = await gradeTheoryWithImages(q, r.answer, reading);
+      if (reading) graded.imageReading = { text: reading.text, legibility: reading.legibility, by: reading.by, model: reading.model, unreadableParts: reading.unreadableParts || "" };
       r.score = graded.score;
       r.gradedBy = graded.gradedBy;
       r.graderNote = graded.note;

@@ -19,7 +19,8 @@
 // Without the model, gate 3 falls back to "mentions one of the note's key
 // terms" (see studyFor in keyTerms.js).
 
-import { blocksFromPlainText, isAdminHeading, normalizeContent } from "./documentStructure.js";
+import { blocksFromPlainText, isAdminHeading, normalizeContent, restoredTable, splitInlineBullets } from "./documentStructure.js";
+import { classifyText } from "./suitability.js";
 import { centroid, cosine } from "./embeddings.js";
 
 // ---------------------------------------------------------------------------
@@ -141,7 +142,9 @@ export function isContentExcerpt(excerpt) {
 
 /** A note's display blocks: stored `content`, or worked out for an older note. */
 export function blocksOf(note) {
-  if (Array.isArray(note?.content) && note.content.length) return note.content;
+  // a note saved before glued bullets were split and flattened comparison
+  // tables were put back into rows gets both here too
+  if (Array.isArray(note?.content) && note.content.length) return note.content.flatMap(splitInlineBullets).map((b) => (b.type === "para" ? restoredTable(b.text) || b : b));
   return normalizeContent(blocksFromPlainText(note?.rawText || "", { ocr: note?.sourceType === "image" }), { title: note?.title });
 }
 
@@ -160,9 +163,10 @@ const splitSentences = (text) =>
 
 /**
  * Candidate sentences, in reading order, that pass gates 1 and 2:
- *   { text, kind: "para" | "item", section, lead }
+ *   { text, kind: "para" | "item", section, lead, suit }
  * `section` is the nearest heading or label above ("Lock modes"); `lead` is
- * the term a list entry opens with ("Shared lock"), if any.
+ * the term a list entry opens with ("Shared lock"), if any; `suit` is what the
+ * sentence can be asked as ({ kind, mcq, theory }, suitability.js).
  */
 export function candidateSentences(note) {
   // a subtopic split off before paperwork headings were recognised
@@ -185,6 +189,12 @@ export function candidateSentences(note) {
       section = String(b.text || "").replace(/:\s*$/, "");
       continue;
     }
+    // a short line of its own over a list ("Disadvantages of Loader",
+    // "Algorithm for pass 1 of a two-pass linker:") names that list too
+    if (b.type === "para" && b.text.split(/\s+/).length <= 10 && !/[.!?]["')]?$/.test(b.text.trim())) {
+      section = String(b.text || "").trim().replace(/:\s*$/, "");
+      continue;
+    }
     if (paperwork) continue;
     if (b.type !== "para" && b.type !== "item") continue; // tables are cells, not statements
     const listEntry = b.type === "item";
@@ -195,7 +205,8 @@ export function candidateSentences(note) {
       if (seen.has(text) || !isQuestionWorthy(text, { listEntry: listEntry && units.length === 1 })) continue;
       seen.add(text);
       const lead = text.match(/^([A-Z0-9(][^:.!?]{1,48}?):\s+\S/)?.[1];
-      out.push({ text, kind: b.type, section, lead: lead && lead.split(/\s+/).length <= 5 ? lead : null });
+      const suit = classifyText(text, { blockType: b.type, ordered: Boolean(b.ordered), section: section || "" });
+      out.push({ text, kind: b.type, section, lead: lead && lead.split(/\s+/).length <= 5 ? lead : null, suit });
     }
   }
   return out;
