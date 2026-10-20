@@ -332,11 +332,12 @@ and at least two raters.
 2. **Notes summarization and textbook linking** - PDF/DOCX/OCR ingestion
    itself is done (see "What works today" above); summarization and
    textbook-linked context are the remaining pieces.
-3. **Better graph, phase 2** - feeding students' link corrections back into
-   the linking rule. Cross-subject links by meaning (with the optional
-   embedding model), Louvain clustering, rule-based cross-subject
-   disambiguation and removing a wrong link are already in (see "What works
-   today" and CONTRIBUTING.md, Member 2).
+3. **Better graph, phase 2** - done, except feeding students' link
+   corrections back into the linking rule, which waits until students
+   correct links (none had by 15 Oct). Cross-subject links by meaning (with
+   the optional embedding model), Louvain clustering, rule-based
+   cross-subject disambiguation and removing a wrong link are in (see "What
+   works today" and CONTRIBUTING.md, Member 2).
 4. **Test timer** - done: the server keeps the time limit, refuses late
    answers and resumes an open attempt after a refresh (`docs/ASSESSMENT.md`).
 5. **Quality upgrades from the report** - distractor gating for the LLM path,

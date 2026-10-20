@@ -11,7 +11,9 @@
 //
 // It reads only graph_edges.json and subjects.json (to know whose link an
 // edge is), never notes.json, and prints numbers only: no ids, names,
-// titles or words. Nothing is written anywhere.
+// titles or words. Nothing is written anywhere. Run it after each backup:
+// CONTRIBUTING.md (Member 2, item 6) says how many removals would make a
+// refit of the linking rule worth trying.
 //
 // What it cannot show: a restored link looks exactly like one that was never
 // removed (restoring clears `correction` and `correctedAt`), and students

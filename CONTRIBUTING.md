@@ -84,19 +84,22 @@ member's section of §3.
    0.11, cross-subject rule kept. TextRank keywords (`graph/textrank-keywords`):
    tried on the same ratings and not kept - they did not help linking and
    were not clearly better keywords; keywords now count singular and plural
-   as one word instead (see §3). Member 4 relinks the live site once both
-   are deployed.
+   as one word instead (see §3). Live: Member 4 relinked the live site on
+   15 Oct (3 students: 180 links -> 193).
 5. ~~MiniLM sentence embeddings (backlog item 1).~~ Done
    (`graph/minilm-embeddings`): cross-subject pairs are linked by meaning
    where both notes have an embedding; same-subject links stay on TF-IDF (see
-   §3). Live only once Member 4 installs the model there, or runs the relink
-   where it is installed.
-6. ~~Louvain clustering~~ Done (`graph/louvain-clusters`): a cluster is now
-   a group of notes linked to each other more than to the rest of the
-   subject, not every chain of links (see §3). Next: feeding link
-   corrections back into the linking rule (`graph/correction-feedback`),
-   once Member 4 has counted the corrections on a backup
-   (`scripts/correction-counts.mjs`).
+   §3). Live: the model is off on the free plan (memory, PR #31); Member 4's
+   relink of 15 Oct, run where it is installed, gave every live topic an
+   embedding. Notes saved since are linked by TF-IDF until the next such
+   relink.
+6. ~~Louvain clustering, and feeding link corrections back into the
+   linking rule.~~ Louvain done (`graph/louvain-clusters`, PR #29): a
+   cluster is now a group of notes linked to each other more than to the
+   rest of the subject, not every chain of links. Feeding corrections back:
+   deferred on the evidence - no student had removed a link (live site, 15
+   Oct: 3 students, 180 links), so there is nothing to learn from yet. §3
+   says when to revisit it.
 
 **Member 3: tests and feedback**
 1. Merge `test-generation-and-feedback` without its `KnowledgeGraph.jsx`
@@ -662,6 +665,9 @@ tested):
    `graph/louvain-clusters`). Feeding corrections back into the linking rule
    is next; it starts by counting the corrections there are.
 
+   **Status (20 Oct): feeding corrections back deferred** - no student had
+   corrected a link (next-phase item 6).
+
 **Also built (ported from the Digital Second Brain prototype):** a per-note
 keyword map, `GET /api/graph/notes/:noteId/keyword-map`
 (`services/keywordMap.js`, rule-based). For each of a note's stored top
@@ -806,7 +812,10 @@ and were not clearly better (item 4).
        `linkEvaluation.test.mjs` 78 checks.
    - **After deploy** (Member 4): `npm run db:backup`, then
      `npm run relink -- --live --all` (dry run), then the same with `--yes`.
-     Run once, after both item 4 PRs are deployed.
+     Run once, after both item 4 PRs are deployed. **Done 15 Oct**, with item
+     5 deployed too: 3 students, 76 notes; keywords changed on 36 notes,
+     links 180 -> 193 (13 added, 12 updated, none dropped); a dry run
+     afterwards changed nothing.
 5. ~~**MiniLM sentence embeddings**~~ **Done** (14 Oct,
    `graph/minilm-embeddings`). Cross-subject links by meaning; same-subject
    links unchanged. Evidence: `docs/LINK_EVALUATION.md`, "Sentence
@@ -848,11 +857,13 @@ and were not clearly better (item 4).
      - Graph page: a cross-subject link made by meaning says "Close in
        meaning · shares ..."; a pair turned down by meaning says the notes are
        about different things.
-   - **Without the model** (a default install, CI, the live site today)
-     nothing changes. Member 4's call: install the model on the live server
-     (about 160 MB more memory), or run `npm run relink -- --live` from a
-     machine where it is installed so existing notes get their vectors; notes
-     saved after that are linked by TF-IDF until the next relink.
+   - **Without the model** (a default install, CI) nothing changes.
+   - **On the live site** the model is off: loaded, it took a big phone-photo
+     upload past the free plan's 512 MB (PR #31). Member 4 relinked on 15 Oct
+     from a machine with the model, so all 72 live topics have an embedding
+     (it made no cross-subject links).
+     Notes saved since are linked by TF-IDF until the next such relink
+     (DEPLOY.md).
    - **Tests**: `graphEngine.test.mjs` and `relink.test.mjs` run with a
      stand-in model (no download in CI) and with the model switched off
      otherwise, so local runs match CI.
@@ -894,15 +905,33 @@ and were not clearly better (item 4).
        weak link stay apart; the order of notes and links changes nothing on
        60 random graphs; a cluster its own links do not hold together is
        split), `linkEvaluation.test.mjs` 108.
-   - **Feeding corrections back into the linking rule**: next
-     (`graph/correction-feedback`). First, the evidence: Member 4 runs
-     `node scripts/correction-counts.mjs` (in `server/`) after
-     `npm run db:backup`. It reads only the backup's `graph_edges.json` and
-     `subjects.json` and prints numbers only: links removed by type,
-     similarity band, shared words and student. Two limits whatever the
-     counts: a restore clears the record, and students cannot add a link the
-     graph missed, so corrections only ever show wrong links, never missing
-     ones.
+   - **Feeding corrections back into the linking rule: deferred, on the
+     evidence** (20 Oct, `graph/correction-feedback`).
+     - **The evidence.** `node scripts/correction-counts.mjs` (in `server/`,
+       after `npm run db:backup`) counts the links students removed. It reads
+       only the backup's `graph_edges.json` and `subjects.json` and prints
+       numbers only. On the live site's backup of 15 Oct: 3 students, 180
+       links, all within a subject, and not one marked as removed. There is
+       nothing to fit, and nothing to check a fit against, so the linking
+       rule stays as the link evaluation set it. No removals does not show
+       the links are right: with 3 students, nobody may have looked.
+     - **When to revisit.** Run the counts script after each backup. A refit
+       is worth trying from about 50 same-subject removals by at least 5
+       students: roughly 10 for each thing a logistic regression would weigh
+       (similarity, shared words, meaning), with no single student deciding
+       it.
+     - **How, then.** A logistic regression of "removed" on a link's
+       features, each student's removals capped. It can only ever suggest a
+       stricter rule - students can remove a wrong link but cannot add one
+       the graph missed - and is adopted only if the choice rule on the
+       link evaluation's rated pairs agrees, then a relink. Never automatic,
+       so one student's corrections never change another's graph by
+       themselves. The ratings check a refit; they never train it. Before
+       that, make restores leave a record (today restoring a link erases
+       the removal) and keep a link's features at the time it was removed.
+     - **Not per student.** A few removals per student would be noise; a
+       removed link already stays removed for that student, through edits
+       and relinks.
 7. Optional, from the Digital Second Brain prototype: search across all
    subjects. The graph page's search only covers the current subject.
 
