@@ -12,8 +12,9 @@ router.use(requireAuth);
 // The student's correction loop (named in the deep-dive doc's route table):
 // "remove" marks a link as wrong, "restore" undoes that. The edge is flagged,
 // never deleted - see models/GraphEdge.js. Feeding corrections back into the
-// linking rule itself waits until there are corrections to learn from: none
-// on the live site by 15 Oct 2026 (CONTRIBUTING.md, Member 2, item 6).
+// linking rule is offline, from a backup: `npm run eval:corrections`
+// (evaluation/corrections.mjs) refits it once there are enough corrections -
+// none on the live site by 15 Oct 2026 (CONTRIBUTING.md, Member 2, item 6).
 router.post("/edges/:id/correct", async (req, res) => {
   const { action } = req.body || {};
   if (action !== "remove" && action !== "restore") {

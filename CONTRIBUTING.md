@@ -97,9 +97,11 @@ member's section of §3.
    linking rule.~~ Louvain done (`graph/louvain-clusters`, PR #29): a
    cluster is now a group of notes linked to each other more than to the
    rest of the subject, not every chain of links. Feeding corrections back:
-   deferred on the evidence - no student had removed a link (live site, 15
-   Oct: 3 students, 180 links), so there is nothing to learn from yet. §3
-   says when to revisit it.
+   the refit is built (`npm run eval:corrections`, `graph/correction-feedback`)
+   - a logistic regression on the links students removed, gated, capped per
+   student and checked on the rated pairs. No student had removed a link yet
+   (live site, 15 Oct: 3 students, 180 links), so it keeps the rule as it
+   is. See §3.
 
 **Member 3: tests and feedback**
 1. Merge `test-generation-and-feedback` without its `KnowledgeGraph.jsx`
@@ -665,8 +667,9 @@ tested):
    `graph/louvain-clusters`). Feeding corrections back into the linking rule
    is next; it starts by counting the corrections there are.
 
-   **Status (20 Oct): feeding corrections back deferred** - no student had
-   corrected a link (next-phase item 6).
+   **Status (20 Oct): done.** The refit is built (`npm run eval:corrections`,
+   next-phase item 6); no student had corrected a link yet, so it keeps the
+   rule as it is.
 
 **Also built (ported from the Digital Second Brain prototype):** a per-note
 keyword map, `GET /api/graph/notes/:noteId/keyword-map`
@@ -905,33 +908,48 @@ and were not clearly better (item 4).
        weak link stay apart; the order of notes and links changes nothing on
        60 random graphs; a cluster its own links do not hold together is
        split), `linkEvaluation.test.mjs` 108.
-   - **Feeding corrections back into the linking rule: deferred, on the
-     evidence** (20 Oct, `graph/correction-feedback`).
+   - ~~**Feeding corrections back into the linking rule**~~ **Done** (20
+     Oct, `graph/correction-feedback`): the refit is built; with no
+     corrections yet, it keeps the rule. Evidence and rule:
+     `docs/LINK_EVALUATION.md`, "Students' corrections".
      - **The evidence.** `node scripts/correction-counts.mjs` (in `server/`,
-       after `npm run db:backup`) counts the links students removed. It reads
-       only the backup's `graph_edges.json` and `subjects.json` and prints
-       numbers only. On the live site's backup of 15 Oct: 3 students, 180
-       links, all within a subject, and not one marked as removed. There is
-       nothing to fit, and nothing to check a fit against, so the linking
-       rule stays as the link evaluation set it. No removals does not show
-       the links are right: with 3 students, nobody may have looked.
-     - **When to revisit.** Run the counts script after each backup. A refit
-       is worth trying from about 50 same-subject removals by at least 5
-       students: roughly 10 for each thing a logistic regression would weigh
-       (similarity, shared words, meaning), with no single student deciding
-       it.
-     - **How, then.** A logistic regression of "removed" on a link's
-       features, each student's removals capped. It can only ever suggest a
-       stricter rule - students can remove a wrong link but cannot add one
-       the graph missed - and is adopted only if the choice rule on the
-       link evaluation's rated pairs agrees, then a relink. Never automatic,
-       so one student's corrections never change another's graph by
-       themselves. The ratings check a refit; they never train it. Before
-       that, make restores leave a record (today restoring a link erases
-       the removal) and keep a link's features at the time it was removed.
+       after `npm run db:backup`) counts the links students removed. On the
+       live site's backup of 15 Oct: 3 students, 180 links, all within a
+       subject, and not one marked as removed. No removals does not show the
+       links are right: with 3 students, nobody may have looked.
+     - **The refit.** `npm run eval:corrections -- [backup] --run <run on
+       TF-IDF> --run <run on embeddings>` (`evaluation/corrections.mjs`,
+       `evaluation/lib/corrections.js`), for each threshold of the rule:
+       1. only with at least 50 removed links from at least 5 students
+          (about 10 for each thing the regression weighs), each student's
+          removals counting for at most 10 - so no one student moves the
+          rule for everyone;
+       2. a logistic regression of "removed" on a link's similarity and
+          shared words, and the threshold it suggests: the lowest similarity
+          from which links are kept more often than removed. Only ever
+          stricter: students can remove a wrong link but cannot add one the
+          graph missed;
+       3. that threshold is checked on the link evaluation's rated pairs: it
+          must be as good as the best setting (the choice rule's paired
+          test) with precision of at least 50%. The ratings check a refit;
+          they never train it.
+       It prints a verdict and changes nothing: a suggestion goes into
+       `graphEngine.js` by hand, in a PR with the output, then a relink. It
+       reads only the backup's `graph_edges.json` and `subjects.json` and
+       prints numbers only.
+     - **Today** it reports "not enough to refit (0 of 50 removals, 0 of 5
+       students) - keep 0.11". Member 4 runs it after each backup. On made-up
+       removals that would raise the same-subject threshold to 0.14, run 1's
+       ratings refuse it (F1 0.40 against 0.68 for the best setting), so
+       corrections alone cannot move the rule.
+     - **Before trusting a refit**: restoring a link erases its removal, so
+       restores are not counted; and a removed link keeps the features of
+       its last relink, not of the moment it was removed.
      - **Not per student.** A few removals per student would be noise; a
        removed link already stays removed for that student, through edits
        and relinks.
+     - **Tests**: `server/test/corrections.test.mjs` (32 checks), part of
+       `npm test`.
 7. Optional, from the Digital Second Brain prototype: search across all
    subjects. The graph page's search only covers the current subject.
 

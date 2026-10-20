@@ -334,7 +334,8 @@ and at least two raters.
    textbook-linked context are the remaining pieces.
 3. **Better graph, phase 2** - done, except feeding students' link
    corrections back into the linking rule, which waits until students
-   correct links (none had by 15 Oct). Cross-subject links by meaning (with
+   correct links (none had by 15 Oct; `npm run eval:corrections` refits the
+   rule once they have). Cross-subject links by meaning (with
    the optional embedding model), Louvain clustering, rule-based
    cross-subject disambiguation and removing a wrong link are in (see "What
    works today" and CONTRIBUTING.md, Member 2).

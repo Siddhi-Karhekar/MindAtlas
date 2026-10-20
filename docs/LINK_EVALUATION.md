@@ -16,7 +16,9 @@ not kept: "Keywords and TextRank", below. A second run, sampled and rated on
 sentence-embedding similarity, made cross-subject links by meaning:
 "Sentence embeddings", below. Both runs' ratings were then read as labels for
 the graph's clusters, which moved from connected components to Louvain
-community detection: "Clusters", below.
+community detection: "Clusters", below. Links students remove as wrong can
+refit the rule from a backup, checked on the same ratings: "Students'
+corrections", below.
 
 ## What is measured
 
@@ -531,6 +533,55 @@ an arbitrary reason.
 not clusters, and a student may draw a topic area wider or narrower than a
 link. Each run has one AI rater, and two subjects carry most of the pairs.
 
+## Students' corrections (20 Oct 2026)
+
+Member 2's next-phase item 6, second half: feeding the links students remove
+as wrong (`POST /api/graph/edges/:id/correct`) back into the linking rule.
+
+```
+npm run eval:corrections -- [backup folder] --run D:\links-run1 --run D:\links-run2
+```
+
+It reads a backup `npm run db:backup` wrote (only `graph_edges.json` and
+`subjects.json`, never `notes.json`), prints numbers only and writes nothing.
+For each threshold of the rule - same-subject links, cross-subject links by
+meaning, cross-subject links by TF-IDF:
+
+1. **Enough corrections?** At least 50 removed links from at least 5
+   students, about 10 for each thing the regression weighs. Each student's
+   removals count for at most 10 together, so one student who removes a lot
+   cannot move the rule for everyone. Otherwise the threshold is kept and
+   nothing is fitted.
+2. **The refit.** A weighted logistic regression of "removed" on a link's
+   similarity and shared words (with a light ridge penalty, so a perfect
+   split by similarity still gives an answer). The threshold it suggests is
+   the lowest similarity, in steps of 0.01, from which links are kept more
+   often than removed, for the median number of shared words. Only ever
+   stricter: students can remove a wrong link but cannot add one the graph
+   missed, so corrections cannot show that the rule is too strict.
+3. **The ratings check it.** A stricter threshold is suggested only if, on
+   the rated pairs of a run on the same similarity (`--run`: run 1 for
+   TF-IDF, run 2 for links by meaning), it links at least 10 rated pairs,
+   its F1 is not clearly below the best setting's (the paired test above)
+   and its precision is at least 50%. The corrections may move a threshold
+   only within what the ratings consider as good as the best; the ratings
+   never train the refit.
+
+Its verdict is a suggestion: a threshold goes into `graphEngine.js` by hand,
+in a PR with the output, then a relink.
+
+**Result: no corrections yet.** On the live site's backup of 15 Oct, 3
+students had 180 links, all within a subject, and none was marked as removed:
+"not enough to refit (0 of 50 removals, 0 of 5 students) - keep 0.11". None
+removed does not mean the links are right; with 3 students, nobody may have
+looked. As a check of the safeguard: on made-up removals that put the
+same-subject threshold at 0.14, run 1's ratings refuse it (F1 0.40 against
+0.68 for the best setting).
+
+**Limits.** Restoring a link erases its removal, so restores are not
+counted; a removed link keeps the features of its last relink, not of the
+moment it was removed; and links a student never looked at count as kept.
+
 ## What to report
 
 - The notes: subjects, files, topics, formats and where they came from.
@@ -575,11 +626,15 @@ server/src/services/noteEmbedding.js   a topic's vector; attaching stored ones f
 server/src/models/NoteEmbedding.js     the stored vectors
 server/evaluation/
   links.mjs          generate, score and clusters
+  corrections.mjs    refit the rule from students' corrections in a backup
   lib/links.js       topics, pairs, strata, labels, weighted metrics, the choice
   lib/clusters.js    clusters: rated pairs as labels, the choice, sizes, stability
+  lib/corrections.js reading a backup, the gate, the regression, the check
   lib/ingest.js      files -> notes, the way the app builds them
   lib/stats.js       Wilson intervals, kappa, CSV
 server/test/linkEvaluation.test.mjs
+server/test/corrections.test.mjs
+server/scripts/correction-counts.mjs   counts of students' corrections in a backup
 ```
 
 The output folder holds your notes' text and the raters' names: do not commit

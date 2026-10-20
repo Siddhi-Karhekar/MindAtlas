@@ -18,12 +18,12 @@
 // What it cannot show: a restored link looks exactly like one that was never
 // removed (restoring clears `correction` and `correctedAt`), and students
 // have no way to add a link the graph missed, so only wrong links are ever
-// reported, never missing ones.
+// reported, never missing ones. Once there are enough removals, `npm run
+// eval:corrections` refits the linking rule on them.
 
-import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
-import { BSON } from "mongodb";
+import { isRemoved, newestBackup, readBackup, typeOf } from "../evaluation/lib/corrections.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const BACKUPS = path.resolve(HERE, "../backups");
@@ -38,19 +38,10 @@ function parseArgs(argv) {
     } else if (argv[i].startsWith("--")) throw new Error(`unknown option ${argv[i]}`);
     else opts.dir = argv[i];
   }
-  if (!opts.dir) {
-    const all = fs.existsSync(BACKUPS) ? fs.readdirSync(BACKUPS).filter((d) => d.startsWith("mindatlas-")).sort() : [];
-    if (!all.length) throw new Error(`no backup folder given and none in ${BACKUPS} - run npm run db:backup first`);
-    opts.dir = path.join(BACKUPS, all.at(-1));
-  }
+  opts.dir ??= newestBackup(BACKUPS);
+  if (!opts.dir) throw new Error(`no backup folder given and none in ${BACKUPS} - run npm run db:backup first`);
   return opts;
 }
-
-// a backup's collection, or [] when the backup has none
-const readCollection = (dir, name) => {
-  const file = path.join(dir, `${name}.json`);
-  return fs.existsSync(file) ? BSON.EJSON.parse(fs.readFileSync(file, "utf8")) : [];
-};
 
 const median = (xs) => {
   if (!xs.length) return null;
@@ -93,21 +84,15 @@ function byBand(edges, value, bands) {
   });
 }
 
-const isRemoved = (e) => e.correction === "removed";
-const typeOf = (e) => e.edgeType || "same-subject"; // rows from before cross-subject linking have no type
 const num = (x) => (x === null || x === undefined ? null : Number(x));
 
 try {
   const opts = parseArgs(process.argv.slice(2));
-  const manifestFile = path.join(opts.dir, "manifest.json");
-  const manifest = fs.existsSync(manifestFile) ? JSON.parse(fs.readFileSync(manifestFile, "utf8")) : {};
-  const ownerOf = new Map(readCollection(opts.dir, "subjects").map((s) => [String(s._id), String(s.ownerId)]));
-  const all = readCollection(opts.dir, "graph_edges").map((e) => ({ ...e, owner: ownerOf.get(String(e.sourceSubjectId ?? e.subjectId)) ?? null }));
-  const edges = all.filter((e) => !opts.exclude.has(e.owner));
+  const { takenAt, edges, excluded } = readBackup(opts.dir, { exclude: opts.exclude });
   const removed = edges.filter(isRemoved);
 
-  console.log(`Backup: ${path.basename(opts.dir)}${manifest.takenAt ? ` (taken ${manifest.takenAt})` : ""}`);
-  if (opts.exclude.size) console.log(`Left out: ${all.length - edges.length} edges of ${opts.exclude.size} excluded account(s)`);
+  console.log(`Backup: ${path.basename(opts.dir)}${takenAt ? ` (taken ${takenAt})` : ""}`);
+  if (opts.exclude.size) console.log(`Left out: ${excluded} edges of ${opts.exclude.size} excluded account(s)`);
   const unknown = edges.filter((e) => e.owner === null).length;
   if (unknown) console.log(`Edges whose subject is not in the backup (owner unknown): ${unknown}`);
 
