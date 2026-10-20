@@ -20,14 +20,16 @@ services:
     plan: free
     region: singapore          # closest Render region to the Atlas cluster (AWS Mumbai)
     rootDir: server
-    # The optional MiniLM model (server/semantic/) is installed but switched
-    # OFF on the free plan (SEMANTIC_MODEL below): loaded, it adds ~130 MB,
-    # and an 8.9 MB phone photo then peaked at ~576 MB during OCR - over the
-    # 512 MB limit, so Render killed the API mid-upload. Links by meaning are
-    # made instead by `npm run relink -- --live --all --yes` from a machine
-    # with the model (see DEPLOY.md). On a plan with more memory, delete
-    # SEMANTIC_MODEL to turn it back on.
-    buildCommand: npm ci && npm run semantic:install
+    # The optional MiniLM model (server/semantic/) is NOT installed on the
+    # free plan. Loaded, it adds ~130 MB, and an 8.9 MB phone photo then
+    # peaked at ~576 MB during OCR - over the 512 MB limit, so Render killed
+    # the API mid-upload. Installing it anyway would only slow every deploy
+    # and make it fail whenever the model download fails. Links by meaning
+    # are made instead by `npm run relink -- --live --all --yes` from a
+    # machine with the model (see DEPLOY.md). On a plan with more memory:
+    #   buildCommand: npm ci && (npm run semantic:install || echo "MiniLM not installed - links by meaning off")
+    # and delete SEMANTIC_MODEL below.
+    buildCommand: npm ci
     startCommand: npm start
     healthCheckPath: /api/health
     autoDeploy: true
@@ -39,7 +41,7 @@ services:
       - key: TRUST_PROXY
         value: "1"
       - key: SEMANTIC_MODEL
-        value: "off"           # see the build command comment: memory on the free plan
+        value: "off"           # belt and braces: the model is not installed either (see buildCommand)
       - key: CORS_ORIGIN
         value: https://mindatlas.onrender.com   # the static site below - no trailing slash
       - key: JWT_SECRET
