@@ -56,7 +56,7 @@ Total cost: ₹0.
 | Name | `mindatlas-api` |
 | Region | Singapore (closest to the Mumbai database) |
 | Branch / Root Directory | `main` / `server` |
-| Build / Start Command | `npm ci && npm run semantic:install` / `npm start` (the second part installs the optional MiniLM model; it stays off while `SEMANTIC_MODEL=off`) |
+| Build / Start Command | `npm ci` / `npm start` (the optional MiniLM model is not installed on the free plan - see `SEMANTIC_MODEL` below) |
 | Health Check Path | `/api/health` |
 | Instance type | Free |
 
