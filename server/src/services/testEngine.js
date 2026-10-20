@@ -744,10 +744,25 @@ function askableTerms(study) {
   return study.askable;
 }
 
+// The terms a blank may hide: the askable ones that are terms by their form or
+// the author's marking (isStrongTerm), or that the note defines. Without the
+// meaning model askableTerms already holds only these. With it, a single word
+// that is merely on topic ("deadlock", "strategy", "resource") is askable too -
+// that is right for a theory question - but as a blank's answer it tests a
+// word, and sitting at the top of the model's ranking such words took every
+// blank in a note whose real terms are phrases ("deadlock detection", "safe
+// state"), so the test had no multi-word answer at all.
+function blankTerms(study) {
+  if (study.blankable) return study.blankable;
+  const defined = (t) => sentencesAbout(study, t).some((s) => definesTerm(s.text, t.term));
+  study.blankable = study.semantic ? askableTerms(study).filter((t) => isStrongTerm(t) || defined(t)) : askableTerms(study);
+  return study.blankable;
+}
+
 // Same banding as the keyword version: the note's most central terms are the
 // easy questions, its least central the hard ones.
 function termForTier(study, tier, i) {
-  const terms = askableTerms(study);
+  const terms = blankTerms(study);
   const n = terms.length;
   if (n === 0) return null;
   const band = Math.max(1, Math.ceil(n / 3));
@@ -1056,7 +1071,7 @@ function generateMcqFallback(notes, mcqCount, masteryMap, studies, taken = new S
     // a note whose study view has no askable term (a title page, a list of
     // worked numbers) gets no question: a blank on a word that merely recurs
     // there tests nothing. Single keywords are only for a note with no study view.
-    if (study && askableTerms(study).length === 0) continue;
+    if (study && blankTerms(study).length === 0) continue;
     if (!study) {
       const draft = legacyClozeDraft({ note, notes, wanted, startIndex, used, taken });
       if (draft) drafts.push(draft);

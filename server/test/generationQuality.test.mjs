@@ -23,6 +23,7 @@ import { keyTermsFor, termPattern } from "../src/services/keyTerms.js";
 import { blocksFromPlainText, normalizeContent } from "../src/services/documentStructure.js";
 import { withContent } from "../src/services/noteView.js";
 import { computeTfidf } from "../src/services/tfidf.js";
+import { setEmbedderForTests } from "../src/services/embeddings.js";
 import { describeGeneration, generationBadge } from "../../client/src/lib/generation.js";
 import { layoutContent, markText } from "../../client/src/lib/noteFormat.js";
 import { fileProblem } from "../../client/src/lib/uploads.js";
@@ -41,6 +42,14 @@ const noteOf = (title, rawText, id) => ({
   keywords: computeTfidf(rawText, []).keywords,
   content: normalizeContent(blocksFromPlainText(rawText)),
 });
+
+// The optional meaning model (embeddings.js, `npm run semantic:install`) is
+// installed on some machines and not on others (nor in CI, nor on Render), and
+// it changes how terms are ranked. These checks must give the same result
+// everywhere, so they run on the rules - here and in the servers started
+// below, which inherit this - and the model's code path is checked with a
+// fixed stand-in (section B), never with whatever happens to be installed.
+process.env.SEMANTIC_MODEL = "off";
 
 // keep the server log quiet but inspectable
 const logged = [];
@@ -121,6 +130,40 @@ check("fill-in-the-blank questions with multi-word answers are made", multi.leng
 check("a word too broad to test anything is never a blank's answer ('system', 'data')", !dl.accepted.some((q) => /_____/.test(q.prompt) && /^(?:system|data|information|item)s?$/i.test(q.answerKey)));
 check("no blank hides only part of a multi-word term ('Deadlock _____', '_____ detection')", halves.length === 0, halves.map((q) => q.prompt).join(" | "));
 check("every blank's answer is a whole key term (one to four words)", dl.accepted.filter((q) => /_____/.test(q.prompt)).every((q) => q.answerKey.split(/\s+/).length <= 4));
+
+// The same with the meaning model's code path, through a fixed stand-in (a
+// bag of words: the same vectors on every machine). With the model, single
+// words that are merely on topic ("deadlock", "strategy") rank high; they may
+// be theory topics, but a blank must still hide a real term, and the
+// phrases must still get their questions.
+{
+  const DIM = 256;
+  const hash = (w) => [...w].reduce((h, c) => (h * 31 + c.charCodeAt(0)) >>> 0, 0) % DIM;
+  const STOP = new Set("the and that which with for are this from its can not one all".split(" "));
+  const standIn = async (texts) =>
+    texts.map((t) => {
+      const v = new Array(DIM).fill(0);
+      for (const w of String(t).toLowerCase().match(/[a-z]{3,}/g) || []) if (!STOP.has(w)) v[hash(w.replace(/s$/, ""))] += 1;
+      const n = Math.hypot(...v) || 1;
+      return v.map((x) => x / n);
+    });
+  process.env.SEMANTIC_MODEL = "on";
+  setEmbedderForTests(standIn);
+  const withModel = [];
+  let rankedBy = "";
+  for (let run = 0; run < 6; run++) {
+    const out = await generateQuestions([DEADLOCK], { mcqCount: 8, theoryCount: 0, marksPerQuestion: 1 });
+    rankedBy = out.rankedBy;
+    withModel.push(...out.accepted);
+  }
+  setEmbedderForTests(null);
+  process.env.SEMANTIC_MODEL = "off";
+  const blanks = withModel.filter((q) => q.type === "mcq" && /_____/.test(q.prompt));
+  const keys = [...new Set(blanks.map((q) => q.answerKey))];
+  check("with the meaning model: the stand-in was used", rankedBy === "embeddings", rankedBy);
+  check("with the meaning model: multi-word answers are still made", blanks.some((q) => q.answerKey.split(/\s+/).length > 1), keys.join(", "));
+  check("with the meaning model: no blank hides a word that is merely on topic ('strategy', 'technique')", !blanks.some((q) => /^(?:strategy|technique|condition|order|request)s?$/i.test(q.answerKey)), keys.join(", "));
+}
 check("term matching respects word boundaries: 'net' is not found in 'network'", !termPattern("net", "i").test("a network of hosts") && termPattern("net", "i").test("the .net runtime is a net"));
 check("  ...and a plural is the same term ('deadlock detections')", termPattern("deadlock detection", "i").test("several deadlock detections"));
 

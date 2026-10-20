@@ -349,6 +349,19 @@ Scheduling
 
 Round robin scheduling gives each process a fixed time quantum in turn. Shortest job first scheduling picks the process with the smallest next CPU burst. Priority scheduling can cause starvation, which aging prevents by raising the priority of waiting processes. Context switching saves the state of one process and loads the state of another.`;
 
+// A second unit, for "a new test brings new questions" (see there).
+const MORE_NOTE = `File Systems
+
+A file is a named collection of related information stored on secondary storage. A directory is a structure that holds the names and locations of files. Contiguous allocation stores each file in one run of adjacent disk blocks. Linked allocation stores a file as a chain of blocks, each holding a pointer to the next. Indexed allocation keeps all of a file's block addresses together in an index block.
+
+Disk Scheduling
+
+The seek time is the time the disk arm takes to move to the track that holds the data. First come first served disk scheduling serves requests in the order they arrive. Shortest seek time first scheduling serves the request closest to the current head position. The elevator algorithm moves the head in one direction, serving requests on the way, and then reverses.
+
+Virtual Memory
+
+Virtual memory lets a process run when only part of it is in physical memory. Demand paging loads a page into memory only when it is first used. A page fault is the trap raised when a process uses a page that is not in memory. Thrashing is a state in which the system spends more time swapping pages than running processes.`;
+
 try {
   await startServer();
   const call = async (p, { method = "GET", body, token } = {}) => {
@@ -557,15 +570,32 @@ try {
 
   console.log("\n=== A new test brings new questions ===");
   const firstPrompts = pool.map((x) => x.prompt);
+  // NOTE alone supports about eleven distinct questions, and the first test's
+  // pool has already used eight of them, so a second test on it alone has to
+  // repeat some - how many (1 to 3) depends on which question forms the random
+  // options happen to build. That is the right behaviour (repeats are used
+  // only to reach the length asked for, and reported), so it is checked as
+  // such; whether a new test brings new questions is checked on notes that
+  // have enough left in them.
+  const sameNotes = await call(`/subjects/${subject._id}/tests`, {
+    method: "POST",
+    token: me,
+    body: { title: "Same notes", noteIds, mcqCount: 3, theoryCount: 2, marksPerQuestion: 1, durationMinutes: 10 },
+  });
+  const sameNotesPool = (await call(`/tests/${sameNotes.test._id}`, { token: me })).questions.filter((x) => x.status === "accepted");
+  const repeatedSame = sameNotesPool.filter((x) => firstPrompts.some((p) => sameQuestion(p, x.prompt))).length;
+  check("the second test reports how many earlier questions it had to use again", typeof sameNotes.repeatsUsed === "number");
+  check("...every repeat is reported, and used only to reach the length asked for", repeatedSame <= sameNotes.repeatsUsed && sameNotes.repeatsUsed <= 5, `${repeatedSame} of ${sameNotesPool.length} repeated, repeatsUsed ${sameNotes.repeatsUsed}`);
+  const more = await call(`/subjects/${subject._id}/notes`, { method: "POST", token: me, body: { title: "OS Unit 4", content: MORE_NOTE } });
+  const firstAndSame = [...firstPrompts, ...sameNotesPool.map((x) => x.prompt)];
   const second = await call(`/subjects/${subject._id}/tests`, {
     method: "POST",
     token: me,
-    body: { title: "Second", noteIds, mcqCount: 3, theoryCount: 2, marksPerQuestion: 1, durationMinutes: 10 },
+    body: { title: "Second", noteIds: [...noteIds, more.note._id], mcqCount: 3, theoryCount: 2, marksPerQuestion: 1, durationMinutes: 10 },
   });
   const secondPool = (await call(`/tests/${second.test._id}`, { token: me })).questions.filter((x) => x.status === "accepted");
-  const repeated = secondPool.filter((x) => firstPrompts.some((p) => sameQuestion(p, x.prompt))).length;
-  check("the second test reports how many earlier questions it had to use again", typeof second.repeatsUsed === "number");
-  check("most of the second test is new", repeated <= second.repeatsUsed && repeated < secondPool.length / 2, `${repeated} of ${secondPool.length} repeated, repeatsUsed ${second.repeatsUsed}`);
+  const repeated = secondPool.filter((x) => firstAndSame.some((p) => sameQuestion(p, x.prompt))).length;
+  check("with notes that have new material left, a new test asks nothing from the earlier ones", repeated === 0 && second.repeatsUsed === 0, `${repeated} of ${secondPool.length} repeated, repeatsUsed ${second.repeatsUsed}`);
 
   console.log("\n=== Time runs out ===");
   const timed = await call(`/subjects/${subject._id}/tests`, {
