@@ -89,3 +89,17 @@ export function uploadLimits() {
     ],
   };
 }
+
+// ---------------------------------------------------------------------------
+// Pictures attached to theory answers (handwritten working, formulas,
+// diagrams). The browser shrinks a photo before sending it (longest side
+// 1600 px, JPEG), so a page of handwriting is usually 200-600 KB; the limit
+// is for files sent some other way.
+// ---------------------------------------------------------------------------
+export const answerImageLimits = () => ({
+  maxPerAnswer: 3, // also the most a vision model is sent at once (Groq: 3)
+  maxMb: Math.min(10, envNumber("ANSWER_IMAGE_MAX_MB", 5)),
+  // every answer picture a student has, across all tests: a ceiling on storage
+  maxPerStudent: envNumber("ANSWER_IMAGES_MAX_PER_STUDENT", 300),
+  types: ["image/jpeg", "image/png", "image/webp"],
+});

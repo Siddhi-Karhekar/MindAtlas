@@ -111,6 +111,8 @@ export async function deleteUserAndData(userId) {
   removed.note_embeddings = await col("note_embeddings").deleteMany({ ownerId: String(userId) });
   removed.questions = testIds.length ? await col("questions").deleteMany({ testId: testIds }) : 0;
   removed.responses = attemptIds.length ? await col("responses").deleteMany({ attemptId: attemptIds }) : 0;
+  // pictures attached to theory answers, and their bytes
+  for (const name of ["answer_image_data", "answer_images"]) removed[name] = await col(name).deleteMany({ ownerId: userId });
   for (const name of ["feedback_reports", "question_reports", "attempts", "tests", "mastery", "notes", "subjects"]) {
     removed[name] = await col(name).deleteMany({ ownerId: userId });
   }

@@ -177,6 +177,7 @@ const uploadLimit = rateLimit({
 });
 app.post("/api/subjects/:id/notes", uploadLimit);
 app.post("/api/subjects/:id/notes/preview", uploadLimit);
+app.post("/api/attempts/:id/questions/:questionId/images", uploadLimit);
 
 app.use("/api/auth", authRoutes);
 app.use("/api/admin", adminRoutes);

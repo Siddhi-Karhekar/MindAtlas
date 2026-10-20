@@ -220,6 +220,18 @@ export const api = {
     request(`/attempts/${attemptId}/submit`, { method: "POST", body: timedOut ? { timedOut: true } : undefined, timeoutMs: LONG_WAIT_MS.submit }),
   getFeedback: (attemptId) => request(`/attempts/${attemptId}/feedback`),
   getReview: (attemptId) => request(`/attempts/${attemptId}/review`),
+  // Pictures on a theory answer (handwritten working, formulas, diagrams):
+  // added one at a time while the question is the one being answered
+  uploadAnswerImage: (attemptId, questionId, blob, name = "answer.jpg") => {
+    const form = new FormData();
+    form.append("image", blob, name);
+    return request(`/attempts/${attemptId}/questions/${questionId}/images`, { method: "POST", body: form, isForm: true, timeoutMs: 60_000 });
+  },
+  listAnswerImages: (attemptId, questionId) => request(`/attempts/${attemptId}/questions/${questionId}/images`),
+  deleteAnswerImage: (attemptId, imageId) => request(`/attempts/${attemptId}/images/${imageId}`, { method: "DELETE" }),
+  // the picture itself, fetched with the session (an <img src> to the API
+  // would not carry it everywhere), as a Blob for an object URL
+  answerImageBlob: async (imageId) => (await download(`/answer-images/${imageId}`)).blob,
   remarkAnswer: (attemptId, questionId, reason) =>
     request(`/attempts/${attemptId}/questions/${questionId}/remark`, { method: "POST", body: { reason }, timeoutMs: 90_000 }),
   reportQuestion: (questionId, { reason, comment, attemptId }) =>

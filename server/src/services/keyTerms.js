@@ -103,6 +103,8 @@ const VERB_FORMS = new Set([
 const BREAK = new Set([...FUNCTION_WORDS, ...VERB_FORMS]);
 /** A word that can be part of a term (not a function word or a common verb). */
 export const isContentWord = (w) => /^[A-Za-z][A-Za-z0-9-]*$/.test(w) && !BREAK.has(w.toLowerCase());
+/** A word the lists know as a verb form ("takes", "is", "combined") - for telling a statement from a fragment. */
+export const isVerbForm = (w) => VERB_FORMS.has(String(w).toLowerCase());
 
 // ---------------------------------------------------------------------------
 // Text -> runs of content words

@@ -1,4 +1,5 @@
 import { getCollection } from "../db/index.js";
+import { deleteAnswerImagesByAttempts } from "./AnswerImage.js";
 
 const subjects = () => getCollection("subjects");
 
@@ -28,6 +29,8 @@ export async function deleteSubjectAndData(id, ownerId) {
   removed.note_embeddings = noteIds.length ? await col("note_embeddings").deleteMany({ noteId: noteIds.map(String) }) : 0;
   removed.questions = testIds.length ? await col("questions").deleteMany({ testId: testIds }) : 0;
   removed.responses = attemptIds.length ? await col("responses").deleteMany({ attemptId: attemptIds }) : 0;
+  // pictures attached to theory answers in those attempts
+  removed.answer_images = await deleteAnswerImagesByAttempts(attemptIds);
   for (const name of ["feedback_reports", "question_reports", "attempts", "tests", "mastery", "notes"]) {
     removed[name] = await col(name).deleteMany({ subjectId: id, ownerId });
   }
