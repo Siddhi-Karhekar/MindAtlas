@@ -1874,6 +1874,21 @@ export function mcqSourceProblem(excerpt, index = { yes: [], no: [] }) {
 }
 
 /**
+ * Whether a question repeats one the student reported as wrong, unclear or not
+ * from the notes: the same question in other words, or (for an MCQ) the same
+ * answer drawn from the same passage of the notes.
+ */
+export function isReported(question, blocked = []) {
+  if (!blocked.length) return false;
+  const excerpt = normalize(question.supportingExcerpt);
+  return blocked.some(
+    (b) =>
+      sameQuestion(b.prompt, question.prompt) ||
+      (b.answer && question.answerKey && normalize(b.answer) === normalize(question.answerKey) && excerpt && normalize(b.excerpt) === excerpt)
+  );
+}
+
+/**
  * Who wrote the questions a student gets, for one question type:
  *   "llm"                  every question by the AI
  *   "mixed"                some by the AI, the rest by the rules
@@ -1892,7 +1907,7 @@ export function generationStatus(requested, chosen) {
 
 export async function generateQuestions(
   notes,
-  { mcqCount = 0, theoryCount = 0, marksPerQuestion, theoryMarks = marksPerQuestion, masteryMap = new Map(), avoid = [], repeatRank = null, recentConcepts = null, conceptHistory = null, mcqTarget = mcqCount, theoryTarget = theoryCount }
+  { mcqCount = 0, theoryCount = 0, marksPerQuestion, theoryMarks = marksPerQuestion, masteryMap = new Map(), avoid = [], repeatRank = null, recentConcepts = null, conceptHistory = null, mcqTarget = mcqCount, theoryTarget = theoryCount, blocked = [] }
 ) {
   const started = Date.now();
   const contextText = buildContext(notes);
@@ -1970,6 +1985,13 @@ export async function generateQuestions(
       const check = validateQuestion(item, { type, contextText });
       if (!check.ok) {
         discarded.push({ ...item, status: "discarded", discardReason: check.reasons.join(",") });
+        if (item.generatedBy === "llm") llmRejected++;
+        continue;
+      }
+      // a question the student reported as broken, asked again (reworded, or
+      // the same answer from the same passage): left out
+      if (isReported(check.question, blocked)) {
+        discarded.push({ ...item, status: "discarded", discardReason: "reported" });
         if (item.generatedBy === "llm") llmRejected++;
         continue;
       }

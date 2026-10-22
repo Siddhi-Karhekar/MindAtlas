@@ -3,8 +3,11 @@ import { getCollection } from "../db/index.js";
 // "Report this question": a student says a question is wrong, unclear, not
 // from their notes or a repeat. One report per student per question (a second
 // one replaces the first). The question is then left out of that student's
-// future attempts at the test, and the reports are kept for the team to read
-// when judging the generator (docs/EVALUATION.md).
+// future attempts at the test; when the reason says it is broken (wrong
+// answer, unclear, not from the notes) it is also never generated for them
+// again, in any later test on those notes (routes/tests.js, testEngine
+// isReported). The reports are kept for the team to read when judging the
+// generator (docs/EVALUATION.md).
 const reports = () => getCollection("question_reports");
 
 export const REPORT_REASONS = ["wrong-answer", "unclear", "not-in-notes", "repeated", "other"];

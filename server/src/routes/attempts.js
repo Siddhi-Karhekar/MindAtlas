@@ -583,6 +583,7 @@ async function closeAttempt(attempt, ownerId, { closedBy = "student" } = {}) {
           model: u.model,
           needsReview: u.needsReview,
           imageReading: u.imageReading || null,
+          fallbackReason: u.fallbackReason || null,
         })
       )
     );

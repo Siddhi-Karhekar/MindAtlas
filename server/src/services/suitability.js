@@ -68,7 +68,10 @@ export const hasFormula = (text) => LATEX.test(text) || MATH_SYMBOL.test(text) |
 const CODE = new RegExp(
   [
     "[{};]\\s*$", "\\b(?:for|while|if|switch)\\s*\\(", "\\b\\w+\\([^)]*\\)\\s*;", "#include\\b", "\\bprintf\\s*\\(", "\\bSystem\\.out\\.",
-    "\\bdef\\s+\\w+\\s*\\(", "\\breturn\\s+[\\w(]", "=>", "==|!=|\\+\\+|--(?=\\s*[;)])|&&|\\|\\|", "\\b(?:int|void|char|float|double|public|static)\\s+\\w+\\s*[=(;,)]",
+    // operators only between operands ("a == b", "i++", "x && y"): prose that
+    // names an operator ("The == operator compares ...") or a language ("C++")
+    // is a statement about code, not code
+    "\\bdef\\s+\\w+\\s*\\(", "\\breturn\\s+[\\w(]", "=>", "\\b(?!(?:[Tt]he|[Aa]n?|and|or)\\s*(?:==|!=|&&|\\|\\|))[\\w)\\]]+\\s*(?:==|!=|&&|\\|\\|)\\s*(?!operators?\\b|signs?\\b|symbols?\\b)[\\w(!-]|\\b[a-z_]\\w*(?:\\+\\+|--(?=\\s*[;)]))|\\+\\+[a-z_]", "\\b(?:int|void|char|float|double|public|static)\\s+\\w+\\s*[=(;,)]",
     "`[^`]+`", "^\\s*(?:MOV|ADD|SUB|LOAD|STORE|JMP|LDA|STA|START|END|USING|BALR|DC|DS)\\s+\\S",
   ].join("|"),
   "m"
@@ -84,7 +87,11 @@ const IMPERATIVE = /^(?:read|write|assign|build|create|compute|calculate|set|ini
 // characteristics or types names concepts - "Fault tolerance: the system keeps
 // working when ..." - and stays MCQ material.)
 const POINTS_SECTION = /\b(?:advantages?|disadvantages?|merits?|demerits?|limitations?|drawbacks?|benefits?|pros|cons|issues|problems)\b/i;
-const DERIVATION = /\b(?:hence|thus we get|we get|substitut(?:e|ing)|proof|prove[sd]?|deriv(?:e|ed|ation)|therefore|it follows that|q\.?e\.?d)\b/i;
+// Words that only occur in working: substituting, "we get", a proof. ("hence",
+// "therefore" and "thus" on their own also open ordinary conclusions -
+// "Therefore deadlock cannot occur when ..." - which are facts; a step of real
+// working carries a formula as well, and rule 4 (formula) catches it first.)
+const DERIVATION = /\b(?:thus we get|we get|substitut(?:e|ing)|proof|prove[sd]?|deriv(?:e|ation)|derived(?!\s+from)|it follows that|q\.?e\.?d)\b/i;
 
 // The verb a statement needs: an auxiliary, or a verb form the word lists know.
 // Verbs the lists do not know are found by their place: an -s/-ed word after a
@@ -114,6 +121,29 @@ function isFragmentPoint(text) {
 // The text a definition opens with: "A loader is a ...", "X refers to ...".
 const DEFINES = /^(?:an?\s+|the\s+)?[A-Za-z][\w'/-]*(?:\s+[A-Za-z][\w'/-]*){0,5}\s+(?:\([^)]*\)\s+)?(?:is|are)\s+(?:an?|the|one|any|defined|called|known)\b|\b(?:refers to|is defined as|is known as|is called|are called|is termed|means)\b/i;
 
+// Many imperative verbs are also nouns that open a term: "Load balancing
+// distributes requests ...", "Link state routing floods ...", "Update anomaly
+// occurs when ...". Such an entry is a statement: its second word is a
+// lower-case content word (not "the", a number or a symbol such as LOCCTR) and
+// a verb follows within the next two words. A step ("Read the next record",
+// "Set LOCCTR to 0", "Store values in registers") has its object straight
+// after the verb instead.
+const OBJECT_START = /^(?:the|a|an|its|their|this|these|those|each|every|all|some|any|it|them|to|in|on|into|from|with|at|as|for|by|of|and|or|up|out|over|until|next|first|last)$/;
+function nounLedStatement(text) {
+  const w = String(text).trim().split(/\s+/).map((x) => x.toLowerCase().replace(/^[^a-z]+|[^a-z'-]+$/g, ""));
+  if (w.length < 4 || !/^[a-z][a-z-]+$/.test(w[1]) || OBJECT_START.test(w[1])) return false;
+  // the part of the sentence's subject that is the term itself: up to two more content words
+  for (const x of w.slice(2, 4)) {
+    if (!x || OBJECT_START.test(x)) return false;
+    if (isVerbForm(x)) return true;
+    // an -s / -es verb the word lists do not know ("floods", "distributes"),
+    // with the rest of the sentence carrying an article or a quantifier
+    if (/^[a-z]{3,}(?:s|es)$/.test(x) && !/(?:ss|us|is)$/.test(x) && DETERMINER.test(w.slice(w.indexOf(x) + 1).join(" "))) return true;
+  }
+  return false;
+}
+const isImperative = (text) => IMPERATIVE.test(text) && !nounLedStatement(text);
+
 const clauses = (text) => 1 + (String(text).match(/[,;:]|\b(?:which|that|because|whereas|while|although|so that|such that)\b/gi) || []).length;
 const wordCount = (text) => String(text).split(/\s+/).filter(Boolean).length;
 
@@ -133,13 +163,13 @@ export function classifyText(text, context = {}) {
   if (hasFormula(t)) return of("formula");
   if (DERIVATION.test(t)) return of("derivation");
   if (blockType === "item") {
-    if (ordered || PROCEDURE_SECTION.test(section) || IMPERATIVE.test(t)) return of("step");
+    if (ordered || PROCEDURE_SECTION.test(section) || isImperative(t)) return of("step");
     if (isFragmentPoint(t)) return of("fragment");
     // "Memory usage – the loader itself occupies main memory." under "Disadvantages"
     if (POINTS_SECTION.test(section) && /^[A-Z][^:–—]{0,40}?\s*(?:[:–—]|\s-\s)\s*\S/.test(t)) return of("point");
   }
   // a sentence under a "how it works" heading that tells the reader what to do
-  if (PROCEDURE_SECTION.test(section) && IMPERATIVE.test(t)) return of("step");
+  if (PROCEDURE_SECTION.test(section) && isImperative(t)) return of("step");
   if (isClipped(t)) return of("fragment");
   if (DEFINES.test(t)) return of("definition");
   // a long statement of several clauses asks to be explained, not blanked

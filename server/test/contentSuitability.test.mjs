@@ -13,7 +13,7 @@ import { createServer } from "node:http";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import { classifyText, parseFlattenedComparison } from "../src/services/suitability.js";
-import { generateQuestions, mcqSourceProblem } from "../src/services/testEngine.js";
+import { generateQuestions, isReported, mcqSourceProblem } from "../src/services/testEngine.js";
 import { formattingProblems, repairFormatting, validateQuestion } from "../src/services/questionQuality.js";
 import { escapeLatexBackslashes, parseJsonLoose } from "../src/services/llm.js";
 import { blocksFromPlainText, normalizeContent } from "../src/services/documentStructure.js";
@@ -72,6 +72,19 @@ const cases = [
   ["Concurrency: several processes execute at the same time on different nodes.", { blockType: "item", section: "Characteristics" }, "fact", true],
   ["Basic It generates the executable module of a source program. It loads the executable module to the main memory.", {}, "table-row", false],
   ["Tail recursion is a form of recursion in which the recursive call is the last operation of the function.", {}, "definition", true],
+  // a list entry that opens with a noun also used as a verb is a statement, not a step
+  ["Load balancing distributes incoming requests across several servers.", { blockType: "item" }, "fact", true],
+  ["Link state routing floods each router's link information to all routers.", { blockType: "item", section: "Types of routing" }, "fact", true],
+  ["Update anomaly occurs when the same data is stored in several places.", { blockType: "item" }, "fact", true],
+  ["Set LOCCTR to the starting address given in the START statement.", { blockType: "item" }, "step", false],
+  ["Store values in registers before the call is made.", { blockType: "item" }, "step", false],
+  ["Scan the symbol table for an undefined symbol before linking.", { blockType: "item" }, "step", false],
+  // "therefore" alone opens a conclusion, not working
+  ["Therefore deadlock cannot occur when any one of the four conditions is broken.", {}, "fact", true],
+  ["C++ is an object oriented language derived from the C language.", {}, "fact", true],
+  // naming an operator is prose; using one between operands is code
+  ["The == operator compares two values for equality in C.", {}, "fact", true],
+  ["The loop stops when count++ reaches the limit of the buffer.", {}, "code", false],
 ];
 for (const [t, ctx, kind, mcq] of cases) {
   const got = kindOf(t, ctx);
@@ -214,6 +227,25 @@ check("a picture is shrunk to at most 1600 px on its longest side", JSON.stringi
 check("a fourth picture is refused with how to add it", /at most 3 pictures/.test(imageProblem({ name: "a.jpg", type: "image/jpeg", size: 10 }, { count: 3 })));
 check("a PDF or a GIF is refused, a JPG / PNG / WebP / HEIC accepted", /not a picture/.test(imageProblem({ name: "a.pdf", type: "application/pdf", size: 10 })) && /gif/.test(imageProblem({ name: "a.gif", type: "image/gif", size: 10 })) && ["a.jpg|image/jpeg", "a.png|image/png", "a.webp|image/webp", "a.heic|image/heic"].every((x) => imageProblem({ name: x.split("|")[0], type: x.split("|")[1], size: 10 }) === ""));
 check("an empty file is refused", /empty/.test(imageProblem({ name: "a.jpg", type: "image/jpeg", size: 0 })));
+
+// ---------------------------------------------------------------------------
+console.log("\n=== G. A question reported as broken is not generated again ===");
+{
+  const note = noteOf("Linker and Loader", fixture("spos_linker_loader.txt"), 7);
+  const first = await generateQuestions([note], { mcqCount: 5, theoryCount: 2, marksPerQuestion: 1 });
+  const bad = first.accepted.find((q) => q.type === "mcq");
+  const badTheory = first.accepted.find((q) => q.type === "theory");
+  const blocked = [bad, badTheory].filter(Boolean).map((q) => ({ prompt: q.prompt, excerpt: q.supportingExcerpt, answer: q.type === "mcq" ? q.answerKey : null }));
+  const again = await generateQuestions([note], { mcqCount: 5, theoryCount: 2, marksPerQuestion: 1 });
+  const next = await generateQuestions([note], { mcqCount: 5, theoryCount: 2, marksPerQuestion: 1, blocked });
+  check("without a report, the same notes give the reported questions again", Boolean(bad && badTheory) && again.accepted.some((q) => q.prompt === bad.prompt));
+  check("with the report, neither comes back", !next.accepted.some((q) => [bad?.prompt, badTheory?.prompt].includes(q.prompt)));
+  check("  ...they are stored as discarded, reason \"reported\"", next.discarded.filter((q) => q.discardReason === "reported").length >= 2);
+  const mcqs = (r) => r.accepted.filter((q) => q.type === "mcq").length;
+  check("  ...and nothing else is lost (a short note simply has one MCQ fewer)", mcqs(next) >= mcqs(again) - 1, `${mcqs(again)} -> ${mcqs(next)}`);
+  check("isReported: a reworded copy of a reported question is caught", isReported({ prompt: `${bad.prompt.replace(/\?$/, "")} ?`, supportingExcerpt: "x" }, blocked));
+  check("isReported: an unrelated question is not", !isReported({ prompt: "Which program combines object modules into one executable program?", supportingExcerpt: "y" }, [{ prompt: "Define the term “loader”.", excerpt: "z", answer: null }]));
+}
 
 restore();
 console.log(failures ? `\n${failures} FAILING CHECK(S)` : "\nAll checks passed.");
