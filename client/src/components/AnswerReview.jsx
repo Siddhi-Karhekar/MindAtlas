@@ -260,6 +260,15 @@ export default function AnswerReview({ attemptId, subjectId, onMarksChanged }) {
             </p>
           )}
 
+          {item.explanation && (
+            <p className="font-body-sm text-body-sm text-on-surface flex gap-space-xs" data-testid="explanation">
+              <Icon name="lightbulb" className="text-sm text-secondary mt-[2px]" />
+              <span>
+                <strong>Why:</strong> <RichText text={item.explanation} inline />
+              </span>
+            </p>
+          )}
+
           {item.source && (
             <blockquote className="border-l-4 border-secondary pl-space-md font-body-sm text-body-sm text-on-surface-variant">
               <span className="block font-label-sm text-label-sm uppercase tracking-wider mb-space-2xs">From your notes</span>“<RichText text={item.source} inline />”

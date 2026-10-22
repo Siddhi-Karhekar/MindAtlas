@@ -135,6 +135,7 @@ Every rule with its code location: `docs/ASSESSMENT.md`. Detailed walkthroughs: 
    - **reported** (fix branch, `testEngine.isReported`): a question the student reported as broken, reworded or the same answer from the same passage → discarded as `reported`;
    - **MCQ suitability re-check** (`mcqSourceProblem`): an MCQ whose quoted passage is theory material is discarded as `suitability:<kind>` (a numerical question is exempt only when its answer recomputes);
    - (question-quality branch) all of the above is one function, **`testEngine.gateDraft`**, for both writers; then, when the AI answered in this build, **`verifyWithLLM`** checks every MCQ blind (one request), and **`questionEvaluator.evaluateQuestion`** applies hard ambiguity/correctness rules and a soft score (`docs/QUESTION_QUALITY.md`). Its record is stored on each question as `quality`.
+   - (question-quality branch, second round) before any writer runs, each note's **concept records** (`conceptRecords.js`, stored on the note) are turned into a **concept plan** (`conceptSelection.js`): which concepts each type may ask, best first. `gateDraft` also refuses a `conceptId` that does not exist (`concept:invalid-reference`) or is not allowed for the type (`concept:not-eligible-for-mcq:theory`). See `docs/PIPELINE.md`.
    Everything rejected is stored as `discarded` with `discardReason` (visible on the admin page).
 8. **No repeats** (`pickFresh`, `sameQuestion`, `meaningComparer`): duplicates by wording (Jaccard ≥ 0.75 on words or stems, ≥ 90% containment; different quoted terms never equal), by meaning (cosine ≥ 0.92, only with the model), by concept. Order: concepts never tested → tested before, least often and longest ago → recent concepts reworded. Earlier questions return only to reach the test's length: never shown, then answered poorly, then the rest. Two builds by one student run one after the other (`oneAtATime`).
 9. **Store and report** (`createQuestions`, `setTestGeneration`); if nothing passes: **422** `generation_failed` and the test is deleted; if fewer than asked, the test is shortened and the student told.
@@ -189,7 +190,7 @@ Every rule with its code location: `docs/ASSESSMENT.md`. Detailed walkthroughs: 
 - Database: `questions.generatedBy` (+ `promptVersion`, `model`), `tests.generation`, `responses.gradedBy` (+ `fallbackReason`), `feedback_reports.generatedBy`.
 - `/api/auth/config` shows `"ai":{"enabled":true,"name":"Groq"}` when a key is set.
 
-**Prompt versions** (`llm.js` `PROMPT_VERSIONS`): `mcq-v6` (question-quality branch; `mcq-v5` before), `theory-v5`, `grade-v3`, `remark-v2`, `feedback-v3`, `verify-v1` (the blind MCQ check). Bump a version whenever its prompt's wording changes.
+**Prompt versions** (`llm.js` `PROMPT_VERSIONS`): `mcq-v7` (question-quality branch, concept headers and `conceptId`; `mcq-v6`, `mcq-v5` before), `theory-v6` (`theory-v5` before), `grade-v3`, `remark-v2`, `feedback-v3`, `verify-v1` (the blind MCQ check). Bump a version whenever its prompt's wording changes.
 
 **Privacy:** Groq receives note text, written answers and photos attached to theory answers, never names or emails. Groq's terms say it does not train on inputs, and make the app owner responsible for users under 18.
 
@@ -281,6 +282,7 @@ npm run dev
 | `npm run eval:links` | Link evaluation (`docs/LINK_EVALUATION.md`) |
 | `npm run eval:benchmark` | Labelled MCQs: old gate vs new, per defect, threshold sweep (`docs/QUESTION_QUALITY.md`) |
 | `npm run eval:compare -- --before <old checkout>` | Old generator vs new on the same notes, rules only |
+| `npm run eval:pipeline -- --before <old checkout>` | Concept records and tests: note and test metrics, old vs new (`docs/PIPELINE.md`) |
 | `npm run db:backup` / `db:restore` | Database backup and restore |
 
 Client: `npm run lint` (two old warnings in `KnowledgeGraph.jsx`, not from Member 3's work) and `npm run build`.
@@ -313,6 +315,7 @@ Client: `npm run lint` (two old warnings in `KnowledgeGraph.jsx`, not from Membe
 | `docs/EVALUATION.md` | Question-quality study protocol and rubric |
 | `docs/LINK_EVALUATION.md` | How the linking thresholds were chosen |
 | `docs/QUESTION_QUALITY.md` | What deserves a question, MCQ vs theory, the evaluator, the AI check, before/after, evaluation report, calibration |
+| `docs/PIPELINE.md` | Notes → concept records → concept plan → questions: audit, gaps, data contract, before/after, measured results, limits |
 | `docs/*.docx` | Feasibility reports |
 
 **Outside the repo (Claude Docs, in Siddhi's claude.ai artifacts):**
@@ -335,14 +338,15 @@ Client: `npm run lint` (two old warnings in `KnowledgeGraph.jsx`, not from Membe
 4. README and `docs/ASSESSMENT.md` match the code (BKT, forgot password, link threshold 0.11, cross-subject meaning rule, the classifier).
 Lint and the full suite pass.
 
-**Pending - apply, push and merge after it:** branch `quiz/question-quality`, delivered as `D:\fy\capstone\MindAtlas\question-quality.patch` (two commits: this handover, then the work). Full account in `docs/QUESTION_QUALITY.md`. In short:
+**Pending - apply, push and merge after it:** branch `quiz/question-quality`, delivered as `D:\fy\capstone\MindAtlas\question-quality.patch` (three commits: this handover, the quality layer, the concept records). Full account in `docs/QUESTION_QUALITY.md` and `docs/PIPELINE.md`. In short:
 1. **What deserves a question:** every study sentence gets a question-worthiness score (`worthiness.js`); MCQs only from ≥ 0.5, for both writers. The classifier gives each decision a confidence and a reason; an unsure one is theory only. A one-word answer the notes merely repeat ("sum", "device") is no longer an MCQ answer.
 2. **One evaluator for both writers** (`questionEvaluator.js`, after `gateDraft`): hard rules for vague qualifiers, missing material, unnamed actors, undefined abbreviations and outside names, two questions in one, equivalent options, a wrong option that is the answer's family or that the notes also make true, options that do not fit the stem, a numerical key that does not recompute; a soft score with thresholds. Stored as `quality`, with `sourceKind`, `classification`, `cognitiveLevel`.
 3. **Blind AI check** (`verifyWithLLM`, `verify-v1`, `LLM_VERIFY`): one request per build answers every MCQ without the key.
 4. **Better rule-based MCQs:** distractors ranked by kinship from the notes' own relations (`conceptRelations.js`); "Which statement describes X?" from sibling definitions; computed numerical MCQs from formulas (`numerical.js`); no more than two questions with the same four options.
 5. **Groq MCQ prompt `mcq-v6`:** worthy lines only, tagged with kind and importance; transform, don't copy (the deadlock scenario as the example); distractors as a separate task with a reason each; extra fields (objective, level, explanation).
 6. **Benchmark and comparison:** `npm run eval:benchmark` (labelled set: bad caught 43% → 95%, good wrongly rejected 14% → 0% - provisional AI-written labels, see the doc); `npm run eval:compare`.
-Lint and the full suite (25 files) pass. Commands in §13.
+7. **Concept records and a concept plan** (`docs/PIPELINE.md`): each note gets machine-readable records next to `content` (stable id, type, MCQ/theory/both/context-dependent/unsuitable with reasons, importance, difficulty, prerequisites, relations, reading confidence, verbatim passages), built at save and edit, served by `GET /api/notes/:id/concepts`. Tests are planned from them (importance × confidence × novelty), Groq sees them with ids (`mcq-v7`, `theory-v6`) and must cite one, every question stores `conceptId` and `approach`, the MCQ review shows a grounded "Why". Misread OCR (confidence < 0.5) and context-less pages give no questions. Measured (rules only, `npm run eval:pipeline`): top-10 concept coverage 45% → 60%, same concept asked the same way again 40% → 25%, questions from bad sources 7 → 0, accepted 141 → 139, build time 10.5 s → 16.5 s.
+Lint and the full suite (26 files) pass. Commands in §13.
 
 **Settings not yet done (check on Render):** `ADMIN_USER_IDS`; `SMTP_*` email; the `/api/*` rewrite on the static site (Safari sign-in cookies, `docs/SECURITY.md`).
 
@@ -353,7 +357,8 @@ Lint and the full suite (25 files) pass. Commands in §13.
 - no code-output MCQs (running uploaded code is unsafe); no rule-written derivation questions; the rule writer still copies most of its wording (cloze);
 - Groq's theory "prefer non-MCQ material" is a prompt instruction only;
 - difficulty labels and BKT parameters are defaults, not fitted to data;
-- concept names from the AI are free text, so a synonym can slip past the repeat check;
+- concept records are rule-built: labels, importance and difficulty are hand-tuned; provenance has no page numbers (the PDF/PowerPoint readers do not keep them); the concept pool of a small note runs out by the third test;
+- an AI question without a `conceptId` is matched to a concept by its quote; one that matches none keeps a free-text concept name;
 - meaning-level duplicate detection and relevance filtering are off on Render (no model);
 - in-memory locks assume one server instance; no circuit breaker, so a Groq outage costs up to ~45 s per build before the rules take over;
 - without the AI, theory answers in other words or another language can lose marks (a re-mark later fixes it);
@@ -367,7 +372,7 @@ Lint and the full suite (25 files) pass. Commands in §13.
 
 1. Merge `fix/classifier-and-reports`; then apply, push and merge `quiz/question-quality` (§13); check a live test build and the `[quality]` log lines.
 2. Set `ADMIN_USER_IDS` and the `SMTP_*` email settings; schedule `npm run db:backup`.
-3. Calibrate the question-quality thresholds on human-rated questions (`docs/QUESTION_QUALITY.md` §7) and re-label the benchmark with two raters; show `quality` / `sourceKind` counts on the admin page; enforce at least one theory-only-form question when Groq writes the theory section; a `derive` theory form; evaluate the classifier on a hand-labelled sentence set (as `LINK_EVALUATION.md` did for links).
+3. Add page numbers to `documentText.js` blocks and to record provenance; check concept labels and importance on a hand-labelled set. Calibrate the question-quality thresholds on human-rated questions (`docs/QUESTION_QUALITY.md` §7) and re-label the benchmark with two raters; show `quality` / `sourceKind` counts on the admin page; enforce at least one theory-only-form question when Groq writes the theory section; a `derive` theory form; evaluate the classifier on a hand-labelled sentence set (as `LINK_EVALUATION.md` did for links).
 4. Groq circuit breaker in `llm.js` (pause the AI for a while after a daily-limit 429, quota or auth error) and JSON mode (`response_format`).
 5. Run the blind question-quality study (`docs/EVALUATION.md`) with real notes and two raters.
 6. Closed beta with 20-30 students; decide the age and consent policy first.

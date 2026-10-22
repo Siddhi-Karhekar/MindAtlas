@@ -4,6 +4,8 @@ How MindAtlas decides **what** to ask, **in which form**, and **whether a questi
 
 The aim is not more questions. It is **fewer, better questions**: an important concept, clear wording, exactly one answer you can defend, and three wrong options a student could really believe. When the notes cannot support a good question, the test gets shorter and the student is told (as before). It is not padded.
 
+The second round of this branch adds concept records and a concept plan in front of everything below: see `docs/PIPELINE.md`.
+
 ---
 
 ## 1. Walkthrough: from upload to question

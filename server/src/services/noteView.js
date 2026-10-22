@@ -36,8 +36,9 @@ export function withContent(note) {
  */
 export function publicNote(note) {
   if (!note) return note;
+  // (the concept records are served on their own: GET /api/notes/:id/concepts)
   // eslint-disable-next-line no-unused-vars
-  const { vector, ownerId, ...rest } = withContent(note);
+  const { vector, ownerId, concepts, ...rest } = withContent(note);
   return rest;
 }
 

@@ -1,5 +1,6 @@
 import { findOwnedSubject } from "../models/Subject.js";
-import { createNote, findNotesByOwner, findNotesBySubject, isSplitParent, setChildCount } from "../models/Note.js";
+import { createNote, findNotesByOwner, findNotesBySubject, isSplitParent, setChildCount, updateNote } from "../models/Note.js";
+import { buildConceptsForNotes } from "../services/testEngine.js";
 import { requireAuth } from "../middleware/auth.js";
 import { safeRouter } from "../middleware/safeRouter.js";
 import { LIMITS, text } from "../middleware/validate.js";
@@ -52,7 +53,7 @@ async function readUploadOfKind(file, kind) {
     // the file has to BE a picture, and of a size that is safe to decode
     await checkUploadContent(file, kind);
     // scanned / photographed notes: read with OCR.
-    const { text, ocrFailed, lines } = await extractTextFromImage(file.buffer);
+    const { text, ocrFailed, lines, confidence } = await extractTextFromImage(file.buffer);
     if (!text) {
       throw new Error(
         ocrFailed
@@ -64,8 +65,8 @@ async function readUploadOfKind(file, kind) {
     // tall it is; the note's text is that rebuilt version, so a heading is a
     // line of its own and a wrapped sentence is whole again.
     const page = lines?.length ? blocksFromOcrLines(lines) : null;
-    if (page?.text) return { kind, content: page.text, sourceType: "image", ocrFailed, blocks: page.blocks };
-    return { kind, content: text, sourceType: "image", ocrFailed, blocks: blocksFromPlainText(text, { ocr: true }) };
+    if (page?.text) return { kind, content: page.text, sourceType: "image", ocrFailed, ocrConfidence: confidence ?? null, blocks: page.blocks };
+    return { kind, content: text, sourceType: "image", ocrFailed, ocrConfidence: confidence ?? null, blocks: blocksFromPlainText(text, { ocr: true }) };
   }
   // Checked (is it what its name says, is it safe to open) and read on a
   // thread of its own, under a time limit: see services/extractInWorker.js.
@@ -134,12 +135,13 @@ router.post("/:id/notes", uploadSingle("file", uploadMaxMb), once(), async (req,
   const userTitle = Boolean(title);
   let sourceType = "typed";
   let ocrFailed = false;
+  let ocrConfidence = null;
   let blocks = null;
   const wantSplit = String(req.body?.split ?? "true").toLowerCase() !== "false";
 
   if (req.file) {
     try {
-      ({ content, sourceType, ocrFailed, blocks } = await readUpload(req.file));
+      ({ content, sourceType, ocrFailed, ocrConfidence = null, blocks } = await readUpload(req.file));
     } catch (err) {
       return res.status(400).json({ error: err.message });
     }
@@ -208,8 +210,10 @@ router.post("/:id/notes", uploadSingle("file", uploadMaxMb), once(), async (req,
       keywords,
       vector,
       ocrFailed,
+      ocrConfidence,
       content: normalizeContent(blocks, { title: title.trim() }),
     });
+    await storeConcepts([note], [...existingNotes, note]);
     const edges = await updateGraphForNote(note, ownerNotes);
     markActivity(req.user.id, "note").catch(() => {});
     return res.status(201).json({ note: publicNote(note), children: [], ...countLinks(edges) });
@@ -261,6 +265,7 @@ router.post("/:id/notes", uploadSingle("file", uploadMaxMb), once(), async (req,
       sectionGroup: s.group || null,
       path: s.path || [],
       content: s.content,
+      ocrConfidence,
     });
     // Link against the rest of the subject and the siblings saved before it,
     // so related subtopics inside one document connect to each other too.
@@ -269,6 +274,7 @@ router.post("/:id/notes", uploadSingle("file", uploadMaxMb), once(), async (req,
     children.push(child);
   }
   await setChildCount(parent._id, children.length);
+  await storeConcepts(children, [...existingNotes, ...children]);
 
   markActivity(req.user.id, "note").catch(() => {});
   res.status(201).json({
@@ -277,6 +283,18 @@ router.post("/:id/notes", uploadSingle("file", uploadMaxMb), once(), async (req,
     ...countLinks(allEdges),
   });
 });
+
+// The machine-readable side of new notes - their concept records, which test
+// generation selects from - built as they are saved. A failure here never
+// fails the upload: a test build rebuilds missing records.
+async function storeConcepts(targets, subjectNotes) {
+  try {
+    const built = await buildConceptsForNotes(targets, subjectNotes);
+    for (const t of targets) if (built.get(String(t._id))) await updateNote(t._id, { concepts: built.get(String(t._id)) });
+  } catch (err) {
+    console.warn("[concepts] could not build records for a new note:", err?.message || err);
+  }
+}
 
 router.get("/:id/notes", async (req, res) => {
   const subject = await findOwnedSubject(req.params.id, req.user.id);

@@ -1,0 +1,3 @@
+Paging
+
+Paging is a rnernory rnanagernent scherne tbat perrnits tbe pbysical address space of a proccss to be noncontiguous. Pbysical rnernory is brokcn into fixcd sizcd blocks callcd frarnes and logical rnernory into blocks of tbe sarne size callcd pagcs. Tbe pagc tablc rnaps cach pagc to a frarne. A translation lookasidc buffcr is a srnall fast cachc tbat storcs rcccnt pagc tablc cntrics.
