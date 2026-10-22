@@ -50,11 +50,12 @@ export const llmProvider = () => {
 // wording of that prompt changes. ("v1" was the wording before notes and
 // answers were passed as tagged data.)
 export const PROMPT_VERSIONS = Object.freeze({
-  mcq: "mcq-v5",
+  mcq: "mcq-v6",
   theory: "theory-v5",
   grade: "grade-v3",
   remark: "remark-v2",
   feedback: "feedback-v3",
+  verify: "verify-v1",
 });
 
 /** What to store alongside LLM output: which prompt and which model made it. */

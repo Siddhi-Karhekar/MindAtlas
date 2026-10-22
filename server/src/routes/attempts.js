@@ -56,8 +56,10 @@ function forAttemptTaking(question) {
   // never send the answer key, supporting excerpt, or (for theory
   // questions) the grading rubric to the client while a test is in
   // progress - only after submission, via the review.
+  // (nor what the quality gate recorded: its checks name the answer - the
+  // AI checker's verdict, the numbers a computed answer comes from)
   // eslint-disable-next-line no-unused-vars
-  const { answerKey, supportingExcerpt, keyPoints, ...safe } = question;
+  const { answerKey, supportingExcerpt, keyPoints, quality, verification, computation, explanation, distractorReasons, classification, ...safe } = question;
   // The topic label is shown beside the question. When it names the answer
   // ("A _____ is a high level abstraction ..." under "Unit 3 › Monitors"),
   // show only the document until the attempt is over.

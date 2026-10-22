@@ -2,7 +2,7 @@
 
 Everything a new team member, an evaluator, a future maintainer - or a fresh AI chat - needs to understand, run, change and deploy MindAtlas, and to carry on the work without asking what happened before.
 
-**Updated 22 October 2026**, against `main` at `acb37a7` (PR #42 merged) plus branch `fix/classifier-and-reports` (one commit, delivered as a patch, not yet on GitHub - see §11). Supersedes the 17 October version.
+**Updated 22 October 2026 (evening)**, against `main` at `acb37a7` (PR #42 merged), branch `fix/classifier-and-reports` (`7192940`, on GitHub, not yet merged) and the new branch `quiz/question-quality` (delivered as a patch - see §11). Supersedes the 17 October version.
 
 For depth, each section points to the document that owns that topic. Function names are given rather than line numbers where code moves often; search for them (`grep -n "functionName"`).
 
@@ -18,7 +18,7 @@ Paste or attach this file at the start of a new chat, then say what you want to 
 - **Constraints:** no paid credits (free tiers only: Render, MongoDB Atlas, Groq free tier); never break things for users or teammates; feature branch + pull request, never push straight to `main`.
 - **How Siddhi likes instructions:** short, plain explanations; shell commands **one per line**; in PowerShell plain `cd D:\...` (in cmd, `cd /d D:\...`).
 - **How code reaches GitHub:** an AI session usually **cannot push** (the git proxy refuses this repo). Changes are delivered as a `.patch` file written into `D:\fy\capstone\MindAtlas`, which Siddhi applies with `git am` and pushes herself (§13).
-- **What is pending right now:** apply and merge `fix/classifier-and-reports` (§11).
+- **What is pending right now:** merge `fix/classifier-and-reports`, then apply, push and merge `quiz/question-quality` (§11, §13).
 
 ---
 
@@ -133,7 +133,8 @@ Every rule with its code location: `docs/ASSESSMENT.md`. Detailed walkthroughs: 
    - **grounding** (`isValidDraft`): supporting excerpt ≥ 8 characters, verbatim in the notes, not boilerplate;
    - **`questionQuality.validateQuestion`** (~40 rules, reason codes `clarity:*`, `language:*`, `format:*`, `context:refers-back`, `mcq:*`, `blank:*`, `correctness:*`, `theory:*`): exactly 4 distinct options, answer once, no all/none of the above, no option inside another, answer not standing out by length or form, not printed in the question, whole-term blanks, a named subject, theory command word + model answer + key points; small faults repaired;
    - **reported** (fix branch, `testEngine.isReported`): a question the student reported as broken, reworded or the same answer from the same passage → discarded as `reported`;
-   - **MCQ suitability re-check** (`mcqSourceProblem`): an MCQ whose quoted passage is theory material is discarded as `suitability:<kind>`.
+   - **MCQ suitability re-check** (`mcqSourceProblem`): an MCQ whose quoted passage is theory material is discarded as `suitability:<kind>` (a numerical question is exempt only when its answer recomputes);
+   - (question-quality branch) all of the above is one function, **`testEngine.gateDraft`**, for both writers; then, when the AI answered in this build, **`verifyWithLLM`** checks every MCQ blind (one request), and **`questionEvaluator.evaluateQuestion`** applies hard ambiguity/correctness rules and a soft score (`docs/QUESTION_QUALITY.md`). Its record is stored on each question as `quality`.
    Everything rejected is stored as `discarded` with `discardReason` (visible on the admin page).
 8. **No repeats** (`pickFresh`, `sameQuestion`, `meaningComparer`): duplicates by wording (Jaccard ≥ 0.75 on words or stems, ≥ 90% containment; different quoted terms never equal), by meaning (cosine ≥ 0.92, only with the model), by concept. Order: concepts never tested → tested before, least often and longest ago → recent concepts reworded. Earlier questions return only to reach the test's length: never shown, then answered poorly, then the rest. Two builds by one student run one after the other (`oneAtATime`).
 9. **Store and report** (`createQuestions`, `setTestGeneration`); if nothing passes: **422** `generation_failed` and the test is deleted; if fewer than asked, the test is shortened and the student told.
@@ -180,7 +181,7 @@ Every rule with its code location: `docs/ASSESSMENT.md`. Detailed walkthroughs: 
 
 **The switch** (`testEngine.generateBatch`, per question type, per build): Groq is tried only if `GROQ_API_KEY` is set. It is asked for ⌈1.25 × pool⌉ questions (max 30). Any failure → rules: `not-configured`, `auth` (401/403), `quota` (402), `rate-limited` (429), `server-error` (5xx), `timeout` (20 s, `LLM_TIMEOUT_MS`), `network`, `empty-response`, `invalid-response`, `no-questions`. 429, 5xx, timeout and network are retried once (`llm.sendWithRetry`, Retry-After ≤ 5 s). If Groq's questions all fail the checks or all repeat, the reason is `llm-questions-rejected` / `llm-questions-repeated`.
 
-**What the AI sees:** for MCQs, only MCQ-suitable study sentences per `###` note section with its top 10 key terms; for theory, all study sentences plus tables. Plus up to 40 earlier prompts (`<already_asked>`) and up to 25 untested concepts (`<focus_concepts>`). All student text is wrapped as tagged data (`asData`). At most 24,000 characters per request (`LLM_CONTEXT_CHARS`), shared out by weakest topic.
+**What the AI sees:** for MCQs, only MCQ-suitable study sentences worth a question (worthiness ≥ 0.5, question-quality branch; each line tagged ⟦kind, importance⟧) per `###` note section with its top 10 key terms; for theory, all study sentences plus tables. Plus up to 40 earlier prompts (`<already_asked>`) and up to 25 untested concepts (`<focus_concepts>`). All student text is wrapped as tagged data (`asData`). At most 24,000 characters per request (`LLM_CONTEXT_CHARS`), shared out by weakest topic.
 
 **How to tell which was used:**
 - After building a test, a line per type: "written by AI (Groq)", "5 written by AI (Groq), 3 by MindAtlas's built-in rules (reason)", or "written by MindAtlas's built-in rules — reason". Each test in the list carries an AI / AI + rules / Rules badge (`client/src/lib/generation.js`).
@@ -188,7 +189,7 @@ Every rule with its code location: `docs/ASSESSMENT.md`. Detailed walkthroughs: 
 - Database: `questions.generatedBy` (+ `promptVersion`, `model`), `tests.generation`, `responses.gradedBy` (+ `fallbackReason`), `feedback_reports.generatedBy`.
 - `/api/auth/config` shows `"ai":{"enabled":true,"name":"Groq"}` when a key is set.
 
-**Prompt versions** (`llm.js` `PROMPT_VERSIONS`): `mcq-v5`, `theory-v5`, `grade-v3`, `remark-v2`, `feedback-v3`. Bump a version whenever its prompt's wording changes.
+**Prompt versions** (`llm.js` `PROMPT_VERSIONS`): `mcq-v6` (question-quality branch; `mcq-v5` before), `theory-v5`, `grade-v3`, `remark-v2`, `feedback-v3`, `verify-v1` (the blind MCQ check). Bump a version whenever its prompt's wording changes.
 
 **Privacy:** Groq receives note text, written answers and photos attached to theory answers, never names or emails. Groq's terms say it does not train on inputs, and make the app owner responsible for users under 18.
 
@@ -278,6 +279,8 @@ npm run dev
 | `npm run relink` | Recompute graph links with the current rules |
 | `npm run eval:generate` / `eval:score` | Blind question-quality rating study (`docs/EVALUATION.md`) |
 | `npm run eval:links` | Link evaluation (`docs/LINK_EVALUATION.md`) |
+| `npm run eval:benchmark` | Labelled MCQs: old gate vs new, per defect, threshold sweep (`docs/QUESTION_QUALITY.md`) |
+| `npm run eval:compare -- --before <old checkout>` | Old generator vs new on the same notes, rules only |
 | `npm run db:backup` / `db:restore` | Database backup and restore |
 
 Client: `npm run lint` (two old warnings in `KnowledgeGraph.jsx`, not from Member 3's work) and `npm run build`.
@@ -287,7 +290,7 @@ Client: `npm run lint` (two old warnings in `KnowledgeGraph.jsx`, not from Membe
 ## 9. Testing and CI
 
 - **CI** (`.github/workflows/ci.yml`) on every push; a merge needs it green: server lint and tests, client lint and build, `npm audit` (high/critical), Docker image build, gitleaks.
-- **Key test files for Member 3:** `contentSuitability.test.mjs` (classifier, AI stand-in, formatting, reported questions), `assessment.test.mjs` (clock, marking, AI marker incl. fallbacks, re-mark), `questionQuality.test.mjs`, `keyTerms.test.mjs`, `freshQuestions.test.mjs` (no repeats across tests), `questionPipeline.test.mjs`, `generationQuality.test.mjs`, `questionLeaks.test.mjs`, `masteryEngine.test.mjs`.
+- **Key test files for Member 3:** `questionEvaluator.test.mjs` (worthiness, confidence, numerical, every evaluator rule, the AI check), `contentSuitability.test.mjs` (classifier, AI stand-in, formatting, reported questions), `assessment.test.mjs` (clock, marking, AI marker incl. fallbacks, re-mark), `questionQuality.test.mjs`, `keyTerms.test.mjs`, `freshQuestions.test.mjs` (no repeats across tests), `questionPipeline.test.mjs`, `generationQuality.test.mjs`, `questionLeaks.test.mjs`, `masteryEngine.test.mjs`.
 - No real AI is called in tests: a local HTTP server stands in for Groq.
 - **End-to-end** (`verify/`): Python Playwright scripts for upload, document split, mixed and adaptive tests.
 - **Fixtures:** `sample-notes/networks_unit2.*`, `server/test/fixtures/subjects/` (SPOS linker/loader, maths, programming, electrical), `server/test/fixtures/ics_unit3.md`, `server/evaluation/samples/`.
@@ -309,6 +312,7 @@ Client: `npm run lint` (two old warnings in `KnowledgeGraph.jsx`, not from Membe
 | `docs/LAUNCH.md` | Pre-launch checklist and open decisions |
 | `docs/EVALUATION.md` | Question-quality study protocol and rubric |
 | `docs/LINK_EVALUATION.md` | How the linking thresholds were chosen |
+| `docs/QUESTION_QUALITY.md` | What deserves a question, MCQ vs theory, the evaluator, the AI check, before/after, evaluation report, calibration |
 | `docs/*.docx` | Feasibility reports |
 
 **Outside the repo (Claude Docs, in Siddhi's claude.ai artifacts):**
@@ -324,18 +328,29 @@ Client: `npm run lint` (two old warnings in `KnowledgeGraph.jsx`, not from Membe
 
 **Merged since the last handover:** `quiz/generation-quality` (PR #32, includes `fix-fresh-questions`), `infra/build-without-model` (PR #39: API built with plain `npm ci`, no MiniLM), `quiz/content-suitability` (PR #42: the classifier, safe LaTeX/code formatting, photo answers).
 
-**Pending - apply and merge:** branch `fix/classifier-and-reports`, delivered as `D:\fy\capstone\MindAtlas\classifier-and-reports-fix.patch` (plus `handover-update.patch` with this file). It contains:
+**Pending - merge:** branch `fix/classifier-and-reports` (on GitHub at `7192940`). It contains:
 1. Classifier false positives fixed: noun-led bullets ("Load balancing distributes…", "Link state routing floods…", "Update anomaly occurs…") are facts, not steps; "therefore/hence/thus" alone and "derived from" no longer mean derivation; "The == operator…" and "C++…" are not code.
 2. Reported questions (wrong answer, unclear, not in notes) are never generated again for that student on those notes (`BLOCKING_REPORTS` in `routes/tests.js`, `testEngine.isReported`, discard reason `reported`).
 3. Theory marking without the AI is told to the student, stored (`responses.fallbackReason`) and logged (`[grade]`); feedback template fallback logged (`[feedback]`).
 4. README and `docs/ASSESSMENT.md` match the code (BKT, forgot password, link threshold 0.11, cross-subject meaning rule, the classifier).
-Lint and the full suite pass. Commands in §13.
+Lint and the full suite pass.
+
+**Pending - apply, push and merge after it:** branch `quiz/question-quality`, delivered as `D:\fy\capstone\MindAtlas\question-quality.patch` (two commits: this handover, then the work). Full account in `docs/QUESTION_QUALITY.md`. In short:
+1. **What deserves a question:** every study sentence gets a question-worthiness score (`worthiness.js`); MCQs only from ≥ 0.5, for both writers. The classifier gives each decision a confidence and a reason; an unsure one is theory only. A one-word answer the notes merely repeat ("sum", "device") is no longer an MCQ answer.
+2. **One evaluator for both writers** (`questionEvaluator.js`, after `gateDraft`): hard rules for vague qualifiers, missing material, unnamed actors, undefined abbreviations and outside names, two questions in one, equivalent options, a wrong option that is the answer's family or that the notes also make true, options that do not fit the stem, a numerical key that does not recompute; a soft score with thresholds. Stored as `quality`, with `sourceKind`, `classification`, `cognitiveLevel`.
+3. **Blind AI check** (`verifyWithLLM`, `verify-v1`, `LLM_VERIFY`): one request per build answers every MCQ without the key.
+4. **Better rule-based MCQs:** distractors ranked by kinship from the notes' own relations (`conceptRelations.js`); "Which statement describes X?" from sibling definitions; computed numerical MCQs from formulas (`numerical.js`); no more than two questions with the same four options.
+5. **Groq MCQ prompt `mcq-v6`:** worthy lines only, tagged with kind and importance; transform, don't copy (the deadlock scenario as the example); distractors as a separate task with a reason each; extra fields (objective, level, explanation).
+6. **Benchmark and comparison:** `npm run eval:benchmark` (labelled set: bad caught 43% → 95%, good wrongly rejected 14% → 0% - provisional AI-written labels, see the doc); `npm run eval:compare`.
+Lint and the full suite (25 files) pass. Commands in §13.
 
 **Settings not yet done (check on Render):** `ADMIN_USER_IDS`; `SMTP_*` email; the `/api/*` rewrite on the static site (Safari sign-in cookies, `docs/SECURITY.md`).
 
 **Known limits:**
-- the classifier is regex-based: a bullet like "Search engines index pages…" is still read as a step; "explanation" is decided by length; no confidence score;
-- no code-output or calculation MCQs; no rule-written derivation questions;
+- the classifier is regex-based: a bullet like "Search engines index pages…" is still read as a step; its confidence scores are hand-set, not fitted;
+- the quality thresholds and weights are provisional and the benchmark labels were written by an AI session: calibrate on human-rated questions (`docs/QUESTION_QUALITY.md` §7);
+- without MiniLM (Render) or the AI check, the rules cannot judge meaning: an absurd outside option, or a family the notes do not state, can slip through;
+- no code-output MCQs (running uploaded code is unsafe); no rule-written derivation questions; the rule writer still copies most of its wording (cloze);
 - Groq's theory "prefer non-MCQ material" is a prompt instruction only;
 - difficulty labels and BKT parameters are defaults, not fitted to data;
 - concept names from the AI are free text, so a synonym can slip past the repeat check;
@@ -350,9 +365,9 @@ Lint and the full suite pass. Commands in §13.
 
 ## 12. Next steps (suggested order)
 
-1. Apply, push and merge `fix/classifier-and-reports` (§13); check a live test build.
+1. Merge `fix/classifier-and-reports`; then apply, push and merge `quiz/question-quality` (§13); check a live test build and the `[quality]` log lines.
 2. Set `ADMIN_USER_IDS` and the `SMTP_*` email settings; schedule `npm run db:backup`.
-3. Classifier follow-ups (`suitability.js`, `testEngine.js`): store each question's source kind (`sourceKind`) and show counts on the admin page; enforce at least one theory-only-form question when Groq writes the theory section; causal-connector rule for "explanation"; a `derive` theory form; evaluate the classifier on a hand-labelled sentence set (as `LINK_EVALUATION.md` did for links).
+3. Calibrate the question-quality thresholds on human-rated questions (`docs/QUESTION_QUALITY.md` §7) and re-label the benchmark with two raters; show `quality` / `sourceKind` counts on the admin page; enforce at least one theory-only-form question when Groq writes the theory section; a `derive` theory form; evaluate the classifier on a hand-labelled sentence set (as `LINK_EVALUATION.md` did for links).
 4. Groq circuit breaker in `llm.js` (pause the AI for a while after a daily-limit 429, quota or auth error) and JSON mode (`response_format`).
 5. Run the blind question-quality study (`docs/EVALUATION.md`) with real notes and two raters.
 6. Closed beta with 20-30 students; decide the age and consent policy first.
@@ -366,23 +381,24 @@ Lint and the full suite pass. Commands in §13.
 
 ### Applying a patch delivered by an AI session (PowerShell, one per line)
 
-Patches land in `D:\fy\capstone\MindAtlas`. For the pending work:
+Patches land in `D:\fy\capstone\MindAtlas`. First merge the pull request for `fix/classifier-and-reports` on GitHub (it is already pushed). Then, for `quiz/question-quality`:
 
 ```
 cd D:\fy\capstone\MindAtlas
-git checkout main
+git checkout fix/classifier-and-reports
 git pull
-git checkout -b fix/classifier-and-reports
-git am --3way classifier-and-reports-fix.patch
-git am --3way handover-update.patch
+git checkout -b quiz/question-quality
+git am --3way question-quality.patch
 cd server
 npm install
 npm test
 cd ..
-git push -u origin fix/classifier-and-reports
-Remove-Item classifier-and-reports-fix.patch
+git push -u origin quiz/question-quality
+Remove-Item question-quality.patch
 Remove-Item handover-update.patch
 ```
+
+(`handover-update.patch` is already inside `question-quality.patch` as its first commit: do not apply it separately.)
 
 Then open a pull request on GitHub, wait for CI to go green, and merge; Render redeploys from `main`.
 
