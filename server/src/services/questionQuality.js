@@ -323,10 +323,15 @@ export function validateQuestion(q, { type, contextText = "" } = {}) {
       if (!/[?:]$/.test(prompt) && !/^(?:which|what|who|when|where|why|how)\b/i.test(prompt)) reasons.push("clarity:not-a-question");
       // repair: the negation is what the student must not miss
       out.prompt = prompt.replace(/\b(not|except)\b/i, (w) => w.toUpperCase());
-    } else if (q?.supportingExcerpt && answer) {
-      // a direct question: the answer's content words are in the passage
-      const need = [...stemsOf(answer)];
-      const have = stemsOf(q.supportingExcerpt);
+    } else if (q?.supportingExcerpt && answer && !q?.computation) {
+      // a direct question: the answer's content words are in the passage (a
+      // numerical answer is not in the passage: it is computed from the
+      // formula there, and questionEvaluator.js computes it again)
+      // ("512 bits" is in "a 512-bit digest": hyphens split on both sides)
+      // ... and "bits" is "bit": a plural the stemmer leaves alone on a short word)
+      const sing = (set) => new Set([...set].map((w) => (w.length > 3 ? w.replace(/(?<!s)s$/, "") : w)));
+      const need = [...sing(stemsOf(String(answer).replace(/-/g, " ")))];
+      const have = sing(new Set([...stemsOf(q.supportingExcerpt), ...stemsOf(String(q.supportingExcerpt).replace(/-/g, " "))]));
       if (need.length && need.filter((s) => have.has(s)).length / need.length < 0.6) reasons.push("correctness:answer-not-in-passage");
       if (!/[?:]$/.test(prompt) && !/^(?:which|what|who|when|where|why|how)\b/i.test(prompt)) reasons.push("clarity:not-a-question");
     }

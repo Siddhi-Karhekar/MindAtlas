@@ -321,7 +321,7 @@ router.get("/tests/:id", async (req, res) => {
   const questions = await findQuestionsByTest(test._id);
   const withKeys = req.query.keys === "1" && process.env.TEST_REVEAL_KEYS === "1" && !isProduction();
   // eslint-disable-next-line no-unused-vars
-  const withoutKeys = ({ answerKey, supportingExcerpt, keyPoints, ...q }) => q;
+  const withoutKeys = ({ answerKey, supportingExcerpt, keyPoints, quality, verification, computation, explanation, distractorReasons, classification, ...q }) => q;
   res.json({ test: publicDoc(test), questions: withKeys ? questions : questions.map(withoutKeys) });
 });
 
