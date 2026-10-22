@@ -446,6 +446,17 @@ export function evaluateQuestion(q, ctx, { type = q?.type } = {}) {
     criteria.originality = round(1 - share(stemWords, stemsOf(q.supportingExcerpt)));
   } else {
     criteria.suitability = own.mcq ? 0.8 : 1; // theory-only material is what theory is for
+    // answerable from the notes: what the AI says a full answer contains must
+    // be in them (the rules' model answers are the notes' own sentences)
+    if (q.generatedBy === "llm") {
+      const model = stemsOf(q.answerKey);
+      if (model.size >= 3 && share(model, ctx.vocabulary) < 0.75) problems.push({ code: "theory:answer-unsupported", severity: "hard", detail: String(Number(share(model, ctx.vocabulary).toFixed(2))) });
+      const missing = (q.keyPoints || []).filter((k) => {
+        const w = stemsOf(k);
+        return w.size && share(w, ctx.vocabulary) < 0.6;
+      });
+      if (missing.length) problems.push({ code: "theory:key-point-unsupported", severity: "hard", detail: missing.join(" / ").slice(0, 120) });
+    }
   }
 
   const weights = type === "mcq" ? WEIGHTS : THEORY_WEIGHTS;

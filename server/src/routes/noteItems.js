@@ -1,4 +1,6 @@
-import { findNoteById, findNotesBySubject } from "../models/Note.js";
+import { findNoteById, findNotesBySubject, isSplitParent, updateNote } from "../models/Note.js";
+import { buildNoteConcepts, expandConcepts } from "../services/testEngine.js";
+import { notesFingerprint, CONCEPTS_VERSION } from "../services/conceptRecords.js";
 import { requireAuth } from "../middleware/auth.js";
 import { safeRouter } from "../middleware/safeRouter.js";
 import { LIMITS, text } from "../middleware/validate.js";
@@ -27,6 +29,25 @@ async function loadOwnedNote(req, res, next) {
 router.get("/:id", loadOwnedNote, async (req, res) => {
   const [note] = withKeyTerms([req.note], await findNotesBySubject(req.note.subjectId));
   res.json({ note: publicNote(note), editText: editTextFor(req.note) });
+});
+
+// GET /api/notes/:id/concepts - the note's machine-readable side: its concept
+// records (services/conceptRecords.js), as test generation reads them. Built
+// now if the note has none yet or they are out of date. A split document is a
+// container: its subtopics have the records.
+router.get("/:id/concepts", loadOwnedNote, async (req, res, next) => {
+  try {
+    if (isSplitParent(req.note)) return res.status(400).json({ error: "this document is split into subtopics - each subtopic has its own concepts" });
+    let stored = req.note.concepts;
+    if (!stored || stored.version !== CONCEPTS_VERSION || stored.fingerprint !== notesFingerprint(req.note)) {
+      const subject = (await findNotesBySubject(req.note.subjectId)).filter((n) => !isSplitParent(n));
+      stored = await buildNoteConcepts(req.note, subject);
+      await updateNote(req.note._id, { concepts: stored });
+    }
+    res.json({ noteId: req.note._id, ...expandConcepts(stored) });
+  } catch (err) {
+    next(err);
+  }
 });
 
 // GET /api/notes/:id/export?format=pdf|docx&tz=Asia/Kolkata

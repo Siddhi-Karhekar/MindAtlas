@@ -17,6 +17,7 @@
 // document its subtopics with it.
 
 import { deleteEdgesForNotes } from "../models/GraphEdge.js";
+import { buildNoteConcepts } from "./testEngine.js";
 import { deleteEmbeddingsForNotes } from "../models/NoteEmbedding.js";
 import { deleteMasteryForTopics } from "../models/Mastery.js";
 import {
@@ -115,7 +116,17 @@ export async function editNote(note, { title, text }) {
     Object.assign(fields, computeTfidf(fields.rawText, corpus));
     fields.editedAt = new Date();
   }
-  const updated = await updateNote(note._id, fields);
+  let updated = await updateNote(note._id, fields);
+  // the note's concept records follow its text (see conceptRecords.js)
+  if (fields.rawText !== undefined) {
+    try {
+      const others = subjectNotes.filter((n) => !isSplitParent(n) && !sameId(n._id, note._id));
+      const concepts = await buildNoteConcepts(updated, [...others, updated]);
+      if (concepts) updated = await updateNote(note._id, { concepts });
+    } catch (err) {
+      console.warn("[concepts] could not rebuild records after an edit:", err?.message || err);
+    }
+  }
 
   // New words mean new links. The old ones are dropped first - except links
   // the student removed by hand, which stay removed.

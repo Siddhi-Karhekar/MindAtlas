@@ -1,5 +1,5 @@
 import { findOwnedSubject } from "../models/Subject.js";
-import { findChildNotes, findNotesByIds, isSplitParent, topicLabelFor } from "../models/Note.js";
+import { findChildNotes, findNotesByIds, isSplitParent, topicLabelFor, updateNote } from "../models/Note.js";
 import { createTest, deleteTest, findTestsBySubject, findOwnedTest, setTestGeneration, setTestLength } from "../models/Test.js";
 import { createQuestions, findAcceptedQuestionsByTests, findQuestionsByIds, findQuestionsByTest } from "../models/Question.js";
 import { findReportsByOwner } from "../models/QuestionReport.js";
@@ -211,6 +211,20 @@ async function buildTest(req, res) {
     conceptHistory.set(c, h);
   }
 
+  // How each concept was asked before (its form: a definition, a numerical, a
+  // comparison ...), so a concept that comes back is asked a new way
+  // (conceptSelection.js, testEngine.pickFresh). Keyed by concept id and by
+  // the concept's name, for questions stored before ids existed.
+  const approachHistory = new Map();
+  for (const q of earlierQuestions) {
+    const way = q.approach || q.form || q.cognitiveLevel;
+    if (!way) continue;
+    for (const k of [q.conceptId, conceptOf(q, q.type)].filter(Boolean)) {
+      if (!approachHistory.has(k)) approachHistory.set(k, new Set());
+      approachHistory.get(k).add(way);
+    }
+  }
+
   // Questions this student reported as wrong, unclear or not from the notes:
   // never generated again for them (testEngine discards them as "reported").
   const reports = (await findReportsByOwner(req.user.id)).filter((r) => String(r.subjectId) === String(subject._id) && BLOCKING_REPORTS.has(r.reason));
@@ -231,6 +245,9 @@ async function buildTest(req, res) {
     recentConcepts,
     conceptHistory,
     blocked,
+    approachHistory,
+    // a note whose concept records are missing or out of date gets them stored
+    onConcepts: (note, concepts) => updateNote(note._id, { concepts }),
     // earlier questions are used again only to reach these, never to fill the larger pool
     mcqTarget: safeMcqCount,
     theoryTarget: safeTheoryCount,

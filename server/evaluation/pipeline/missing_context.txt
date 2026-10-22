@@ -1,0 +1,3 @@
+Scheduling
+
+It picks the process that has waited longest. This avoids starvation of long jobs. They are moved to the back of the queue after each quantum. As shown in the figure above, the second one finishes first. It is therefore preferred for interactive systems. These are discussed further in the next lecture.
