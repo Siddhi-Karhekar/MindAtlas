@@ -246,8 +246,15 @@ function draftsFrom(reply) {
 // MCQ generation
 // ---------------------------------------------------------------------------
 
+// Whether a prompt context holds anything to ask about, beyond the notes' headings:
+// with no eligible concept (or sentence) there is nothing to send, and no request
+// is made - the rules report the same and the build says why ("no-material").
+const hasMaterial = (context) => String(context || "").split("\n").some((l) => l.trim() && !/^###\s/.test(l));
+const noMaterial = () => ({ drafts: null, error: { kind: "no-material" }, durationMs: 0 });
+
 async function generateMcqWithLLM(notes, mcqCount, masteryMap, studies, avoid = [], focus = []) {
   const context = buildStudyContext(notes, studies, masteryMap, { mcqOnly: true });
+  if (!hasMaterial(context)) return noMaterial();
   const system = `You are setting multiple-choice questions for a university examination paper, using ONLY the student's notes (given in the message) as source material. Do not use any outside knowledge for the correct answer - every question's correct answer must be directly supported by a verbatim short excerpt from these notes.
 
 What to ask about:
@@ -564,8 +571,8 @@ function pickDistractors(note, notes, keyword, sentence, answer = keyword) {
     isVerbish(w) === answerShape;
   const noun = (w) => hasNounEvidence(w, corpusText);
 
-  const otherNoteKeywords = [...new Set(notes.filter((n) => n !== note).flatMap((n) => n.keywords))];
-  const allKeywords = [...new Set(notes.flatMap((n) => n.keywords))];
+  const otherNoteKeywords = [...new Set(notes.filter((n) => n !== note).flatMap((n) => n.keywords || []))];
+  const allKeywords = [...new Set(notes.flatMap((n) => n.keywords || []))];
   const contentWords = [...new Set(tokenize(corpusText).filter((w) => w.length >= 5))];
 
   const tiers = [
@@ -1405,6 +1412,7 @@ function generateMcqFallback(notes, mcqCount, masteryMap, studies, taken = new S
 
 async function generateTheoryWithLLM(notes, theoryCount, masteryMap, studies, avoid = [], focus = []) {
   const context = buildStudyContext(notes, studies, masteryMap);
+  if (!hasMaterial(context)) return noMaterial();
   const system = `You are setting the theory (short-answer) section of a university examination paper, using ONLY the student's notes (given in the message) as source material.
 
 Rules:
@@ -1982,6 +1990,11 @@ async function generateBatch({ type, notes, count, want = count, generateLLM, ge
     } else {
       report.llmOutcome = "failed";
       report.fallbackReason = out?.error?.kind || (out?.drafts ? "no-questions" : "invalid-response");
+      // nothing to send: no request was made (hasMaterial)
+      if (report.fallbackReason === "no-material") {
+        report.llmAttempted = false;
+        report.llmOutcome = null;
+      }
     }
   } else {
     report.fallbackReason = "not-configured";

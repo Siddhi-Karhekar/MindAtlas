@@ -29,12 +29,18 @@ router.delete("/:id", async (req, res) => {
   res.json({ ok: true, removed });
 });
 
-// PATCH /api/subjects/:id  { name?, group? } - rename, or move to another folder
+// PATCH /api/subjects/:id  { name?, group?, syllabus? } - rename, move to
+// another folder, or set the syllabus: the course's topics as text ("Unit 3:
+// paging, segmentation, ..."). Terms of the subject's notes that the syllabus
+// names rank higher as key terms (services/keyTermSignals.js); an empty
+// string clears it.
+const MAX_SYLLABUS = 20_000;
 router.patch("/:id", async (req, res) => {
   const fields = {};
   if (req.body?.name !== undefined) fields.name = text(req.body.name, "name", { max: LIMITS.subjectName });
   if (req.body?.group !== undefined) fields.group = groupField(req.body.group);
-  if (Object.keys(fields).length === 0) return res.status(400).json({ error: "nothing to change - send name or group" });
+  if (req.body?.syllabus !== undefined) fields.syllabus = text(req.body.syllabus, "syllabus", { required: false, max: MAX_SYLLABUS }) || null;
+  if (Object.keys(fields).length === 0) return res.status(400).json({ error: "nothing to change - send name, group or syllabus" });
   const subject = await updateSubject(req.params.id, req.user.id, fields);
   if (!subject) return res.status(404).json({ error: "subject not found" });
   res.json({ subject: publicDoc(subject) });

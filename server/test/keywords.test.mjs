@@ -30,9 +30,17 @@ check("computeTfidf still returns exactly { vector, keywords } (callers save the
   same(Object.keys(result).sort(), ["keywords", "vector"]));
 check("the vector is TF-IDF as before: its top 12 are the keywords the baseline gets",
   same(tfidfTop(result.vector), tfidfKeywords(WAREHOUSE, DEDV)) && same(tfidfTop(computeTfidf(CELL).vector), tfidfKeywords(CELL)));
-check("a note with no singular-and-plural pair and no number keeps exactly its keywords",
-  same(result.keywords, tfidfKeywords(WAREHOUSE, DEDV)) && DEDV.every((t, i) => same(computeTfidf(t, DEDV.filter((_, j) => j !== i)).keywords, tfidfKeywords(t, DEDV.filter((_, j) => j !== i)))),
-  result.keywords.join(", "));
+const rawKeywords = (t, c) => computeTfidf(t, c, { nounsOnly: false }).keywords;
+check("a note with no singular-and-plural pair and no number keeps exactly its keywords (part-of-speech filter off)",
+  same(rawKeywords(WAREHOUSE, DEDV), tfidfKeywords(WAREHOUSE, DEDV)) && DEDV.every((t, i) => same(rawKeywords(t, DEDV.filter((_, j) => j !== i)), tfidfKeywords(t, DEDV.filter((_, j) => j !== i)))),
+  rawKeywords(WAREHOUSE, DEDV).join(", "));
+// with the tagger (posTags.js): the same keywords in the same order, less the
+// words the note uses as verbs or function words ("integrates", "any", "called")
+const inOrder = (sub, all) => sub.every((k, i) => all.includes(k) && (i === 0 || all.indexOf(sub[i - 1]) < all.indexOf(k)));
+const posKeywords = computeTfidf("Paging avoids external fragmentation because any free frame can hold any page. Pages are called frames.").keywords;
+check("with the tagger, keywords are the same words less the non-nouns",
+  inOrder(result.keywords, tfidfKeywords(WAREHOUSE, DEDV)) && !result.keywords.includes("integrates") && !posKeywords.includes("any") && !posKeywords.includes("called") && posKeywords.includes("fragmentation"),
+  `${result.keywords.join(", ")} | ${posKeywords.join(", ")}`);
 const plural = computeTfidf("Cells divide. The cells grow. A cell membrane surrounds each cell nucleus. Cells need energy.").keywords;
 check("a word's singular and plural take one slot", plural.filter((k) => sameWord(k, "cell")).length === 1, plural.join(", "));
 check("  ...shown as the note writes it most often", plural[0] === "cells", plural.join(", "));

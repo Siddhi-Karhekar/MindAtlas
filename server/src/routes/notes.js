@@ -16,6 +16,8 @@ import { computeTfidf, tokenSet } from "../services/tfidf.js";
 import { updateGraphForNote } from "../services/graphEngine.js";
 import { publicNote, withKeyTerms } from "../services/noteView.js";
 import { checkUploadContent } from "../services/uploadCheck.js";
+import { suggestInBackground } from "../services/aiKeyTerms.js";
+import { withSyllabus } from "../services/keyTermSignals.js";
 
 const router = safeRouter();
 router.use(requireAuth);
@@ -213,10 +215,11 @@ router.post("/:id/notes", uploadSingle("file", uploadMaxMb), once(), async (req,
       ocrConfidence,
       content: normalizeContent(blocks, { title: title.trim() }),
     });
-    await storeConcepts([note], [...existingNotes, note]);
+    await storeConcepts([note], [...existingNotes, note], subject);
     const edges = await updateGraphForNote(note, ownerNotes);
     markActivity(req.user.id, "note").catch(() => {});
-    return res.status(201).json({ note: publicNote(note), children: [], ...countLinks(edges) });
+    res.status(201).json({ note: publicNote(note), children: [], ...countLinks(edges) });
+    return suggestTermsAfterUpload([note], existingNotes, subject);
   }
 
   // Parent: keeps the whole text for reading, and document-level keywords for
@@ -274,7 +277,7 @@ router.post("/:id/notes", uploadSingle("file", uploadMaxMb), once(), async (req,
     children.push(child);
   }
   await setChildCount(parent._id, children.length);
-  await storeConcepts(children, [...existingNotes, ...children]);
+  await storeConcepts(children, [...existingNotes, ...children], subject);
 
   markActivity(req.user.id, "note").catch(() => {});
   res.status(201).json({
@@ -282,14 +285,27 @@ router.post("/:id/notes", uploadSingle("file", uploadMaxMb), once(), async (req,
     children: children.map(publicNote),
     ...countLinks(allEdges),
   });
+  suggestTermsAfterUpload(children, existingNotes, subject);
 });
+
+// After the response: ask the AI for the new notes' key terms (one request for
+// all of an upload's subtopics; services/aiKeyTerms.js), then rebuild their
+// concept records with them. Nothing happens without an AI key, and a failure
+// only means the rules work alone.
+function suggestTermsAfterUpload(targets, existingNotes, subject) {
+  suggestInBackground(targets, async () => {
+    const fresh = (await findNotesBySubject(subject._id)).filter((n) => !isSplitParent(n));
+    const ids = new Set(targets.map((t) => String(t._id)));
+    await storeConcepts(fresh.filter((n) => ids.has(String(n._id))), fresh, subject);
+  });
+}
 
 // The machine-readable side of new notes - their concept records, which test
 // generation selects from - built as they are saved. A failure here never
 // fails the upload: a test build rebuilds missing records.
-async function storeConcepts(targets, subjectNotes) {
+async function storeConcepts(targets, subjectNotes, subject = null) {
   try {
-    const built = await buildConceptsForNotes(targets, subjectNotes);
+    const built = await buildConceptsForNotes(withSyllabus(targets, subject), withSyllabus(subjectNotes, subject));
     for (const t of targets) if (built.get(String(t._id))) await updateNote(t._id, { concepts: built.get(String(t._id)) });
   } catch (err) {
     console.warn("[concepts] could not build records for a new note:", err?.message || err);
@@ -301,7 +317,7 @@ router.get("/:id/notes", async (req, res) => {
   if (!subject) return res.status(404).json({ error: "subject not found" });
 
   const notes = await findNotesBySubject(subject._id);
-  res.json({ notes: withKeyTerms(notes).map(publicNote) });
+  res.json({ notes: withKeyTerms(notes, notes, { subject }).map(publicNote) });
 });
 
 export default router;

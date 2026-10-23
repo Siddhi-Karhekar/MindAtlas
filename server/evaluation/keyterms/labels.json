@@ -1,0 +1,53 @@
+{
+  "about": "Key terms an examiner would expect a student to know from each document, marked from the text alone, before any system output was looked at. Written by an AI session on 23 Oct 2026: PROVISIONAL. Replace or confirm with two human raters (see docs/KEYTERMS.md). A term matches when it is the same words, ignoring case, plurals, hyphens and possessives.",
+  "documents": [
+    {
+      "file": "test/fixtures/subjects/ee_circuits.md",
+      "subject": "Electrical engineering",
+      "gold": ["Ohm's law", "resistance", "conductance", "voltage", "current", "resistor", "series", "parallel", "parallel connection", "power", "Kirchhoff's current law", "Kirchhoff's voltage law", "junction", "closed loop", "siemens"],
+      "syllabus": "Unit 1: DC Circuits - Ohm's law, resistance and conductance, series and parallel circuits, power and energy, Kirchhoff's laws (KCL, KVL), network analysis."
+    },
+    {
+      "file": "test/fixtures/subjects/maths_differentiation.md",
+      "subject": "Engineering mathematics",
+      "gold": ["derivative", "differentiation", "differentiable function", "continuous function", "limit", "power rule", "product rule", "stationary point", "local maximum", "local minimum", "first derivative", "second derivative"],
+      "syllabus": "Unit 2: Differential Calculus - limits and continuity, derivative of a function, rules of differentiation (power rule, product rule, quotient rule, chain rule), maxima and minima, stationary points, second derivative test."
+    },
+    {
+      "file": "test/fixtures/subjects/programming_recursion.md",
+      "subject": "Programming",
+      "gold": ["recursion", "base case", "recursive function", "call stack", "stack frame", "stack overflow", "tail recursion", "factorial", "binary search", "iteration", "recursive call", "call overhead"],
+      "syllabus": "Unit 4: Functions and Recursion - function calls and the call stack, recursion, base case, tail recursion, recursion vs iteration, recursive algorithms (factorial, binary search)."
+    },
+    {
+      "file": "test/fixtures/subjects/spos_linker_loader.txt",
+      "subject": "Systems programming",
+      "gold": ["linker", "loader", "executable module", "object module", "object code", "assembler", "system program", "relocation", "dynamic linking", "overlay", "absolute loader", "relocating loader", "effective address", "base register", "address binding", "logical address", "physical address", "relocation register", "two-pass linker", "global symbol table", "external symbol", "linkage editor", "dynamic linker", "main memory"],
+      "syllabus": "Unit 5: Linkers and Loaders - loader schemes (absolute loader, relocating loader, direct linking loader), relocation, linking, dynamic linking, overlays, address binding, design of a two-pass linker."
+    },
+    {
+      "file": "test/fixtures/ics_unit3.md",
+      "subject": "Information and cyber security",
+      "gold": ["symmetric key cryptography", "asymmetric key cryptography", "secret key", "public key", "private key", "digital signature", "session key", "secret key distribution", "man-in-the-middle attack", "Diffie-Hellman key exchange", "prime number", "primitive root", "discrete logarithm", "shared secret key", "hash function", "secure hash function", "message digest", "collision resistant", "MD5", "SHA-1", "Secure Hash Algorithm", "SHA-256", "SHA-512", "SHA-3", "sponge construction", "Merkle-Damgard construction", "message authentication code", "MAC", "message authentication", "collision attack", "authentication"],
+      "syllabus": "Unit III: Authentication and Key Management - secret key distribution, Diffie-Hellman key exchange, man-in-the-middle attack, hash functions, message digest, MD5, SHA-1, SHA-2, SHA-3, message authentication code (MAC), digital signatures."
+    },
+    {
+      "file": "evaluation/samples/dbms_unit4.md",
+      "subject": "Database management systems",
+      "gold": ["transaction", "ACID", "atomicity", "consistency", "isolation", "durability", "recovery manager", "concurrency control", "concurrency control manager", "transaction state", "active", "partially committed", "failed", "aborted", "committed", "lock", "shared lock", "exclusive lock", "lock manager", "lock-based protocol", "two-phase locking", "growing phase", "shrinking phase", "strict two-phase locking", "rigorous two-phase locking", "conflict serializable schedule", "deadlock", "wait-die", "wound-wait", "wait-for graph", "victim transaction", "log", "log record", "log-based recovery", "write-ahead logging", "stable storage", "checkpoint", "fuzzy checkpoint", "recovery", "redo", "undo", "isolation level", "serial order"],
+      "syllabus": "Unit 4: Transactions and Concurrency - transaction concept, ACID properties, transaction states, concurrency control, lock-based protocols, two-phase locking, deadlock handling (prevention, detection, recovery), log-based recovery, write-ahead logging, checkpoints."
+    },
+    {
+      "file": "evaluation/samples/distributed_systems_unit1.txt",
+      "subject": "Distributed systems",
+      "gold": ["distributed system", "distributed computing", "resource sharing", "concurrency", "fault tolerance", "scalability", "message passing", "synchronous message passing", "asynchronous message passing", "communication channel", "buffer", "remote procedure call", "RPC", "client stub", "marshalling", "logical clock", "Lamport's logical clock", "vector clock", "physical clock", "concurrent events", "node"],
+      "syllabus": "Unit 1: Introduction - distributed computing, characteristics of distributed systems (resource sharing, concurrency, scalability, fault tolerance), message passing, remote procedure call (RPC), logical clocks, Lamport clocks, vector clocks."
+    },
+    {
+      "file": "evaluation/keyterms/os_unit3.md",
+      "subject": "Operating systems",
+      "gold": ["paging", "memory management scheme", "physical memory", "logical memory", "frame", "page", "page table", "external fragmentation", "translation lookaside buffer", "segmentation", "segment", "segment table", "base address", "limit", "segmentation fault", "deadlock", "mutual exclusion", "hold and wait", "no preemption", "circular wait", "banker's algorithm", "safe state", "deadlock detection", "wait-for graph", "round robin scheduling", "time quantum", "shortest job first scheduling", "CPU burst", "priority scheduling", "starvation", "aging", "context switching"],
+      "syllabus": "Unit 3: Memory Management and Deadlocks - paging, page table, TLB, segmentation, fragmentation, deadlock conditions, deadlock avoidance (banker's algorithm), deadlock detection, CPU scheduling (FCFS, SJF, priority, round robin), starvation and aging."
+    }
+  ]
+}

@@ -4,7 +4,10 @@ import { notesFingerprint, CONCEPTS_VERSION } from "../services/conceptRecords.j
 import { requireAuth } from "../middleware/auth.js";
 import { safeRouter } from "../middleware/safeRouter.js";
 import { LIMITS, text } from "../middleware/validate.js";
-import { deleteNote, editNote } from "../services/noteLifecycle.js";
+import { deleteNote, editNote, refreshNoteConcepts } from "../services/noteLifecycle.js";
+import { findOwnedSubject } from "../models/Subject.js";
+import { withSyllabus } from "../services/keyTermSignals.js";
+import { termPattern } from "../services/keyTerms.js";
 import { editTextFor, publicNote, withKeyTerms } from "../services/noteView.js";
 import { exportNote, parseFormat, sendExport } from "../services/noteExport/index.js";
 
@@ -26,8 +29,10 @@ async function loadOwnedNote(req, res, next) {
 }
 
 // GET /api/notes/:id - the note, plus `editText`: its content as editable text
+const subjectOf = (note) => findOwnedSubject(note.subjectId, note.ownerId);
+
 router.get("/:id", loadOwnedNote, async (req, res) => {
-  const [note] = withKeyTerms([req.note], await findNotesBySubject(req.note.subjectId));
+  const [note] = withKeyTerms([req.note], await findNotesBySubject(req.note.subjectId), { subject: await subjectOf(req.note) });
   res.json({ note: publicNote(note), editText: editTextFor(req.note) });
 });
 
@@ -39,9 +44,11 @@ router.get("/:id/concepts", loadOwnedNote, async (req, res, next) => {
   try {
     if (isSplitParent(req.note)) return res.status(400).json({ error: "this document is split into subtopics - each subtopic has its own concepts" });
     let stored = req.note.concepts;
-    if (!stored || stored.version !== CONCEPTS_VERSION || stored.fingerprint !== notesFingerprint(req.note)) {
-      const subject = (await findNotesBySubject(req.note.subjectId)).filter((n) => !isSplitParent(n));
-      stored = await buildNoteConcepts(req.note, subject);
+    const subjectDoc = await subjectOf(req.note);
+    const [self] = withSyllabus([req.note], subjectDoc);
+    if (!stored || stored.version !== CONCEPTS_VERSION || stored.fingerprint !== notesFingerprint(self)) {
+      const subject = withSyllabus((await findNotesBySubject(req.note.subjectId)).filter((n) => !isSplitParent(n)), subjectDoc);
+      stored = await buildNoteConcepts(self, subject);
       await updateNote(req.note._id, { concepts: stored });
     }
     res.json({ noteId: req.note._id, ...expandConcepts(stored) });
@@ -73,13 +80,51 @@ router.patch("/:id", loadOwnedNote, async (req, res, next) => {
   const content = body.content === undefined ? undefined : text(body.content, "content", { max: LIMITS.noteText, trim: false });
   try {
     const result = await editNote(req.note, { title, text: content });
-    const [note, parent] = withKeyTerms([result.note, result.parent], await findNotesBySubject(req.note.subjectId));
+    const [note, parent] = withKeyTerms([result.note, result.parent], await findNotesBySubject(req.note.subjectId), { subject: await subjectOf(req.note) });
     res.json({
       note: publicNote(note),
       parent: parent ? publicNote(parent) : null,
       edgesCreated: result.edgesCreated,
       crossSubjectEdgesCreated: result.crossSubjectEdgesCreated,
     });
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ error: err.message });
+    next(err);
+  }
+});
+
+// PUT /api/notes/:id/key-terms  { add: [term], remove: [term] }
+// The student's own say on the note's key terms: terms to add (they must be
+// in the note, word for word) and terms to take away. The lists replace the
+// ones stored. Added terms are always key terms - highlighted, asked about,
+// ranked first - and removed ones never are (services/keyTermSignals.js).
+// The note's concept records are rebuilt with them, so the next test uses them.
+const MAX_MARKED = 30;
+function termList(value, name) {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) throw Object.assign(new Error(`${name} must be a list of terms`), { status: 400 });
+  if (value.length > MAX_MARKED) throw Object.assign(new Error(`at most ${MAX_MARKED} terms in ${name}`), { status: 400 });
+  const out = [];
+  for (const v of value) {
+    const t = text(v, name, { max: 80 }).replace(/\s+/g, " ");
+    if (!out.some((x) => x.toLowerCase() === t.toLowerCase())) out.push(t);
+  }
+  return out;
+}
+router.put("/:id/key-terms", loadOwnedNote, async (req, res, next) => {
+  try {
+    if (isSplitParent(req.note)) return res.status(400).json({ error: "this document is split into subtopics - mark key terms on each subtopic" });
+    const add = termList(req.body?.add, "add");
+    const remove = termList(req.body?.remove, "remove");
+    const source = `${req.note.title || ""}\n${req.note.rawText || ""}`;
+    const missing = add.filter((t) => !termPattern(t, "i").test(source));
+    if (missing.length) return res.status(400).json({ error: `not found in this note: ${missing.join(", ")} - a key term has to be written in the note`, code: "not_in_note", missing });
+    const both = add.filter((t) => remove.some((r) => r.toLowerCase() === t.toLowerCase()));
+    if (both.length) return res.status(400).json({ error: `a term cannot be added and removed at once: ${both.join(", ")}` });
+    await updateNote(req.note._id, { termMarks: { add, remove, updatedAt: new Date() } });
+    const updated = (await refreshNoteConcepts({ ...req.note })) || (await findNoteById(req.note._id));
+    const [note] = withKeyTerms([updated], await findNotesBySubject(req.note.subjectId), { subject: await subjectOf(req.note) });
+    res.json({ note: publicNote(note) });
   } catch (err) {
     if (err.status) return res.status(err.status).json({ error: err.message });
     next(err);

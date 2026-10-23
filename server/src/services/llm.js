@@ -56,6 +56,7 @@ export const PROMPT_VERSIONS = Object.freeze({
   remark: "remark-v2",
   feedback: "feedback-v3",
   verify: "verify-v1",
+  keyterms: "keyterms-v1",
 });
 
 /** What to store alongside LLM output: which prompt and which model made it. */
