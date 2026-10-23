@@ -374,6 +374,8 @@ Lint and the full suite (26 files) pass. Commands in §13.
 
 **Pending - after `quiz/concept-records`:** branch `quiz/keyterms`, delivered as `keyterms.patch` (one commit). Full account in `docs/KEYTERMS.md`. A part-of-speech tagger (wink-nlp) in key-term and keyword finding; Groq suggests each note's key terms once at upload (`keyterms-v1`, each checked word for word against the note); students add or remove key terms on a note (`PUT /api/notes/:id/key-terms`, "Edit key terms" under the note title); a syllabus per subject (`PATCH /api/subjects/:id { syllabus }`, card in the subject page) ranks the terms it names higher. Groq gets no request when a note has nothing to ask (`fallbackReason: no-material`). Measured on 8 labelled documents (labels provisional, AI-written): recall of the terms tests are built from 52% → 68% at the same precision (50% → 51%); AI suggestions not measured (need a live key). Watch Render memory: the tagger adds 30-60 MB (`KEYTERMS_POS=off` to switch it off).
 
+**Pending - after `quiz/keyterms`:** `keyterms-methods.patch` (one commit). YAKE, TextRank and RAKE re-rankers for key terms, YAKE for upload keywords, and BM25 for link vectors: all implemented and switchable, all off by default, because none improved the labelled results (one or two terms of 190) and BM25 separated related topics less well on a proxy (AUC 0.745 → 0.626). Re-test BM25 on the raters' link ratings (`docs/KEYTERMS.md` §2a). The graph page now shows and searches each topic's key terms.
+
 ## 12. Next steps (suggested order)
 
 1. Merge `fix/classifier-and-reports`; then apply, push and merge `quiz/question-quality` (§13); check a live test build and the `[quality]` log lines.

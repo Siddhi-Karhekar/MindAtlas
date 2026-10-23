@@ -16,7 +16,9 @@
 // ("deadlock" for "deadlock detection").
 //
 // Conditions for this checkout: the rules as before (part-of-speech tagger
-// off), with the tagger, and with the tagger and the subject's syllabus. The
+// off), with the tagger, with the tagger and each keyphrase scorer (YAKE,
+// TextRank, RAKE; keyphraseScores.js) at two weights, and the defaults with
+// the subject's syllabus. The
 // AI-suggested terms need a live Groq key and are not scored here.
 //
 // Each condition runs in its own process (settings are read when modules
@@ -80,13 +82,16 @@ async function runCondition(serverDir, condition) {
     const question = [];
     const shown = [];
     const keywords = [];
+    const keywordsAlone = [];
     for (const n of leaves) {
       const study = await studyFor(n, { corpus: leaves, embedder: null });
       question.push(...study.terms.map((t) => t.term));
       shown.push(...keyTermsFor(n, leaves));
       keywords.push(...computeTfidf(n.rawText, leaves.filter((x) => x !== n).map((x) => x.rawText)).keywords);
+      // the same note as the first of its subject: nothing to compare against
+      keywordsAlone.push(...computeTfidf(n.rawText, []).keywords);
     }
-    out.push({ file: doc.file, subject: doc.subject, notes: leaves.length, outputs: { question, shown, keywords } });
+    out.push({ file: doc.file, subject: doc.subject, notes: leaves.length, outputs: { question, shown, keywords, keywordsAlone } });
   }
   return out;
 }
@@ -112,16 +117,23 @@ const labels = JSON.parse(fs.readFileSync(path.join(ownServer, "evaluation/keyte
 const goldOf = new Map(labels.documents.map((d) => [d.file, d.gold]));
 const conditions = [];
 if (opt("--before")) conditions.push({ name: "Before (--before checkout)", res: child(path.resolve(opt("--before")), "rules", {}) });
-conditions.push({ name: "Rules, tagger off", res: child(ownServer, "rules", { KEYTERMS_POS: "off" }) });
-conditions.push({ name: "Rules + tagger", res: child(ownServer, "rules", {}) });
-conditions.push({ name: "Rules + tagger + syllabus", res: child(ownServer, "syllabus", {}) });
+conditions.push({ name: "Rules, tagger off", res: child(ownServer, "rules", { KEYTERMS_POS: "off", KEYTERMS_SCORERS: "off" }) });
+conditions.push({ name: "Rules + tagger", res: child(ownServer, "rules", { KEYTERMS_SCORERS: "off" }) });
+// the keyphrase scorers (keyphraseScores.js), each alone and together, at the
+// default weight (+-25%) and at double it
+for (const sc of ["yake", "textrank", "rake", "yake,textrank,rake"]) {
+  conditions.push({ name: `Rules + tagger + ${sc.replace(/,/g, "+")}`, res: child(ownServer, "rules", { KEYTERMS_SCORERS: sc, KEYTERMS_SCORER_WEIGHT: "0.5" }) });
+  conditions.push({ name: `Rules + tagger + ${sc.replace(/,/g, "+")} (weight 1)`, res: child(ownServer, "rules", { KEYTERMS_SCORERS: sc, KEYTERMS_SCORER_WEIGHT: "1" }) });
+}
+conditions.push({ name: "Defaults + syllabus", res: child(ownServer, "syllabus", {}) });
+conditions.push({ name: "Defaults + YAKE-ranked keywords", res: child(ownServer, "rules", { KEYWORDS_YAKE: "on" }) });
 
 const pct = (a, b) => (b ? `${Math.round((100 * a) / b)}%` : "-");
 const f1 = (p, r) => (p + r ? (2 * p * r) / (p + r) : 0);
 const lines = [`# Key-term evaluation`, ``, `${labels.documents.length} documents, ${labels.documents.reduce((n, d) => n + d.gold.length, 0)} marked terms (labels: ${labels.about.split(":")[0]}). Run ${new Date().toISOString().slice(0, 10)}.`, ``];
 const summary = {};
-for (const output of ["question", "shown", "keywords"]) {
-  lines.push(`## ${{ question: "Question terms (test generation, top 16 per note)", shown: "Shown terms (reading pane, top 10 per note)", keywords: "Keywords (TF-IDF, top 12 per note)" }[output]}`, ``);
+for (const output of ["question", "shown", "keywords", "keywordsAlone"]) {
+  lines.push(`## ${{ question: "Question terms (test generation, top 16 per note)", shown: "Shown terms (reading pane, top 10 per note)", keywords: "Keywords (TF-IDF, top 12 per note)", keywordsAlone: "Keywords of a first note (no other notes to compare against, top 12)" }[output]}`, ``);
   lines.push(`| Condition | Precision (strict) | Recall (strict) | F1 (strict) | Precision (lenient) | Recall (lenient) |`, `| --- | --- | --- | --- | --- | --- |`);
   for (const c of conditions) {
     const tot = { s: { predicted: 0, correct: 0, gold: 0, found: 0 }, l: { predicted: 0, correct: 0, gold: 0, found: 0 } };
