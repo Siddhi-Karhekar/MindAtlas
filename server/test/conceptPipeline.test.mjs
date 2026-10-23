@@ -68,7 +68,9 @@ const noisyBuilt = (await recordsOf([noisy])).get(noisy);
 check("a misread photo is detected: low reading confidence", noisyBuilt.extraction.confidence < 0.5, JSON.stringify(noisyBuilt.extraction));
 check("  ...and none of it may be asked", noisyBuilt.records.length === 0 && noisyBuilt.excluded.every((r) => r.suitability.label === "unsuitable"));
 check("a clean typed note reads with full confidence", extractionConfidence(bench.notes[0]).confidence === 1);
-const leaning = noteOf("ctx", "Spooling", "Spooling is the process of placing jobs in a buffer on disk so that a slow device can read them later. It lets the processor carry on with other work. This keeps the printer busy while the processor is free. It also allows several jobs to queue for one printer at a time.");
+// (the term in the leaning sentences is "CPU": an everyday word such as
+// "processor" is not a key term unless the note defines or marks it - keyTerms.js, "common")
+const leaning = noteOf("ctx", "Spooling", "Spooling is the process of placing jobs in a buffer on disk so that a slow device can read them later. It lets the CPU carry on with other work. This keeps the printer busy while the CPU is free. It also allows several jobs to queue for one printer at a time.");
 const leanRec = [...(await recordsOf([leaning])).get(leaning).records];
 check("a record knows which of its sentences lean on the one before", leanRec.some((r) => r.statements.some((s) => s.leansOnContext)));
 

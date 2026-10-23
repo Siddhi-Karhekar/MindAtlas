@@ -3,6 +3,9 @@
 //
 //   npm run eval:keyterms                         this checkout only
 //   npm run eval:keyterms -- --before ../old/server --out report.md
+//   npm run eval:keyterms -- --ablate     each key-term fix added or removed
+//   npm run eval:keyterms -- --methods    YAKE, TextRank, RAKE (keyphraseScores.js)
+//   GROQ_API_KEY=... npm run eval:keyterms -- --ai   with the AI's suggested terms, and their token cost
 //
 // Each labelled document is turned into notes the way an upload is (split at
 // its headings), then three outputs are scored for every note:
@@ -38,7 +41,8 @@ const opt = (name) => {
 };
 
 // ---- matching -----------------------------------------------------------
-const singular = (w) => (w.length <= 3 || /(ss|us|is)$/.test(w) ? w : w.endsWith("ies") ? `${w.slice(0, -3)}y` : /(sh|ch|x|z)es$/.test(w) ? w.slice(0, -2) : w.endsWith("s") ? w.slice(0, -1) : w);
+// plural to singular for matching: "processes" -> "process", "entries" -> "entry"
+const singular = (w) => (w.length <= 3 || /(ss|us|is)$/.test(w) ? w : w.endsWith("ies") ? `${w.slice(0, -3)}y` : /(ss|sh|ch|x|z)es$/.test(w) ? w.slice(0, -2) : w.endsWith("s") ? w.slice(0, -1) : w);
 export const norm = (t) =>
   String(t)
     .toLowerCase()
@@ -79,6 +83,15 @@ async function runCondition(serverDir, condition) {
       seg.sections.length >= 2
         ? seg.sections.map((s) => ({ _id: `n${++id}`, title: s.title, rawText: s.text, content: s.content, path: s.path || [], parentNoteId: "p", syllabus }))
         : [{ _id: `n${++id}`, title, rawText: text, content: normalizeContent(blocks, { title }), path: [], syllabus }];
+    // "ai": the AI's suggested terms, asked for and checked exactly as at
+    // upload (aiKeyTerms.askForKeyTerms), attached in memory - nothing stored
+    let tokens = null;
+    if (condition === "ai") {
+      const { askForKeyTerms, aiTermsRecord } = await load("services/aiKeyTerms.js");
+      const { byNote, report } = await askForKeyTerms(leaves);
+      for (const n of leaves) if (byNote.get(String(n._id))) n.aiTerms = aiTermsRecord(n, byNote.get(String(n._id)));
+      tokens = { ...report.tokens, requests: report.requested, failed: report.failed, terms: report.terms, dropped: report.dropped };
+    }
     const question = [];
     const shown = [];
     const keywords = [];
@@ -91,7 +104,7 @@ async function runCondition(serverDir, condition) {
       // the same note as the first of its subject: nothing to compare against
       keywordsAlone.push(...computeTfidf(n.rawText, []).keywords);
     }
-    out.push({ file: doc.file, subject: doc.subject, notes: leaves.length, outputs: { question, shown, keywords, keywordsAlone } });
+    out.push({ file: doc.file, subject: doc.subject, notes: leaves.length, outputs: { question, shown, keywords, keywordsAlone }, tokens });
   }
   return out;
 }
@@ -117,16 +130,33 @@ const labels = JSON.parse(fs.readFileSync(path.join(ownServer, "evaluation/keyte
 const goldOf = new Map(labels.documents.map((d) => [d.file, d.gold]));
 const conditions = [];
 if (opt("--before")) conditions.push({ name: "Before (--before checkout)", res: child(path.resolve(opt("--before")), "rules", {}) });
-conditions.push({ name: "Rules, tagger off", res: child(ownServer, "rules", { KEYTERMS_POS: "off", KEYTERMS_SCORERS: "off" }) });
-conditions.push({ name: "Rules + tagger", res: child(ownServer, "rules", { KEYTERMS_SCORERS: "off" }) });
+conditions.push({ name: "Rules, tagger off", res: child(ownServer, "rules", { KEYTERMS_POS: "off", KEYTERMS_SCORERS: "off", KEYTERMS_FIXES: "off" }) });
+conditions.push({ name: "Rules + tagger (no fixes)", res: child(ownServer, "rules", { KEYTERMS_SCORERS: "off", KEYTERMS_FIXES: "off" }) });
+conditions.push({ name: "Defaults (tagger + fixes)", res: child(ownServer, "rules", {}) });
+// --ablate: each fix (keyTerms.js KEYTERM_FIXES) added to or taken from the defaults
+if (args.includes("--ablate")) {
+  const { KEYTERM_FIXES, DEFAULT_FIXES } = await import(pathToFileURL(path.join(ownServer, "src/services/keyTerms.js")).href);
+  for (const f of KEYTERM_FIXES) {
+    const on = DEFAULT_FIXES.includes(f);
+    const set = on ? DEFAULT_FIXES.filter((x) => x !== f) : [...DEFAULT_FIXES, f];
+    conditions.push({ name: `Defaults ${on ? "without" : "with"} ${f}`, res: child(ownServer, "rules", { KEYTERMS_FIXES: set.join(",") || "off" }) });
+  }
+}
 // the keyphrase scorers (keyphraseScores.js), each alone and together, at the
 // default weight (+-25%) and at double it
-for (const sc of ["yake", "textrank", "rake", "yake,textrank,rake"]) {
+for (const sc of args.includes("--methods") ? ["yake", "textrank", "rake", "yake,textrank,rake"] : []) {
   conditions.push({ name: `Rules + tagger + ${sc.replace(/,/g, "+")}`, res: child(ownServer, "rules", { KEYTERMS_SCORERS: sc, KEYTERMS_SCORER_WEIGHT: "0.5" }) });
   conditions.push({ name: `Rules + tagger + ${sc.replace(/,/g, "+")} (weight 1)`, res: child(ownServer, "rules", { KEYTERMS_SCORERS: sc, KEYTERMS_SCORER_WEIGHT: "1" }) });
 }
 conditions.push({ name: "Defaults + syllabus", res: child(ownServer, "syllabus", {}) });
-conditions.push({ name: "Defaults + YAKE-ranked keywords", res: child(ownServer, "rules", { KEYWORDS_YAKE: "on" }) });
+if (args.includes("--methods")) conditions.push({ name: "Defaults + YAKE-ranked keywords", res: child(ownServer, "rules", { KEYWORDS_YAKE: "on" }) });
+// --ai: the AI's suggested terms too, with the key in GROQ_API_KEY (one request
+// per document, as at upload); the tokens it used are reported below
+const aiKey = process.env.GROQ_API_KEY;
+if (args.includes("--ai")) {
+  if (!aiKey) console.error("--ai needs GROQ_API_KEY set: skipped");
+  else conditions.push({ name: "Defaults + AI suggestions", res: child(ownServer, "ai", { GROQ_API_KEY: aiKey, KEYTERMS_AI: "" }) });
+}
 
 const pct = (a, b) => (b ? `${Math.round((100 * a) / b)}%` : "-");
 const f1 = (p, r) => (p + r ? (2 * p * r) / (p + r) : 0);
@@ -172,6 +202,15 @@ for (const d of labels.documents) {
   lines.push(`- **${d.subject}**: found ${gained.length ? gained.join(", ") : "nothing new"}; lost ${lost.length ? lost.join(", ") : "nothing"}; unmarked terms dropped ${dropped.length ? dropped.slice(0, 12).join(", ") : "none"}; unmarked terms added ${added.length ? added.slice(0, 12).join(", ") : "none"}.`);
 }
 lines.push(``, `"Unmarked" terms are not necessarily wrong: a rater may have left out a fair term. Precision here is a lower bound.`);
+// what the AI suggestions cost, as the provider counted it
+for (const c of conditions) {
+  const t = c.res.filter((d) => d.tokens);
+  if (!t.length) continue;
+  const sum = (k) => t.reduce((n, d) => n + (d.tokens[k] || 0), 0);
+  const notes = t.reduce((n, d) => n + d.notes, 0);
+  lines.push(``, `## AI cost: ${c.name}`, ``, `| Requests | Notes | Prompt tokens | Completion tokens | Tokens per note | Terms kept | Terms dropped (not in the note, generic) | Failures |`, `| --- | --- | --- | --- | --- | --- | --- | --- |`);
+  lines.push(`| ${sum("requests")} | ${notes} | ${sum("prompt")} | ${sum("completion")} | ${Math.round((sum("prompt") + sum("completion")) / (notes || 1))} | ${sum("terms")} | ${sum("dropped")} | ${t.filter((d) => d.tokens.failed).map((d) => d.tokens.failed).join(", ") || "none"} |`);
+}
 const report = lines.join("\n");
 if (opt("--out")) fs.writeFileSync(opt("--out"), report);
 console.log(report);
