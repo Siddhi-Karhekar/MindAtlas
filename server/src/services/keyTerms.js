@@ -38,8 +38,13 @@ import { blocksOf, candidateSentences, keepRelevant } from "./studyText.js";
 import { centroid, cosine } from "./embeddings.js";
 import { posAvailable, posProfile } from "./posTags.js";
 import { signalsFingerprint, signalsOf } from "./keyTermSignals.js";
+import { enabledScorers, keyphraseSignal } from "./keyphraseScores.js";
 
 export const MAX_TERM_WORDS = 4;
+const scorerWeight = () => {
+  const v = Number(process.env.KEYTERMS_SCORER_WEIGHT);
+  return Number.isFinite(v) && v >= 0 && v <= 2 ? v : 0.5;
+};
 const MAX_TERMS = 16;
 
 // Frequent-but-empty words. As an answer they make a question trivial or
@@ -234,9 +239,10 @@ export function extractTerms(note, sentences, corpus = []) {
   const body = sentences.map((s) => s.text).join("\n");
   const cands = new Map(); // key -> candidate
   const occurrences = []; // every candidate occurrence: { key, sentence, run, from, to }
+  const runsOf = sentences.map((s) => contentRuns(s.text));
 
   sentences.forEach((s, si) => {
-    contentRuns(s.text).forEach((run, ri) => {
+    runsOf[si].forEach((run, ri) => {
       for (let from = 0; from < run.length; from++) {
         for (let to = from; to < Math.min(run.length, from + MAX_TERM_WORDS); to++) {
           const words = run.slice(from, to + 1);
@@ -493,6 +499,10 @@ export function extractTerms(note, sentences, corpus = []) {
   const AI_BONUS = { 1: 0.25, 2: 0.4, 3: 0.6 };
   // a term inside a syllabus topic ("deadlock" in "deadlock handling") ranks a little higher
   const inSyllabus = (key) => syllabusKeys.some((k) => k !== key && ` ${k} `.includes(` ${key} `));
+  // YAKE / TextRank / RAKE (keyphraseScores.js): re-orders the accepted terms,
+  // within +-25% at the default weight (KEYTERMS_SCORER_WEIGHT, 0..2)
+  const signal = keyphraseSignal(runsOf, [...accepted.keys()], (w) => termKey([w]));
+  const weight = scorerWeight();
   const terms = [];
   for (const c of accepted.values()) {
     const alone = c.whole ? c.count : standalone.get(c.key) || 0;
@@ -512,7 +522,7 @@ export function extractTerms(note, sentences, corpus = []) {
       marks: [...c.marks],
       abbr: c.abbr,
       sentences: [...c.sentences],
-      score: Number((strength * idf * bonus).toFixed(4)),
+      score: Number((strength * idf * bonus * (signal.has(c.key) ? 1 + weight * (signal.get(c.key) - 0.5) : 1)).toFixed(4)),
     });
   }
   return terms.sort((a, b) => b.score - a.score || a.term.localeCompare(b.term));
@@ -561,7 +571,7 @@ const STUDY_CACHE_LIMIT = 400;
  *     semantic: true when the embedding model was used }
  */
 export async function studyFor(note, { corpus = [], embedder = null } = {}) {
-  const cacheKey = `${note?._id}:${textFingerprint(note?.rawText)}:${signalsFingerprint(note)}:${posAvailable() ? "pos" : "nopos"}:${embedder ? embedder.model : "rules"}:${corpus.length}`;
+  const cacheKey = `${note?._id}:${textFingerprint(note?.rawText)}:${signalsFingerprint(note)}:${posAvailable() ? "pos" : "nopos"}:${enabledScorers().join("+")}:${embedder ? embedder.model : "rules"}:${corpus.length}`;
   if (note?._id && studyCache.has(cacheKey)) return studyCache.get(cacheKey);
 
   let sentences = await keepRelevant(note, candidateSentences(note), embedder);
@@ -675,7 +685,7 @@ const SOURCE_OF = { student: "you", ai: "ai", syllabus: "syllabus" };
 export function keyTermDetailsFor(note, corpus = [], max = SHOWN_TERMS) {
   if (!note?.rawText) return [];
   const others = (corpus || []).filter((n) => n !== note && String(n?._id) !== String(note?._id));
-  const cacheKey = `${note._id}:${textFingerprint(note.rawText)}:${signalsFingerprint(note)}:${posAvailable() ? "pos" : "nopos"}:${others.length}:${textFingerprint(others.map((n) => n._id).join(","))}`;
+  const cacheKey = `${note._id}:${textFingerprint(note.rawText)}:${signalsFingerprint(note)}:${posAvailable() ? "pos" : "nopos"}:${enabledScorers().join("+")}:${others.length}:${textFingerprint(others.map((n) => n._id).join(","))}`;
   if (shownCache.has(cacheKey)) return shownCache.get(cacheKey).slice(0, max);
 
   const terms = extractTerms(note, candidateSentences(note), others);

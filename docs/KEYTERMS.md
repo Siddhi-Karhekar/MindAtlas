@@ -67,12 +67,45 @@ Whatever caches terms or concept records includes a fingerprint of these signals
 
 **The labels are provisional.** They were marked by an AI session from the texts alone, before any system output was looked at. To make the numbers count, have two people mark the same 8 documents independently, settle disagreements, and replace `server/evaluation/keyterms/labels.json`. Then rerun.
 
+## 2a. Other ranking methods tried: YAKE, TextRank, RAKE, BM25
+
+All four are implemented and switchable. Each was measured, and none is on by default: none improved the results on this set.
+
+| Method | What it does | Where | Switch | Result | Default |
+| --- | --- | --- | --- | --- | --- |
+| **YAKE** | Ranks phrases from the note alone: first position, capitals, frequency, spread over sentences, variety of neighbours | `services/keyphraseScores.js` `yake` | `KEYTERMS_SCORERS=yake` | Question terms 129 → 129 correct (128 at double weight); shown terms 115 → 114 | off |
+| **TextRank** | PageRank over the note's content words, linked within two words | `textrank` | `KEYTERMS_SCORERS=textrank` | 129 → 130; shown 115 → 115 | off |
+| **RAKE** | Word degree ÷ frequency inside content-word runs | `rake` | `KEYTERMS_SCORERS=rake` | 129 → 131; shown 115 → 114 | off |
+| All three averaged | — | `keyphraseSignal` | `KEYTERMS_SCORERS=yake,textrank,rake` | 129 → 130; shown 115 → 115 | off |
+| **YAKE for upload keywords** | Scales each keyword's TF-IDF weight by its YAKE rank (×0.75–1.25); the link vector is unchanged | `tfidf.js` | `KEYWORDS_YAKE=on` | Keywords 42 → 43 correct; for a note with no other notes to compare against (the "first note" case), 40 → 40 | off |
+| **BM25** for link vectors | Okapi BM25 (k1 1.2, b 0.75) instead of TF-IDF: repetition saturates, long notes are discounted | `tfidf.js` `computeTfidf({ weighting })` | `LINK_WEIGHTING=bm25`, then `npm run relink` | Proxy only (below) | off |
+
+**How the three scorers are applied.** They do not decide whether a phrase is a term; they only re-order accepted terms by ±25% (`KEYTERMS_SCORER_WEIGHT`, 0–2, default 0.5). Most notes here have 16 accepted terms or fewer, so the order rarely changes which terms are used. That is why the differences are one or two terms out of 190 — within noise. They may matter on long notes (many more than 16 candidate terms), which this set lacks: re-test there before switching any on.
+
+**BM25: why it is off.** The human ratings behind the link thresholds (`docs/LINK_EVALUATION.md`) are not in the repository, so BM25 could only be compared on a proxy: every pair of subtopics in the 8 sample documents. The measure (AUC) is how often a pair from the same document scores higher than a pair from different documents; 0.5 would be chance.
+
+| Weighting | AUC | Same-document links at 0.11 | Different-document pairs at or above 0.11 |
+| --- | --- | --- | --- |
+| TF-IDF | 0.745 | 21 of 65 | 11 of 286 |
+| BM25 | 0.626 | 8 of 65 | 9 of 286 |
+
+BM25 separated related from unrelated topics less well, and it would change 13 of 65 same-subject link decisions at the current threshold (rank agreement with TF-IDF: Spearman 0.905).
+
+To decide on real ratings, run the rated link evaluation again with BM25. Use the run folder with the raters' `ratings_*.csv` files:
+
+`LINK_WEIGHTING=bm25 npm run eval:links -- score <run folder> --recompute <notes folder>`
+
+Compare the result with the TF-IDF run. If BM25 wins, set new thresholds from its grid, set `LINK_WEIGHTING=bm25` on Render, and run `npm run relink`.
+
+**Key terms on the graph page.** This is what "use the key-term extractor for keywords" became. The graph API's nodes now carry `keyTerms`, the same terms the reading pane shows. The graph page lists them as "Key terms" for the selected note and searches them. The stored single-word `keywords` stay as they are, because cluster labels ("shared ideas") and the keyword map compare single words across notes: phrases would rarely be shared.
+
 ## 3. Costs and switches
 
 - **Memory:** the tagger adds about 30-60 MB once loaded (on the first upload or test build). Render's free server has 512 MB, and OCR of a large photo was measured near that limit before (HANDOVER.md §6). OCR could not be run here to measure the combination. If the API restarts on large photo uploads, set `KEYTERMS_POS=off`.
 - **Speed:** loading takes about 0.2 s, once. Tagging takes about 0.13 s per 100,000 characters.
 - **AI cost:** one Groq request per upload (more only for very long documents), plus at most one per test build for older notes. Each is about 18,000 characters of input at most.
 - **Settings:**
+  - `KEYTERMS_SCORERS` (yake, textrank, rake; off by default), `KEYTERMS_SCORER_WEIGHT` (0–2, default 0.5), `KEYWORDS_YAKE=on`, `LINK_WEIGHTING=bm25`: all off by default, see §2a.
   - `KEYTERMS_POS=off` turns the tagger off.
   - `KEYTERMS_AI=off` turns AI suggestions off.
   - Without `GROQ_API_KEY`, AI suggestions are off anyway.

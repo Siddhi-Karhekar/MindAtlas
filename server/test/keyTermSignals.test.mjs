@@ -98,6 +98,48 @@ check("...and not a single generic word, a formula, a long phrase or a repeat", 
 check("...with an importance of 1-3 (2 when none is given)", checked.kept.find((t) => t.term === "relocation register")?.importance === 2);
 
 // ---------------------------------------------------------------------------
+console.log("\n=== YAKE, TextRank and RAKE (keyphraseScores.js) ===");
+{
+  const { yake, textrank, rake, enabledScorers, keyphraseSignal } = await import("../src/services/keyphraseScores.js");
+  const { contentRuns, termKey } = await import("../src/services/keyTerms.js");
+  const text = [
+    "A translation lookaside buffer is a small cache of page table entries.",
+    "The page table maps each page to a frame.",
+    "On a miss in the translation lookaside buffer, the page table is read from memory.",
+    "Each page table entry holds a frame number.",
+  ];
+  const runs = text.map((t) => contentRuns(t));
+  const keys = ["translation lookaside buffer", "page table", "frame", "memory"];
+  const wk = (w) => termKey([w]);
+  for (const [name, fn] of [["yake", yake], ["textrank", textrank], ["rake", rake]]) {
+    const m = fn(runs, keys, wk);
+    check(`${name}: every phrase asked about gets a score from 0 to 1`, keys.every((k) => m.get(k) >= 0 && m.get(k) <= 1), JSON.stringify([...m]));
+  }
+  check("rake ranks a long recurring term above a single word", rake(runs, keys, wk).get("translation lookaside buffer") > rake(runs, keys, wk).get("memory"));
+  check("textrank ranks the central phrase above a word said once", textrank(runs, keys, wk).get("page table") > textrank(runs, keys, wk).get("memory"));
+  const before = process.env.KEYTERMS_SCORERS;
+  delete process.env.KEYTERMS_SCORERS;
+  check("the scorers are off by default (they did not help on the labelled set)", enabledScorers().length === 0);
+  process.env.KEYTERMS_SCORERS = "yake, rake, nonsense";
+  check("KEYTERMS_SCORERS picks known scorers only", enabledScorers().join(",") === "yake,rake");
+  check("with none enabled the signal is empty, so rankings do not change", keyphraseSignal(runs, keys, wk, []).size === 0);
+  if (before === undefined) delete process.env.KEYTERMS_SCORERS;
+  else process.env.KEYTERMS_SCORERS = before;
+}
+
+console.log("\n=== BM25 link weighting (tfidf.js) ===");
+{
+  const a = "Paging divides memory into frames. Frames hold pages. Frames frames frames.";
+  const corpus = ["Segmentation divides a program into segments.", "A deadlock is a wait for resources held by others."];
+  const t = computeTfidf(a, corpus).vector;
+  const b = computeTfidf(a, corpus, { weighting: "bm25" }).vector;
+  check("TF-IDF stays the default weighting", JSON.stringify(t) === JSON.stringify(computeTfidf(a, corpus, { weighting: "tfidf" }).vector));
+  check("BM25 gives every word a positive weight", Object.values(b).every((x) => x > 0), JSON.stringify(b));
+  // saturation: five uses of "frames" against one of "memory"
+  check("BM25 saturates repetition more than TF-IDF does", b.frames / b.memory < t.frames / t.memory, `${(b.frames / b.memory).toFixed(2)} vs ${(t.frames / t.memory).toFixed(2)}`);
+  check("the keywords are the same kind of list either way", computeTfidf(a, corpus, { weighting: "bm25" }).keywords.length > 0);
+}
+
 console.log("\n=== Through the API, with a stand-in AI service ===");
 const requests = [];
 let failNext = false;
@@ -204,6 +246,10 @@ Segmentation divides a program into variable-sized logical units called segments
   check("terms the syllabus names are marked as from the syllabus", segListed?.keyTermDetails?.some((t) => /external fragmentation/i.test(t.term) && t.sources.includes("syllabus")), (segListed?.keyTermDetails || []).map((t) => `${t.term}[${t.sources}]`).join(", "));
   const tooLong = await call(`/subjects/${subject._id}`, { method: "PATCH", body: { syllabus: "x".repeat(20_001) } });
   check("a syllabus over 20,000 characters is refused", tooLong.status === 400);
+  const graphPage = await call(`/subjects/${subject._id}/graph`);
+  const nodeWithTerms = (graphPage.nodes || []).find((n) => n.parentNoteId && n.keyTerms?.length);
+  check("the graph page gets each topic's key terms, as the reading pane shows them", Boolean(nodeWithTerms) && nodeWithTerms.keyTerms.some((t) => t.includes(" ")), JSON.stringify(nodeWithTerms?.keyTerms));
+  check("...and keeps the single-word keywords for clusters and the keyword map", (graphPage.nodes || []).every((n) => Array.isArray(n.keywords)));
   const noSyl = await call(`/subjects/${subject._id}`, { method: "PATCH", body: { syllabus: "" } });
   check("an empty syllabus clears it", noSyl.status === 200 && noSyl.subject.syllabus === null);
 
