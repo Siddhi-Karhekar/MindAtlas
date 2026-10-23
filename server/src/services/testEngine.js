@@ -1,7 +1,7 @@
 import { asData, callLLMDetailed, llmAvailable, llmProvider, parseJsonLoose, producedBy } from "./llm.js";
 import { stem, tokenize } from "./tfidf.js";
 import { topicWeight } from "./masteryEngine.js";
-import { blocksOf, isContentExcerpt, isQuestionWorthy, isStatement, quotableText } from "./studyText.js";
+import { blocksOf, candidateSentences, isContentExcerpt, isQuestionWorthy, isStatement, quotableText } from "./studyText.js";
 import { GENERIC, isContentWord, isStrongTerm, phrasesIn, studyFor, termKey, termPattern } from "./keyTerms.js";
 import { cosine, getEmbedder } from "./embeddings.js";
 import { blankSplitsTerm, conceptOf, normalizeText, opensWithReference, shuffleOptions, validateQuestion } from "./questionQuality.js";
@@ -2353,12 +2353,17 @@ async function optionSimilarity(embedder, questions) {
 }
 
 // What MCQs may be written from: the study sentences marked as MCQ material;
-// and what not: the rest, and every table (suitability.js).
+// and what not: the rest, and every table (suitability.js). What is not MCQ
+// material is taken from ALL the note's sentences, not only the ones the
+// relevance filter kept: with the meaning model, a step like "Read each object
+// module and note its length." can be dropped as off-topic, and read alone it
+// looks like a statement - so an AI's MCQ quoting it got through.
 function mcqSourceIndex(notes, studies) {
   const yes = [];
   const no = [];
   for (const n of notes) {
     for (const s of studies.get(n)?.sentences || []) (s.suit && !s.suit.mcq ? no : yes).push({ text: normalize(s.text), kind: s.suit?.kind || "fact" });
+    for (const s of candidateSentences(n)) if (s.suit && !s.suit.mcq) no.push({ text: normalize(s.text), kind: s.suit.kind });
     for (const b of blocksOf(n)) if (b.type === "table" && Array.isArray(b.rows)) no.push({ text: normalize(b.rows.flat().join(" ")), kind: "table-row" });
   }
   return { yes, no };

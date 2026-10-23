@@ -20,6 +20,7 @@ import { blocksFromPlainText, normalizeContent } from "../src/services/documentS
 import { withContent } from "../src/services/noteView.js";
 import { computeTfidf } from "../src/services/tfidf.js";
 import { recompute } from "../src/services/numerical.js";
+import { setEmbedderForTests } from "../src/services/embeddings.js";
 import { parseInline, parseRichText } from "../../client/src/lib/richText.js";
 import { fitWithin, imageProblem } from "../../client/src/lib/answerImages.js";
 
@@ -180,6 +181,27 @@ try {
   check("  ...its MCQs from a table row, a formula and an algorithm's step are all rejected", !ai.some((q) => /generates the executable|effective address|first step of pass 1/.test(q.prompt)) && Object.keys(why).length === 3, JSON.stringify(why));
   check("  ...the formula and the step by the suitability rule", Object.values(why).filter((w) => /suitability:(formula|step)/.test(w)).length === 2, JSON.stringify(why));
   check("  ...and a table row is caught by it too, on its own", mcqSourceProblem(tableRow, { yes: [], no: [{ text: "basic it generates the executable module of a source program. it loads the executable module to the main memory.", kind: "table-row" }] }) === "table-row");
+  // The same with the meaning model (a stand-in: a bag of content words).
+  // It drops sentences it finds off topic before the step list is built, and
+  // "Read each object module and note its length." read alone looks like a
+  // statement - the step got through until the index used every sentence.
+  const DIM = 256;
+  const hash = (w) => [...w].reduce((h, c) => (h * 31 + c.charCodeAt(0)) >>> 0, 7) % DIM;
+  setEmbedderForTests(async (texts) =>
+    texts.map((t) => {
+      const v = new Array(DIM).fill(0);
+      for (const w of String(t).toLowerCase().match(/[a-z]{3,}/g) || []) v[hash(w.replace(/s$/, ""))] += 1;
+      const n = Math.hypot(...v) || 1;
+      return v.map((x) => x / n);
+    })
+  );
+  try {
+    const rm = await generateQuestions([spos], { mcqCount: 4, theoryCount: 2, marksPerQuestion: 1 });
+    const whyM = Object.fromEntries(rm.discarded.filter((q) => q.generatedBy === "llm").map((q) => [q.prompt.slice(25, 60), q.discardReason]));
+    check("  ...and with the meaning model, the step is still rejected by the suitability rule", rm.rankedBy === "embeddings" && !rm.accepted.some((q) => q.generatedBy === "llm" && /first step of pass 1/.test(q.prompt)) && Object.values(whyM).some((w) => /suitability:step/.test(w)), JSON.stringify(whyM));
+  } finally {
+    setEmbedderForTests(null);
+  }
   const mcqAsk = bodies.find((b) => /multiple-choice questions/.test(b)) || "";
   const theoryAsk = bodies.find((b) => /theory \(short-answer\)/.test(b)) || "";
   check("for MCQs the AI is only sent MCQ material (no formula, step or table)", mcqAsk.includes("A loader is a system program") && !mcqAsk.includes("EA = base") && !mcqAsk.includes("Read each object module") && !mcqAsk.includes("It loads the executable module"));
