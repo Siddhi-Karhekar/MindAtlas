@@ -286,6 +286,8 @@ Copy `server/.env.example` to `server/.env` and `client/.env.example` to
 | `GROQ_API_KEY` | Enables LLM question drafting, theory grading and feedback phrasing |
 | `SEMANTIC_MODEL` | `off` disables the optional embedding model even when it is installed (`npm run semantic:install`) |
 | `SEMANTIC_MODEL_PATH` | A local folder holding the model, to skip its one-time download |
+| `LLM_VERIFY` | `off` skips the blind AI check of MCQs (one extra Groq request per test build; [`docs/QUESTION_QUALITY.md`](docs/QUESTION_QUALITY.md)) |
+| `QUALITY_MIN_SCORE`, `QUALITY_MIN_DISTRACTORS`, `QUALITY_WORTH_MIN` | Thresholds of the question-quality layer (0.55, 0.45, 0.5); see `docs/QUESTION_QUALITY.md` before changing them |
 | `NODE_ENV` | Set to `production` when deployed |
 | `CORS_ORIGIN` | Comma-separated allowed browser origins. Blank in dev allows `localhost:5173`; blank in production blocks cross-origin browser access |
 | `TRUST_PROXY` | Reverse-proxy hop count (`1` on most hosts) so rate limiting sees real client IPs |

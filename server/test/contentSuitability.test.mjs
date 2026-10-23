@@ -19,6 +19,7 @@ import { escapeLatexBackslashes, parseJsonLoose } from "../src/services/llm.js";
 import { blocksFromPlainText, normalizeContent } from "../src/services/documentStructure.js";
 import { withContent } from "../src/services/noteView.js";
 import { computeTfidf } from "../src/services/tfidf.js";
+import { recompute } from "../src/services/numerical.js";
 import { parseInline, parseRichText } from "../../client/src/lib/richText.js";
 import { fitWithin, imageProblem } from "../../client/src/lib/answerImages.js";
 
@@ -114,12 +115,17 @@ const subjects = [
 ];
 for (const [label, note] of subjects) {
   const r = await generateQuestions([note], { mcqCount: 10, theoryCount: 6, marksPerQuestion: 1 });
-  const mcqs = r.accepted.filter((q) => q.type === "mcq");
+  const all = r.accepted.filter((q) => q.type === "mcq");
+  // a numerical MCQ APPLIES a formula (numerical.js): its answer is computed,
+  // never blanked out of the formula - checked on its own below
+  const numerical = all.filter((q) => q.form === "numerical");
+  const mcqs = all.filter((q) => q.form !== "numerical");
   const theory = r.accepted.filter((q) => q.type === "theory");
   const bad = mcqs.filter((q) => !classifyText(q.supportingExcerpt).mcq || /=|`|\bIt (?:generates|loads|takes)\b/.test(q.supportingExcerpt));
-  check(`${label}: every MCQ comes from a definition or a fact`, mcqs.length >= 1 && bad.length === 0, bad.map((q) => q.supportingExcerpt.slice(0, 60)).join(" | ") || `${mcqs.length} MCQs`);
-  check(`${label}: fewer MCQs than asked rather than forced ones`, mcqs.length < 10, `${mcqs.length} of 10`);
+  check(`${label}: every MCQ comes from a definition or a fact`, all.length >= 1 && bad.length === 0, bad.map((q) => q.supportingExcerpt.slice(0, 60)).join(" | ") || `${mcqs.length} MCQs`);
+  check(`${label}: fewer MCQs than asked rather than forced ones`, all.length < 10, `${all.length} of 10`);
   check(`${label}: no MCQ blanks a word out of a formula, code, a step or a table`, !mcqs.some((q) => /[=×÷^]|\$|`|\bReturn\b/.test(q.prompt)));
+  check(`${label}: a numerical MCQ's answer is the one its formula gives`, numerical.every((q) => q.computation && recompute(q.computation) === q.answerKey && !q.options.filter((o) => o !== q.answerKey).includes(q.answerKey)), numerical.map((q) => q.prompt.slice(0, 60)).join(" | "));
   const forms = new Set(theory.map((q) => q.form));
   const wanted = { "SPOS (CS theory)": ["compare", "steps", "formula"], Maths: ["steps", "formula"], Programming: ["compare", "steps"], Electrical: ["formula"] }[label];
   check(`${label}: the theory section covers what MCQs cannot (${wanted.join(", ")})`, wanted.every((f) => forms.has(f)), [...forms].join(", "));

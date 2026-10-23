@@ -65,17 +65,15 @@ const EQUATION = /[A-Za-z0-9)\]'](?:\s*)(?<![=!<>])=(?!=)\s*[A-Za-z0-9(-]|(?:^|[
 export const hasFormula = (text) => LATEX.test(text) || MATH_SYMBOL.test(text) || EQUATION.test(text);
 
 // Code: statements, calls, operators and keywords of a programming language.
-const CODE = new RegExp(
-  [
-    "[{};]\\s*$", "\\b(?:for|while|if|switch)\\s*\\(", "\\b\\w+\\([^)]*\\)\\s*;", "#include\\b", "\\bprintf\\s*\\(", "\\bSystem\\.out\\.",
-    // operators only between operands ("a == b", "i++", "x && y"): prose that
-    // names an operator ("The == operator compares ...") or a language ("C++")
-    // is a statement about code, not code
-    "\\bdef\\s+\\w+\\s*\\(", "\\breturn\\s+[\\w(]", "=>", "\\b(?!(?:[Tt]he|[Aa]n?|and|or)\\s*(?:==|!=|&&|\\|\\|))[\\w)\\]]+\\s*(?:==|!=|&&|\\|\\|)\\s*(?!operators?\\b|signs?\\b|symbols?\\b)[\\w(!-]|\\b[a-z_]\\w*(?:\\+\\+|--(?=\\s*[;)]))|\\+\\+[a-z_]", "\\b(?:int|void|char|float|double|public|static)\\s+\\w+\\s*[=(;,)]",
-    "`[^`]+`", "^\\s*(?:MOV|ADD|SUB|LOAD|STORE|JMP|LDA|STA|START|END|USING|BALR|DC|DS)\\s+\\S",
-  ].join("|"),
-  "m"
-);
+const CODE_PARTS_SRC = [
+  "[{};]\\s*$", "\\b(?:for|while|if|switch)\\s*\\(", "\\b\\w+\\([^)]*\\)\\s*;", "#include\\b", "\\bprintf\\s*\\(", "\\bSystem\\.out\\.",
+  // operators only between operands ("a == b", "i++", "x && y"): prose that
+  // names an operator ("The == operator compares ...") or a language ("C++")
+  // is a statement about code, not code
+  "\\bdef\\s+\\w+\\s*\\(", "\\breturn\\s+[\\w(]", "=>", "\\b(?!(?:[Tt]he|[Aa]n?|and|or)\\s*(?:==|!=|&&|\\|\\|))[\\w)\\]]+\\s*(?:==|!=|&&|\\|\\|)\\s*(?!operators?\\b|signs?\\b|symbols?\\b)[\\w(!-]|\\b[a-z_]\\w*(?:\\+\\+|--(?=\\s*[;)]))|\\+\\+[a-z_]", "\\b(?:int|void|char|float|double|public|static)\\s+\\w+\\s*[=(;,)]",
+  "`[^`]+`", "^\\s*(?:MOV|ADD|SUB|LOAD|STORE|JMP|LDA|STA|START|END|USING|BALR|DC|DS)\\s+\\S",
+];
+const CODE = new RegExp(CODE_PARTS_SRC.join("|"), "m");
 export const hasCode = (text) => CODE.test(text);
 
 // The heading over an ordered procedure.
@@ -147,34 +145,122 @@ const isImperative = (text) => IMPERATIVE.test(text) && !nounLedStatement(text);
 const clauses = (text) => 1 + (String(text).match(/[,;:]|\b(?:which|that|because|whereas|while|although|so that|such that)\b/gi) || []).length;
 const wordCount = (text) => String(text).split(/\s+/).filter(Boolean).length;
 
+// ---- how sure the decision is
+// The rules above are a priority chain: the first one that matches decides.
+// Some matches are near-certain (a LaTeX formula, an entry of an ordered
+// list), others are a best guess (a statement nothing else matched becomes a
+// "fact"). Each decision therefore carries a confidence between 0 and 1 and
+// the reason it was made, so that
+//   - an MCQ is only built from a sentence the rules are reasonably sure of
+//     (MCQ_MIN_CONFIDENCE): below it the sentence is theory material only,
+//     the safer type, and the AI checker (testEngine.verifyWithLLM) gets the
+//     final word on any MCQ written from it;
+//   - the decision is stored with every question (sourceKind, classification)
+//     and can be inspected on a discarded one.
+// The numbers are provisional, set by hand from the fixtures; see
+// docs/QUESTION_QUALITY.md for how to calibrate them on labelled sentences.
+export const MCQ_MIN_CONFIDENCE = 0.45;
+// "may", "usually", "often": a statement that is only sometimes true has no
+// single defensible blank or option
+const HEDGE = /\b(?:may|might|usually|generally|often|sometimes|typically|normally|mostly|in most cases|can be)\b/i;
+// "For example, ...", "e.g. ...": an example leans on what it illustrates
+const EXAMPLE_LED = /^(?:for (?:example|instance)|e\.g\.|such as|consider|suppose|similarly|likewise|also|in this case|here)\b/i;
+// "because", "so that", "as a result": a cause and its effect, which an MCQ
+// can test ("Why ...?") and a theory question can ask to be explained
+const CAUSAL = /\b(?:because|since|so that|as a result|therefore|hence|thus|due to|leads? to|causes?|results? in|in order to)\b/i;
+const NUMBERS = (t) => (String(t).match(/(?<![A-Za-z-])\d+(?:\.\d+)?(?:\s*%| percent)?(?![A-Za-z-])/g) || []).length;
+const CODE_PARTS = CODE_PARTS_SRC.map((p) => new RegExp(p, "m"));
+
+function confidenceOfFact(t) {
+  let c = 0.6;
+  const reasons = [];
+  const n = wordCount(t);
+  if (n >= 8 && n <= 35) c += 0.1;
+  else {
+    c -= 0.1;
+    reasons.push(n < 8 ? "short" : "long");
+  }
+  if (HEDGE.test(t)) {
+    c -= 0.1;
+    reasons.push("hedged");
+  }
+  if (EXAMPLE_LED.test(t)) {
+    c -= 0.25;
+    reasons.push("example-or-continuation");
+  }
+  const numbers = NUMBERS(t);
+  if (numbers > 1) {
+    c -= Math.min(0.2, 0.1 * (numbers - 1));
+    reasons.push("number-heavy");
+  }
+  if (/\betc\.?|\band so on\b/i.test(t)) {
+    c -= 0.1;
+    reasons.push("open-ended-list");
+  }
+  return { confidence: c, reasons };
+}
+
+// the kind, how sure, and why: the priority chain itself
+function decide(t, { blockType, ordered, section, inTable }) {
+  if (!t) return { kind: "explanation", confidence: 1, reason: "empty" };
+  if (inTable) return { kind: "table-row", confidence: 0.95, reason: "in-a-table" };
+  if (looksLikeTableRow(t)) return { kind: "table-row", confidence: 0.75, reason: "reads-like-a-flattened-table-row" };
+  if (hasCode(t)) {
+    const parts = CODE_PARTS.filter((re) => re.test(t)).length;
+    return { kind: "code", confidence: parts >= 2 ? 0.9 : 0.7, reason: `code-features:${parts}` };
+  }
+  if (hasFormula(t)) {
+    if (LATEX.test(t)) return { kind: "formula", confidence: 0.95, reason: "latex" };
+    if (MATH_SYMBOL.test(t)) return { kind: "formula", confidence: 0.85, reason: "maths-symbol" };
+    return { kind: "formula", confidence: 0.75, reason: "equation" };
+  }
+  if (DERIVATION.test(t)) return { kind: "derivation", confidence: 0.7, reason: "working-words" };
+  if (blockType === "item") {
+    if (ordered) return { kind: "step", confidence: 0.95, reason: "ordered-list" };
+    if (PROCEDURE_SECTION.test(section)) return { kind: "step", confidence: 0.8, reason: "under-a-procedure-heading" };
+    if (isImperative(t)) return { kind: "step", confidence: 0.7, reason: "imperative-opening" };
+    if (isFragmentPoint(t)) return { kind: "fragment", confidence: 0.75, reason: "clipped-list-point" };
+    // "Memory usage – the loader itself occupies main memory." under "Disadvantages"
+    if (POINTS_SECTION.test(section) && /^[A-Z][^:–—]{0,40}?\s*(?:[:–—]|\s-\s)\s*\S/.test(t)) return { kind: "point", confidence: 0.8, reason: "labelled-point-under-pros-cons" };
+  }
+  // a sentence under a "how it works" heading that tells the reader what to do
+  if (PROCEDURE_SECTION.test(section) && isImperative(t)) return { kind: "step", confidence: 0.75, reason: "instruction-under-a-procedure-heading" };
+  if (isClipped(t)) return { kind: "fragment", confidence: 0.65, reason: "no-verb" };
+  if (DEFINES.test(t)) {
+    const opens = /^(?:an?\s+|the\s+)?[A-Za-z][\w'/-]*(?:\s+[A-Za-z][\w'/-]*){0,5}\s+(?:\([^)]*\)\s+)?(?:is|are)\s+(?:an?|the|one|any|defined|called|known)\b/i.test(t);
+    const hedged = HEDGE.test(t) ? 0.1 : 0;
+    return { kind: "definition", confidence: (opens ? 0.9 : 0.75) - hedged, reason: opens ? "term-is-a" : "refers-to-or-is-called" };
+  }
+  // a long statement of several clauses asks to be explained, not blanked
+  if (wordCount(t) > 40 && clauses(t) >= 4) {
+    const causal = (t.match(new RegExp(CAUSAL.source, "gi")) || []).length;
+    return { kind: "explanation", confidence: causal >= 2 ? 0.7 : 0.55, reason: causal >= 2 ? "long-causal-chain" : "long-many-clauses" };
+  }
+  const f = confidenceOfFact(t);
+  return { kind: "fact", confidence: f.confidence, reason: f.reasons.length ? `statement(${f.reasons.join(",")})` : "statement" };
+}
+
 /**
  * The kind of one study sentence or list entry, and the question types it can
- * carry: { kind, mcq, theory }.
+ * carry: { kind, mcq, theory, confidence, reason, role }.
  *   text     the sentence
  *   context  { blockType: "para" | "item", ordered, section, inTable }
+ * `role` says what an MCQ on it would test: "definition", "cause-effect" or
+ * "fact" for MCQ material; null otherwise. A sentence whose decision is
+ * unsure (confidence below MCQ_MIN_CONFIDENCE) is theory material only.
  */
 export function classifyText(text, context = {}) {
   const t = String(text || "").trim();
   const { blockType = "para", ordered = false, section = "", inTable = false } = context;
-  const of = (kind) => ({ kind, ...KINDS[kind] });
-  if (!t) return of("explanation");
-  if (inTable || looksLikeTableRow(t)) return of("table-row");
-  if (hasCode(t)) return of("code");
-  if (hasFormula(t)) return of("formula");
-  if (DERIVATION.test(t)) return of("derivation");
-  if (blockType === "item") {
-    if (ordered || PROCEDURE_SECTION.test(section) || isImperative(t)) return of("step");
-    if (isFragmentPoint(t)) return of("fragment");
-    // "Memory usage – the loader itself occupies main memory." under "Disadvantages"
-    if (POINTS_SECTION.test(section) && /^[A-Z][^:–—]{0,40}?\s*(?:[:–—]|\s-\s)\s*\S/.test(t)) return of("point");
+  const d = decide(t, { blockType, ordered, section, inTable });
+  const confidence = Math.max(0, Math.min(1, Number(d.confidence.toFixed(2))));
+  const out = { kind: d.kind, ...KINDS[d.kind], confidence, reason: d.reason, role: null };
+  if (out.mcq && confidence < MCQ_MIN_CONFIDENCE) {
+    out.mcq = false;
+    out.reason = `${d.reason};low-confidence`;
   }
-  // a sentence under a "how it works" heading that tells the reader what to do
-  if (PROCEDURE_SECTION.test(section) && isImperative(t)) return of("step");
-  if (isClipped(t)) return of("fragment");
-  if (DEFINES.test(t)) return of("definition");
-  // a long statement of several clauses asks to be explained, not blanked
-  if (wordCount(t) > 40 && clauses(t) >= 4) return of("explanation");
-  return of("fact");
+  if (out.mcq) out.role = d.kind === "definition" ? "definition" : CAUSAL.test(t) ? "cause-effect" : "fact";
+  return out;
 }
 
 /** Whether a section heading introduces points (advantages, features ...) rather than prose. */
