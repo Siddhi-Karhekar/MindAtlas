@@ -22,10 +22,22 @@
 //      test, and how the author marked it. With the model (embeddings.js), the
 //      KeyBERT method is blended in: a term scores higher the closer its
 //      meaning is to the note's.
+//   5. Signals from outside the text (keyTermSignals.js): terms the student
+//      added (always kept) or removed (never kept), terms the AI suggested
+//      when the note was saved, and the subject's syllabus. Each is a mark,
+//      like a heading: the term is accepted even when said once, and ranks
+//      higher.
+// With the part-of-speech tagger (posTags.js), step 2 also uses how the note
+// itself uses each word: a word it almost never uses as a noun is no term
+// ("solve", "smaller"), one it clearly does is ("derivative", though it ends
+// like an adjective), and a compound noun said once is a term ("global symbol
+// table", "relocation register").
 // All of it is deterministic for a given note, and none of it needs the model.
 
 import { blocksOf, candidateSentences, keepRelevant } from "./studyText.js";
 import { centroid, cosine } from "./embeddings.js";
+import { posAvailable, posProfile } from "./posTags.js";
+import { signalsFingerprint, signalsOf } from "./keyTermSignals.js";
 
 export const MAX_TERM_WORDS = 4;
 const MAX_TERMS = 16;
@@ -52,6 +64,16 @@ const NOUN_GENERIC = new Set(["start", "end", "number", "table", "set", "type", 
 // Generic adjectives that also open real terms when the phrase recurs:
 // "main memory", "high availability", "low latency", "common bus"
 const TERM_ADJECTIVES = new Set(["main", "single", "large", "small", "high", "low", "simple", "basic", "common", "general", "new", "multiple"]);
+
+// Adjectives that judge or compare rather than classify: never the first word
+// of a compound noun said once ("fast cache", "free frame", "final result")
+// endings only nouns have: the tagger's "verb" for "register" or "buffer" is
+// not believed (it reads "the relocation register holds" as two verbs)
+const NOUN_ENDING = /(?:tion|sion|ment|ness|ity|ance|ence|ism|ure|age|er|or|ist|ship|hood|ery|ogy|ics|ware)s?$/;
+const GREEK = new Set("alpha beta gamma delta epsilon theta lambda mu nu pi rho sigma tau phi psi omega".split(" "));
+const EVALUATIVE = new Set(
+  "excellent poor high-speed low-cost fast slow quick free recent final entire whole extra given ordinary separate fixed normal special typical real actual necessary specific own best better worse worst easy hard difficult correct wrong proper full empty short long huge tiny little big great good bad poor older younger earlier later initial current previous next certain".split(" ")
+);
 
 // Words a term never contains: function words, and verbs that are almost never
 // nouns in notes. Words that are both ("lock", "process", "address", "cache")
@@ -230,7 +252,7 @@ export function extractTerms(note, sentences, corpus = []) {
           // a run ("logical" in "logical unit") is a modifier, not a term
           if (to === run.length - 1) c.heads = (c.heads || 0) + 1;
           c.forms.set(surface, (c.forms.get(surface) || 0) + (words[0].start ? 1 : 3));
-          occurrences.push({ key, n: words.length, si, ri, from, to });
+          occurrences.push({ key, n: words.length, si, ri, from, to, spans: words.map((w) => [w.at, w.at + w.raw.length]), lastRaw: words[words.length - 1].raw });
           // the whole subject a sentence opens with: "Optical fibre carries
           // data as pulses of light", "Coaxial cable has a central conductor"
           // - and only when a known verb follows, so "Subnetting borrows bits"
@@ -318,32 +340,125 @@ export function extractTerms(note, sentences, corpus = []) {
     for (const c of members) family.add(c.key);
   }
 
+  // marks from outside the text: the student, the AI, the syllabus
+  const signals = signalsOf(note);
+  const phraseKey = (phrase) => termKey(String(phrase).replace(/[^A-Za-z0-9'’+\s-]+/g, " ").trim().split(/\s+/).filter(Boolean));
+  const markPhrase = (phrase, label) => {
+    const clean = String(phrase || "").trim();
+    if (!clean || clean.length > 80) return null;
+    const key = phraseKey(clean);
+    if (!key) return null;
+    let c = cands.get(key);
+    if (!c) {
+      // a term the run rules never produced ("hold and wait"): found as written
+      const re = termPattern(clean);
+      const hits = [];
+      let surface = null;
+      sentences.forEach((s, i) => {
+        const m = s.text.match(re);
+        if (m) {
+          hits.push(i);
+          surface = surface || m[0];
+        }
+      });
+      if (!hits.length) return null;
+      c = { key, n: key.split(" ").length, count: hits.length, forms: new Map([[surface, 3]]), sentences: new Set(hits), marks: new Set(), abbr: null, whole: true, mid: 1 };
+      cands.set(key, c);
+    }
+    c.marks.add(label);
+    return c;
+  };
+  for (const t of signals.added) markPhrase(t, "student");
+  for (const { term, importance } of signals.ai) {
+    const c = markPhrase(term, "ai");
+    if (c) c.aiImportance = Math.max(c.aiImportance || 0, importance);
+  }
+  const syllabusKeys = [];
+  for (const p of signals.syllabus) {
+    markPhrase(p, "syllabus");
+    const key = phraseKey(p);
+    if (key) syllabusKeys.push(key);
+  }
+  const removed = new Set(signals.removed.map(phraseKey));
+
+  // how the note uses each word, when the tagger is there
+  const pos = posProfile(sentences.map((s) => s.text));
+  const occurrencesOf = new Map();
+  for (const o of occurrences) {
+    if (!occurrencesOf.has(o.key)) occurrencesOf.set(o.key, []);
+    occurrencesOf.get(o.key).push(o);
+  }
+  // a compound noun: nouns only, or a classifying adjective before them
+  // ("relocation register", "global symbol table", "mutual exclusion") - not
+  // "small fast cache" or "recent page table entries"
+  const compound = (c) => {
+    if (!pos || c.n < 2 || c.n > MAX_TERM_WORDS) return false;
+    const words = c.key.split(" ");
+    if (GENERIC.has(words[0]) || EVALUATIVE.has(words[0]) || /(?:er|est)$/.test(words[0]) && pos.share(words[0]) !== null && pos.share(words[0]) < 0.5) return false;
+    if (GENERIC.has(words[words.length - 1]) && !NOUN_GENERIC.has(words[words.length - 1])) return false;
+    // a variable, a number or a size is no part of a term said once: "user B",
+    // "logical address L", "primitive root alpha", "128-bit message digest"
+    if (words.some((w) => w.length === 1 || /\d/.test(w) || GREEK.has(w))) return false;
+    return (occurrencesOf.get(c.key) || []).some((o) => {
+      const tags = o.spans.map(([a, b]) => pos.tagAt(o.si, a, b));
+      // "binding maps logical address", "a function measures how fast": a last
+      // word in -s with an object after it is the sentence's verb
+      if (/s$/.test(o.lastRaw || "") && ["DET", "ADJ", "NOUN", "PROPN", "NUM", "PRON", "ADV", "SCONJ"].includes(pos.tagAfter(o.si, o.spans[o.spans.length - 1][1]))) return false;
+      const lastOk = tags[tags.length - 1] === "NOUN" || tags[tags.length - 1] === "PROPN" || (tags[tags.length - 1] === "VERB" && /ing$/.test(words[words.length - 1]) && ["NOUN", "PROPN"].includes(tags[tags.length - 2]));
+      const restOk = tags.slice(0, -1).every((t, i) => t === "NOUN" || t === "PROPN" || (i === 0 && t === "ADJ"));
+      return lastOk && restOk;
+    });
+  };
+
   // which candidates are terms
   const accepted = new Map();
   for (const c of cands.values()) {
     const words = c.key.split(" ");
     const first = words[0];
     const last = words[words.length - 1];
+    if (removed.has(c.key)) continue;
+    // a formula's variables are no terms: "R1", "1/R"
+    if (!c.marks.size && words.some((w) => /^(?:[a-z]\d+|\d+[a-z]?|[a-z0-9]*\d[a-z0-9]*\/[a-z0-9]+|[a-z0-9]+\/[a-z0-9]*\d[a-z0-9]*)$/i.test(w))) continue;
     const nounish = c.n >= 2 && (c.count >= 2 || c.marks.size > 0 || c.subject);
     if (words.every((w) => GENERIC.has(w)) && !(nounish && words.every((w) => NOUN_GENERIC.has(w)))) continue;
     // a generic noun can open a longer term that recurs or is marked ("page table", "time slice")
     if (GENERIC.has(first) && !(nounish && (NOUN_GENERIC.has(first) || TERM_ADJECTIVES.has(first)))) continue;
     // a generic word can end a longer term ("sequence number", "routing
     // table") when the phrase recurs or is marked, never a single word
-    if (GENERIC.has(last) && !(c.n >= 2 && NOUN_GENERIC.has(last) && (c.count >= 2 || c.marks.size))) continue;
+    if (GENERIC.has(last) && !(c.n >= 2 && NOUN_GENERIC.has(last) && (c.count >= 2 || c.marks.size || compound(c)))) continue;
     const surface = [...c.forms.entries()].sort((a, b) => b[1] - a[1])[0][0];
     const acronymLike = /^[A-Z0-9][A-Z0-9/+.-]*[A-Z0-9+]$/.test(surface);
     if (c.n === 1) {
       if (last.length < 3 && !acronymLike) continue;
       if (!acronymLike && !c.marks.size) {
-        if (!c.heads) continue;
-        if (!nounEvidence(surface, body) && !nounEvidence(last, body)) continue;
-        if (verbEvidence(surface, body) || looksLikeVerbS(surface, body) || /(?:ed|ous|ive|able|ible|ful|less|ish)$/.test(last)) continue;
+        // an adjective's ending ("-ive", "-able") does not make a word an
+        // adjective when the note puts an article before it: "the derivative of"
+        const adjectiveEnding = /(?:ed|ous|ive|able|ible|ful|less|ish)$/.test(last) && !articleNoun(surface, body);
+        const byRules = c.heads && (nounEvidence(surface, body) || nounEvidence(last, body)) && !(verbEvidence(surface, body) || looksLikeVerbS(surface, body) || adjectiveEnding);
+        const share = pos ? pos.share(surface) : null;
+        if (share === null) {
+          if (!byRules) continue;
+        } else if (share < 0.34 && !NOUN_ENDING.test(last)) {
+          continue; // the note uses it as a verb, an adjective or a function word
+        } else if (!byRules && !(share >= 0.75 && c.count >= 2 && c.heads)) {
+          continue;
+        }
       }
     } else {
       // adjacent once: could be coincidence - unless it is one of a family
-      // ("bus topology", "star topology", "ring topology" each said once)
-      if (c.count < 2 && !c.marks.size && !family.has(c.key) && !c.subject) continue;
+      // ("bus topology", "star topology", "ring topology" each said once),
+      // or a compound noun ("translation lookaside buffer")
+      if (c.count < 2 && !c.marks.size && !family.has(c.key) && !c.subject) {
+        if (!compound(c)) continue;
+        c.onlyCompound = true; // said once, a term by its form alone: ranked below terms with more evidence
+      }
+      // the last word of a term is a noun: "routing table", not "page divides"
+      if (pos && !c.marks.size) {
+        const share = pos.share(surface.split(/\s+/).pop());
+        if (share !== null && share < 0.34 && !/ing$/.test(last) && !NOUN_ENDING.test(last)) continue;
+      }
+      // a variable, a size or a Greek letter is no part of an unmarked term: "user B", "128-bit digest", "root alpha"
+      if (!c.marks.size && words.some((w) => w.length === 1 || /^\d/.test(w) || GREEK.has(w))) continue;
       // "block cipher encrypts": the last word is the term's verb, not part of it
       const lastSurface = surface.split(/\s+/).pop();
       // a word ending in -s before the last word is a verb or a plural
@@ -374,7 +489,10 @@ export function extractTerms(note, sentences, corpus = []) {
   }
 
   const others = (corpus || []).filter((n) => n !== note && String(n?._id) !== String(note?._id)).map((n) => String(n.rawText || "").toLowerCase());
-  const BONUS = { title: 0.6, heading: 0.5, bold: 0.5, lead: 0.4, acronym: 0.4 };
+  const BONUS = { title: 0.6, heading: 0.5, bold: 0.5, lead: 0.4, acronym: 0.4, student: 1, syllabus: 0.6 };
+  const AI_BONUS = { 1: 0.25, 2: 0.4, 3: 0.6 };
+  // a term inside a syllabus topic ("deadlock" in "deadlock handling") ranks a little higher
+  const inSyllabus = (key) => syllabusKeys.some((k) => k !== key && ` ${k} `.includes(` ${key} `));
   const terms = [];
   for (const c of accepted.values()) {
     const alone = c.whole ? c.count : standalone.get(c.key) || 0;
@@ -383,8 +501,8 @@ export function extractTerms(note, sentences, corpus = []) {
     const re = termPattern(term, "i");
     const df = others.filter((t) => re.test(t)).length;
     const idf = 1 + Math.log((others.length + 1) / (df + 1));
-    const bonus = 1 + [...c.marks].reduce((sum, m) => sum + (BONUS[m] || 0), 0);
-    const strength = Math.log2(Math.min(c.n, MAX_TERM_WORDS) + 1) * (alone + 0.25 * (c.count - alone));
+    const bonus = 1 + [...c.marks].reduce((sum, m) => sum + (m === "ai" ? AI_BONUS[c.aiImportance] || 0.4 : BONUS[m] || 0), 0) + (!c.marks.has("syllabus") && inSyllabus(c.key) ? 0.25 : 0);
+    const strength = Math.log2(Math.min(c.n, MAX_TERM_WORDS) + 1) * (alone + 0.25 * (c.count - alone)) * (c.onlyCompound ? 0.6 : 1);
     terms.push({
       term,
       key: c.key,
@@ -443,7 +561,7 @@ const STUDY_CACHE_LIMIT = 400;
  *     semantic: true when the embedding model was used }
  */
 export async function studyFor(note, { corpus = [], embedder = null } = {}) {
-  const cacheKey = `${note?._id}:${textFingerprint(note?.rawText)}:${embedder ? embedder.model : "rules"}:${corpus.length}`;
+  const cacheKey = `${note?._id}:${textFingerprint(note?.rawText)}:${signalsFingerprint(note)}:${posAvailable() ? "pos" : "nopos"}:${embedder ? embedder.model : "rules"}:${corpus.length}`;
   if (note?._id && studyCache.has(cacheKey)) return studyCache.get(cacheKey);
 
   let sentences = await keepRelevant(note, candidateSentences(note), embedder);
@@ -509,7 +627,7 @@ const shownCache = new Map();
 // Nouns every note in a subject uses: "data", "system", "message". Said often,
 // they still say nothing about what a note is about, and highlighting them
 // buries the real terms. Shown only when the note defines or marks them.
-const BROAD = new Set(
+export const BROAD = new Set(
   "data information system item value user computer device node message network program result method problem input output level form object structure operation entity record file service application process state".split(" ")
 );
 // "A frame is the unit ...", "... is called a frame": the note says what the word is
@@ -543,16 +661,30 @@ function worthShowing(t, text) {
  * `corpus`: the other notes of the subject, so words every note uses rank lower.
  */
 export function keyTermsFor(note, corpus = [], max = SHOWN_TERMS) {
+  return keyTermDetailsFor(note, corpus, max).map((t) => t.term);
+}
+
+// what each mark means to a reader
+const SOURCE_OF = { student: "you", ai: "ai", syllabus: "syllabus" };
+
+/**
+ * The same terms as keyTermsFor, each with where it came from:
+ * [{ term, sources: ["you" | "ai" | "syllabus" | "notes"] }]. "notes" means
+ * the note's own text and layout found it. Terms the student added come first.
+ */
+export function keyTermDetailsFor(note, corpus = [], max = SHOWN_TERMS) {
   if (!note?.rawText) return [];
   const others = (corpus || []).filter((n) => n !== note && String(n?._id) !== String(note?._id));
-  const cacheKey = `${note._id}:${textFingerprint(note.rawText)}:${others.length}:${textFingerprint(others.map((n) => n._id).join(","))}`;
+  const cacheKey = `${note._id}:${textFingerprint(note.rawText)}:${signalsFingerprint(note)}:${posAvailable() ? "pos" : "nopos"}:${others.length}:${textFingerprint(others.map((n) => n._id).join(","))}`;
   if (shownCache.has(cacheKey)) return shownCache.get(cacheKey).slice(0, max);
 
   const terms = extractTerms(note, candidateSentences(note), others);
   const acronym = acronymTerm;
   const text = String(note.rawText);
   // a possessive is a use of a term, not a term: "sender's private key"
-  const strong = terms.filter((t) => isStrongTerm(t) && !/['’]s\b/i.test(t.term) && worthShowing(t, text));
+  // ...but a named law or rule is a term: "Ohm's law", "Lamport's logical clock"
+  const usePossessive = (t) => /['’]s\b/i.test(t.term) && !/['’]s\s+(?:\w+\s+)?(?:laws?|rules?|theorems?|algorithms?|principles?|clocks?|equations?|methods?|lemmas?|tests?|criteri(?:on|a))$/i.test(t.term);
+  const strong = terms.filter((t) => (isStrongTerm(t) || t.marks.includes("student")) && !usePossessive(t) && worthShowing(t, text));
   const phrases = strong.filter((t) => t.words > 1);
   const partOfPhrase = (t) => t.words === 1 && phrases.some((p) => ` ${p.key} `.includes(` ${t.key} `));
   // "Remote Procedure" beside "Remote Procedure Call": a piece of a longer
@@ -565,9 +697,15 @@ export function keyTermsFor(note, corpus = [], max = SHOWN_TERMS) {
   // best a weak key term, so at most a few of them are shown - those the
   // author set in bold or as a lead-in are not counted - and only behind the
   // phrases and acronyms when there are enough of those to fill the list.
-  const plainWord = (t) => t.words === 1 && !acronym(t) && !t.marks.some((m) => m === "bold" || m === "lead" || m === "acronym");
+  const plainWord = (t) => t.words === 1 && !acronym(t) && !t.marks.some((m) => m === "bold" || m === "lead" || m === "acronym" || m === "student");
   let words = 0;
-  const shown = candidates.filter((t) => !plainWord(t) || ++words <= MAX_PLAIN_WORDS).map((t) => t.term);
+  const kept = candidates.filter((t) => !plainWord(t) || ++words <= MAX_PLAIN_WORDS);
+  // what the student added is always shown, first
+  const byStudent = terms.filter((t) => t.marks.includes("student"));
+  const shown = [...byStudent, ...kept.filter((t) => !t.marks.includes("student"))].map((t) => {
+    const sources = [...new Set(t.marks.map((m) => SOURCE_OF[m]).filter(Boolean))];
+    return { term: t.term, sources: t.marks.some((m) => !SOURCE_OF[m]) || !sources.length ? [...sources, "notes"] : sources };
+  });
 
   if (shownCache.size >= STUDY_CACHE_LIMIT) shownCache.delete(shownCache.keys().next().value);
   shownCache.set(cacheKey, shown);

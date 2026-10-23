@@ -190,7 +190,7 @@ Every rule with its code location: `docs/ASSESSMENT.md`. Detailed walkthroughs: 
 - Database: `questions.generatedBy` (+ `promptVersion`, `model`), `tests.generation`, `responses.gradedBy` (+ `fallbackReason`), `feedback_reports.generatedBy`.
 - `/api/auth/config` shows `"ai":{"enabled":true,"name":"Groq"}` when a key is set.
 
-**Prompt versions** (`llm.js` `PROMPT_VERSIONS`): `mcq-v7` (question-quality branch, concept headers and `conceptId`; `mcq-v6`, `mcq-v5` before), `theory-v6` (`theory-v5` before), `grade-v3`, `remark-v2`, `feedback-v3`, `verify-v1` (the blind MCQ check). Bump a version whenever its prompt's wording changes.
+**Prompt versions** (`llm.js` `PROMPT_VERSIONS`): `mcq-v7` (question-quality branch, concept headers and `conceptId`; `mcq-v6`, `mcq-v5` before), `theory-v6` (`theory-v5` before), `grade-v3`, `remark-v2`, `feedback-v3`, `verify-v1` (the blind MCQ check), `keyterms-v1` (key terms suggested at upload, `docs/KEYTERMS.md`). Bump a version whenever its prompt's wording changes.
 
 **Privacy:** Groq receives note text, written answers and photos attached to theory answers, never names or emails. Groq's terms say it does not train on inputs, and make the app owner responsible for users under 18.
 
@@ -223,6 +223,8 @@ Every rule with its code location: `docs/ASSESSMENT.md`. Detailed walkthroughs: 
 | `SUPPORT_EMAIL` | optional | Set |
 | `ADMIN_USER_IDS` | optional | Account ids (not emails) allowed to open `/admin` |
 | `SEMANTIC_MODEL` | optional | `off` |
+| `KEYTERMS_POS` | optional | unset (tagger on); `off` if memory runs short (`docs/KEYTERMS.md` §3) |
+| `KEYTERMS_AI` | optional | unset (AI key-term suggestions on when `GROQ_API_KEY` is set) |
 | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `MAIL_FROM`, `APP_URL` | optional | Not set: email confirmation and password reset are off |
 | `LLM_MODEL`, `LLM_API_URL`, `LLM_TIMEOUT_MS`, `LLM_CONTEXT_CHARS`, `LLM_VISION_MODEL` | optional | Defaults: Groq, Llama 3.3 70B, 20000 ms, 24000 characters, qwen vision |
 | `ATTEMPT_GRACE_SECONDS`, `UPLOAD_MAX_MB`, `NOTES_MAX_*`, `RATE_LIMIT_*` | optional | Defaults are fine |
@@ -283,6 +285,7 @@ npm run dev
 | `npm run eval:benchmark` | Labelled MCQs: old gate vs new, per defect, threshold sweep (`docs/QUESTION_QUALITY.md`) |
 | `npm run eval:compare -- --before <old checkout>` | Old generator vs new on the same notes, rules only |
 | `npm run eval:pipeline -- --before <old checkout>` | Concept records and tests: note and test metrics, old vs new (`docs/PIPELINE.md`) |
+| `npm run eval:keyterms -- --before <old checkout>` | Key terms against hand-marked terms: precision and recall, old vs new (`docs/KEYTERMS.md`) |
 | `npm run db:backup` / `db:restore` | Database backup and restore |
 
 Client: `npm run lint` (two old warnings in `KnowledgeGraph.jsx`, not from Member 3's work) and `npm run build`.
@@ -316,6 +319,7 @@ Client: `npm run lint` (two old warnings in `KnowledgeGraph.jsx`, not from Membe
 | `docs/LINK_EVALUATION.md` | How the linking thresholds were chosen |
 | `docs/QUESTION_QUALITY.md` | What deserves a question, MCQ vs theory, the evaluator, the AI check, before/after, evaluation report, calibration |
 | `docs/PIPELINE.md` | Notes → concept records → concept plan → questions: audit, gaps, data contract, before/after, measured results, limits |
+| `docs/KEYTERMS.md` | Where key terms come from (tagger, AI suggestions, student marks, syllabus), measured results, costs, switches |
 | `docs/*.docx` | Feasibility reports |
 
 **Outside the repo (Claude Docs, in Siddhi's claude.ai artifacts):**
@@ -367,6 +371,8 @@ Lint and the full suite (26 files) pass. Commands in §13.
 **Open decisions for the team:** age policy (18+ or parental consent: India's DPDP Act, Groq's terms); a privacy policy and terms; whether to restrict sign-up to students; a closed beta with 20-30 students and the rated quality study.
 
 ---
+
+**Pending - after `quiz/concept-records`:** branch `quiz/keyterms`, delivered as `keyterms.patch` (one commit). Full account in `docs/KEYTERMS.md`. A part-of-speech tagger (wink-nlp) in key-term and keyword finding; Groq suggests each note's key terms once at upload (`keyterms-v1`, each checked word for word against the note); students add or remove key terms on a note (`PUT /api/notes/:id/key-terms`, "Edit key terms" under the note title); a syllabus per subject (`PATCH /api/subjects/:id { syllabus }`, card in the subject page) ranks the terms it names higher. Groq gets no request when a note has nothing to ask (`fallbackReason: no-material`). Measured on 8 labelled documents (labels provisional, AI-written): recall of the terms tests are built from 52% → 68% at the same precision (50% → 51%); AI suggestions not measured (need a live key). Watch Render memory: the tagger adds 30-60 MB (`KEYTERMS_POS=off` to switch it off).
 
 ## 12. Next steps (suggested order)
 

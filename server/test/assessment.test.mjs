@@ -222,7 +222,9 @@ const { blocksFromPlainText, normalizeContent } = await import("../src/services/
 const { computeTfidf } = await import("../src/services/tfidf.js");
 const { generateQuestions } = await import("../src/services/testEngine.js");
 const chapter = (k) =>
-  Array.from({ length: 400 }, (_, i) => `Chapter ${k} concept ${i} explains how the scheduler assigns process ${i} to processor ${k} using queue ${i % 7}.`).join(" ");
+  // (a real term per chapter: text whose only "term" is a run of words the rules
+  // mistook for one - "scheduler assigns" - has nothing to ask about, see below)
+  Array.from({ length: 400 }, (_, i) => `In chapter ${k}, the round robin scheduler assigns process ${i} to processor ${k} from the ready queue ${i % 7}.`).join(" ");
 const book = [1, 2, 3].map((k) => {
   const text = chapter(k);
   return { _id: `b${k}`, title: `Chapter ${k}`, rawText: text, content: normalizeContent(blocksFromPlainText(text), { title: `Chapter ${k}` }), keywords: computeTfidf(text, []).keywords, path: [] };
@@ -234,6 +236,11 @@ await generateQuestions(book, { mcqCount: 4, theoryCount: 0, marksPerQuestion: 1
 const sentChars = llmCalls[0]?.messages?.[1]?.content?.length || 0;
 check("the notes sent in one request stay within the budget (24,000 characters)", sentChars > 5000 && sentChars < 26_000, `${sentChars} characters of ${book.reduce((n, b) => n + b.rawText.length, 0)}`);
 check("...and every chapter is represented", [1, 2, 3].every((k) => (llmCalls[0]?.messages?.[1]?.content || "").includes(`### Chapter ${k}`)));
+// nothing in the notes to ask about: no request at all, and the build says why
+llmCalls = [];
+const steps = "1. Read the next input record.\n2. Sort the records by key.\n3. Write the sorted records to the output file.\n4. Repeat until the input is empty.";
+const bare = await generateQuestions([{ _id: "steps", title: "Procedure", rawText: steps, content: normalizeContent(blocksFromPlainText(steps), { title: "Procedure" }), keywords: computeTfidf(steps, []).keywords, path: [] }], { mcqCount: 2, theoryCount: 0, marksPerQuestion: 1 });
+check("notes with nothing an MCQ can ask send the AI no request", llmCalls.length === 0 && bare.generation.mcq.fallbackReason === "no-material" && bare.generation.mcq.llmAttempted === false, JSON.stringify(bare.generation.mcq));
 llmCalls = [];
 const oneLine = Array.from({ length: 4000 }, (_, n) => `Osmosis step ${n} moves water across membrane ${n % 13} toward solute level ${n % 17}`).join(", ") + ".";
 await generateQuestions([{ _id: "one", title: "One long line", rawText: oneLine, content: normalizeContent(blocksFromPlainText(oneLine), { title: "One" }), keywords: computeTfidf(oneLine, []).keywords, path: [] }], { mcqCount: 2, theoryCount: 0, marksPerQuestion: 1 });

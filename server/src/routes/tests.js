@@ -14,6 +14,9 @@ import { conceptOf } from "../services/questionQuality.js";
 import { masteryMapForSubject } from "../models/Mastery.js";
 import { findAttemptsBySubject } from "../models/Attempt.js";
 import { findResponsesByAttempts } from "../models/Response.js";
+import { withSyllabus } from "../services/keyTermSignals.js";
+import { hasCurrentAiTerms, suggestInBackground } from "../services/aiKeyTerms.js";
+import { refreshNoteConcepts } from "../services/noteLifecycle.js";
 
 const router = safeRouter();
 router.use(requireAuth);
@@ -126,7 +129,8 @@ async function buildTest(req, res) {
   if (selectedInSubject.length === 0) {
     return res.status(400).json({ error: "none of the given noteIds belong to this subject" });
   }
-  const notesInSubject = await resolveTopicNotes(selectedInSubject);
+  // the subject's syllabus travels with each note: its terms rank higher (keyTermSignals.js)
+  const notesInSubject = withSyllabus(await resolveTopicNotes(selectedInSubject), subject);
   if (notesInSubject.length === 0) {
     return res.status(400).json({ error: "the selected notes have no text to build questions from" });
   }
@@ -311,6 +315,14 @@ async function buildTest(req, res) {
     // questions from the student's earlier tests used again, because these
     // notes could not supply enough new ones
     repeatsUsed,
+  });
+
+  // Notes saved before AI key terms existed (or with an AI outage at upload)
+  // get them now, in the background, for the next test: never this one, which
+  // has been answered already. A few notes per build, one request.
+  const missing = notesInSubject.filter((n) => !hasCurrentAiTerms(n)).slice(0, 8);
+  suggestInBackground(missing, async () => {
+    for (const n of missing) await refreshNoteConcepts(n);
   });
 }
 

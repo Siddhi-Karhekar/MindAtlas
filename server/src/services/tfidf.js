@@ -12,6 +12,8 @@
 // @xenova/transformers or a hosted embedding API later only touches this
 // file.
 
+import { nounFilter } from "./posTags.js";
+
 const STOPWORDS = new Set([
   "the", "a", "an", "and", "or", "but", "if", "then", "so", "of", "to", "in",
   "on", "for", "with", "as", "is", "are", "was", "were", "be", "been", "being",
@@ -112,7 +114,7 @@ const KEYWORDS = 12;
  * The top keywords from a note's TF-IDF `vector` and term counts `tf` (see
  * above), highest first; ties keep the order the note first uses them.
  */
-function topKeywords(vector, tf) {
+function topKeywords(vector, tf, keep = () => true) {
   // each word's keyword: a plural joins its singular when the note uses both
   const keyOf = new Map();
   for (const w of Object.keys(tf).sort((a, b) => a.length - b.length || (a < b ? -1 : 1))) {
@@ -122,7 +124,7 @@ function topKeywords(vector, tf) {
   const keywords = new Map(); // key -> { weight, shown }, in order of first use
   for (const [word, weight] of Object.entries(vector)) {
     const key = keyOf.get(word);
-    if (/^\d+$/.test(key)) continue;
+    if (/^\d+$/.test(key) || !keep(key)) continue;
     const k = keywords.get(key);
     if (!k) keywords.set(key, { weight, shown: word });
     else {
@@ -142,7 +144,7 @@ function topKeywords(vector, tf) {
  * derive document frequency / idf. It returns exactly these two fields,
  * because callers save the whole result onto the note.
  */
-export function computeTfidf(text, corpusDocs = []) {
+export function computeTfidf(text, corpusDocs = [], { nounsOnly = true } = {}) {
   const tokens = tokenize(text);
   const tf = termFrequencies(tokens);
   const totalTerms = tokens.length || 1;
@@ -159,7 +161,11 @@ export function computeTfidf(text, corpusDocs = []) {
     vector[term] = Number((tfNorm * idf).toFixed(6));
   }
 
-  return { vector, keywords: topKeywords(vector, tf) };
+  // keywords are things, not "any", "called" or "solve": with the tagger
+  // (posTags.js), a word the text uses mostly as another part of speech is
+  // left out of the keywords. The vector - what links are computed from -
+  // keeps every word, so links do not change.
+  return { vector, keywords: topKeywords(vector, tf, nounsOnly ? nounFilter(text) : undefined) };
 }
 
 export function cosineSimilarity(vecA, vecB) {

@@ -40,11 +40,13 @@
 
 import crypto from "node:crypto";
 import { isStrongTerm, termKey, termPattern } from "./keyTerms.js";
+import { signalsFingerprint } from "./keyTermSignals.js";
 import { opensWithReference } from "./questionQuality.js";
 import { WORTH_MIN } from "./worthiness.js";
 import { isHypernymPair } from "./conceptRelations.js";
 
-export const CONCEPTS_VERSION = 1;
+// 2: key terms from the part-of-speech tagger and the key-term signals
+export const CONCEPTS_VERSION = 2;
 
 export const conceptId = (kind, key) => `c-${crypto.createHash("sha1").update(`${kind}|${key}`).digest("hex").slice(0, 10)}`;
 /** The id of a key term's concept. */
@@ -57,6 +59,8 @@ export function notesFingerprint(note) {
   h.update(String(note?.title || ""));
   h.update(String(note?.rawText || ""));
   h.update(JSON.stringify(note?.content || null));
+  // the student's key terms, the AI's and the syllabus decide terms too
+  h.update(signalsFingerprint(note));
   return h.digest("hex").slice(0, 16);
 }
 
