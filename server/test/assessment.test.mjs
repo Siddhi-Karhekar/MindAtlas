@@ -193,17 +193,22 @@ llmCalls = [];
 llmReply = () => ({ status: 500, body: { error: "down" } });
 g = await gradeTheoryResponse(theoryQ, "Paging uses fixed-size frames and a page table.");
 check("a failing AI is tried twice, then the key points decide", llmCalls.length === 2 && g.gradedBy === "keyword-overlap" && g.score > 0, `${llmCalls.length} calls, ${JSON.stringify(g)}`);
+check("...and the student is told the AI marker was unavailable", /AI marker was unavailable/.test(g.note) && /2 of the 3 key points|of the 3 key points/.test(g.note), g.note);
+check("...and why is kept with the mark", g.fallbackReason === "server-error", String(g.fallbackReason));
 
 llmCalls = [];
 llmReply = () => ({ hang: true });
 let t0 = Date.now();
 g = await gradeTheoryResponse(theoryQ, "Paging uses fixed-size frames and a page table.");
-check("a hung AI is abandoned after the time-out (twice), then the key points decide", g.gradedBy === "keyword-overlap" && Date.now() - t0 < 6000, `${Date.now() - t0} ms`);
+check("a hung AI is abandoned after the time-out (twice), then the key points decide", g.gradedBy === "keyword-overlap" && g.fallbackReason === "timeout" && Date.now() - t0 < 6000, `${Date.now() - t0} ms`);
 
 llmCalls = [];
 llmReply = () => ({ status: 200, body: { choices: [{ message: { content: "I think it deserves a good mark." } }] } });
 g = await gradeTheoryResponse(theoryQ, "Paging uses fixed-size frames and a page table.");
-check("an AI reply that is not the asked-for JSON falls back to the key points", g.gradedBy === "keyword-overlap");
+check("an AI reply that is not the asked-for JSON falls back to the key points", g.gradedBy === "keyword-overlap" && g.fallbackReason === "unreadable-reply", String(g.fallbackReason));
+llmReply = () => ({ status: 200, body: { choices: [{ message: { content: '{"mark": "good"}' } }] } });
+g = await gradeTheoryResponse(theoryQ, "Paging uses fixed-size frames and a page table.");
+check("an AI reply without a score falls back too, and says so", g.gradedBy === "keyword-overlap" && g.fallbackReason === "no-score" && /AI marker was unavailable/.test(g.note), JSON.stringify(g));
 
 llmCalls = [];
 llmReply = () => ({ status: 200, body: { choices: [{ message: { content: '{"score": 0.9, "keyPoints": [true, false, false], "note": "Partly."}' } }] } });

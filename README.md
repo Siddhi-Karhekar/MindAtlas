@@ -13,12 +13,11 @@ feedback workstream is assessed in
 [`docs/Test_Generation_Feedback_Feasibility_Report.docx`](docs/Test_Generation_Feedback_Feasibility_Report.docx).
 Team roles and branch conventions are in [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
-> **Prototype scope for this week's submission:** the adaptive testing
-> pipeline below runs on plain rule-based logic only (no Bayesian Knowledge
-> Tracing, no IRT/logistic-regression calibration) while the team finishes
-> notes ingestion and the knowledge graph's cross-subject disambiguation.
-> See [`CONTRIBUTING.md` §0a](CONTRIBUTING.md#0a-saturday-prototype-scope-26-sep-2026--kept-for-reference)
-> for the exact scope and build order.
+> **Scope today:** per-topic mastery across attempts uses Bayesian Knowledge
+> Tracing (`services/masteryEngine.js`); question difficulty is not yet
+> calibrated from results (no IRT). The earlier rule-based-only prototype
+> scope is kept for reference in
+> [`CONTRIBUTING.md` §0a](CONTRIBUTING.md#0a-saturday-prototype-scope-26-sep-2026--kept-for-reference).
 
 ## What works today
 
@@ -90,15 +89,20 @@ Team roles and branch conventions are in [`CONTRIBUTING.md`](CONTRIBUTING.md).
   no outside service.
 - **Account controls**: change password (asks for the current one) and
   delete account, which removes every subject, note, link, test, attempt and
-  progress record the account owns. There is no "forgot password" yet - that
-  needs an email service.
+  progress record the account owns. "Forgot password?" and email
+  confirmation are offered when an email account is configured (`SMTP_*`,
+  see Accounts above).
 - Every new note gets a TF-IDF vector and top keywords; cosine similarity
   against the other notes in the *same* subject creates weighted graph edges
-  (threshold 0.12), rendered with Cytoscape.js.
+  (threshold 0.11, set by the link evaluation in
+  [`docs/LINK_EVALUATION.md`](docs/LINK_EVALUATION.md)), rendered with
+  Cytoscape.js.
 - Notes are also compared across a student's subjects, under a stricter rule
   so a word used in two senses ("cell" in Biology, Chemistry and Computer
   Networks) doesn't link unrelated notes: a cross-subject edge needs **at
-  least two** shared top keywords **and** similarity of at least 0.25. A pair
+  least two** shared top keywords **and** similarity of at least 0.25 (with
+  the optional embedding model, a meaning similarity of at least 0.68 and one
+  shared keyword also qualifies). A pair
   that shares a keyword but fails that rule is stored as `rejected` and shown
   on the graph page under "Considered, not linked", so the disambiguation is
   visible. Other subjects' linked notes appear as faded nodes.
@@ -148,6 +152,19 @@ review, re-marking, "Report this question", and no repeated questions.
   Exercises ("Write a program ...",
   "Calculate ...") never qualify either. An LLM, when configured, is given only
   those sentences too.
+- **MCQ or theory is decided per sentence** (`services/suitability.js`,
+  `classifyText`). Rules on each sentence's structure, in a fixed order (the
+  first that matches wins), give it a kind: a *definition* or *fact* can be a
+  multiple-choice question; a *formula*, *code*, an algorithm's *step*, a
+  comparison-*table row*, a clipped list *fragment*, a labelled *point* under
+  "Advantages/Disadvantages", a *derivation* or a long *explanation* is
+  asked only as theory. Both writers follow it: the rules blank only MCQ
+  sentences, the LLM is only shown MCQ sentences when it writes MCQs, and
+  every MCQ - whoever wrote it - is checked again and dropped if its quoted
+  passage is theory material (`testEngine.mcqSourceProblem`). Theory
+  questions are steered to what MCQs cannot ask: comparison tables, the steps
+  of a procedure, formulas and lists. How many of each a test has is the
+  student's choice.
 - **Key terms are whole terms.** `services/keyTerms.js` finds a note's terms
   as phrases - "distributed computing", "two-phase locking", "Remote
   Procedure Call (RPC)" - from words that recur together, headings, bold
@@ -181,6 +198,9 @@ review, re-marking, "Report this question", and no repeated questions.
   picks the next question one at a time, in a timed "focus mode".
 - **Grading** - MCQs are scored instantly; theory answers are graded at
   submission (LLM meaning-based score, or keyword-overlap fallback), 0 to 1.
+  When the AI marker cannot be used for an answer, the student is told so in
+  the mark's note, why is stored with the answer (`fallbackReason`) and
+  logged (`[grade] ... reason=...`), and the answer can be marked again.
 - **Feedback** - a deterministic per-topic
   `attentionScore = 0.7 x (1 - accuracy) + 0.3 x normalizedTime` ranks topics
   weakest-first, with total marks. An LLM (or a template) only *phrases* the

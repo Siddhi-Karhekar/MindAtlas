@@ -1,7 +1,8 @@
 import { findOwnedSubject } from "../models/Subject.js";
 import { findChildNotes, findNotesByIds, isSplitParent, topicLabelFor } from "../models/Note.js";
 import { createTest, deleteTest, findTestsBySubject, findOwnedTest, setTestGeneration, setTestLength } from "../models/Test.js";
-import { createQuestions, findAcceptedQuestionsByTests, findQuestionsByTest } from "../models/Question.js";
+import { createQuestions, findAcceptedQuestionsByTests, findQuestionsByIds, findQuestionsByTest } from "../models/Question.js";
+import { findReportsByOwner } from "../models/QuestionReport.js";
 import { requireAuth } from "../middleware/auth.js";
 import { safeRouter } from "../middleware/safeRouter.js";
 import { once } from "../middleware/once.js";
@@ -24,6 +25,10 @@ router.use(requireAuth);
 // call). Everything above `target` that gets accepted just sits unused in
 // the pool if the adaptive walk never needs it.
 const RECENT_TESTS = 2;
+
+// Reports that say a question is broken - not merely a repeat, or "other" -
+// keep it (or a rewording of it) out of every later test on these notes.
+const BLOCKING_REPORTS = new Set(["wrong-answer", "unclear", "not-in-notes"]);
 
 // One test build at a time per student and subject. Two builds started
 // together (a double click, two tabs) would each read the same history and
@@ -206,6 +211,15 @@ async function buildTest(req, res) {
     conceptHistory.set(c, h);
   }
 
+  // Questions this student reported as wrong, unclear or not from the notes:
+  // never generated again for them (testEngine discards them as "reported").
+  const reports = (await findReportsByOwner(req.user.id)).filter((r) => String(r.subjectId) === String(subject._id) && BLOCKING_REPORTS.has(r.reason));
+  const blocked = (await findQuestionsByIds(reports.map((r) => r.questionId))).map((q) => ({
+    prompt: q.prompt,
+    excerpt: q.supportingExcerpt,
+    answer: q.type === "mcq" ? q.answerKey : null,
+  }));
+
   const { accepted, discarded, repeatsUsed, mcqGeneratedBy, theoryGeneratedBy, generation, rankedBy } = await generateQuestions(notesInSubject, {
     mcqCount: poolSizeFor(safeMcqCount),
     theoryCount: poolSizeFor(safeTheoryCount),
@@ -216,6 +230,7 @@ async function buildTest(req, res) {
     repeatRank,
     recentConcepts,
     conceptHistory,
+    blocked,
     // earlier questions are used again only to reach these, never to fill the larger pool
     mcqTarget: safeMcqCount,
     theoryTarget: safeTheoryCount,

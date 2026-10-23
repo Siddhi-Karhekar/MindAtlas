@@ -40,7 +40,7 @@ where each rule lives. Checked by `server/test/assessment.test.mjs` (part of
 | Answers are final, and only the question being asked can be answered. Two answers sent at once: one is kept. | `takeAwaitedQuestion` in `models/Attempt.js` |
 | A theory answer being typed is kept in the browser until it is sent, so a refresh does not lose it. A dropped connection is tried again before the student is asked to press the button again. | `client/src/pages/TestAttempt.jsx` |
 | Marking an attempt is done once, even when two submits arrive together or the page asks for the results while it is being marked. | `closeAttempt` (claim with a token) |
-| "Report this question", during the test or afterwards: wrong answer, unclear, not from my notes, asked before, other. The question still counts in that attempt (reporting is not a way to skip it) and is left out of later attempts at the test. Reports are kept for the team (`question_reports`). | `POST /api/questions/:id/report` |
+| "Report this question", during the test or afterwards: wrong answer, unclear, not from my notes, asked before, other. The question still counts in that attempt (reporting is not a way to skip it) and is left out of later attempts at the test. A report of a wrong answer, an unclear question or one not from the notes also keeps it - or a rewording of it, or the same answer from the same passage - out of every later test that student builds on those notes (discarded as `reported`). Reports are kept for the team (`question_reports`). | `POST /api/questions/:id/report`; `routes/tests.js` (`BLOCKING_REPORTS`), `testEngine.isReported` |
 
 ## Marking
 

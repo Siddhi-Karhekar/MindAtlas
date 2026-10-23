@@ -34,13 +34,14 @@ export async function findResponsesByAttempts(attemptIds) {
  * the score, how it was marked, the one-line reason shown to the student, and
  * per key point whether the answer covered it.
  */
-export async function updateResponseGrade({ attemptId, questionId, score, gradedBy, graderNote, keyPointResults = null, flagged = false, promptVersion = null, model = null, needsReview = false, imageReading = null }) {
+export async function updateResponseGrade({ attemptId, questionId, score, gradedBy, graderNote, keyPointResults = null, flagged = false, promptVersion = null, model = null, needsReview = false, imageReading = null, fallbackReason = null }) {
   return responses().findOneAndUpdate(
     { attemptId, questionId },
     // promptVersion / model: which prompt and model marked it, when an LLM did;
     // needsReview / imageReading: what was read from the answer's pictures, and
     // whether that leaves the mark uncertain (gradingEngine.gradeTheoryWithImages)
-    { $set: { score, gradedBy, graderNote, keyPointResults, flagged: Boolean(flagged), promptVersion, model, needsReview: Boolean(needsReview), imageReading } },
+    // fallbackReason: why the AI marker could not be used, when it could not
+    { $set: { score, gradedBy, graderNote, keyPointResults, flagged: Boolean(flagged), promptVersion, model, needsReview: Boolean(needsReview), imageReading, fallbackReason } },
     { upsert: false }
   );
 }
@@ -60,6 +61,7 @@ export async function recordRemark({ attemptId, questionId, before, reason, grad
         keyPointResults: graded.keyPointResults || null,
         promptVersion: graded.promptVersion || null,
         model: graded.model || null,
+        fallbackReason: graded.fallbackReason || null,
         ...(graded.imageReading ? { imageReading: graded.imageReading, needsReview: Boolean(graded.needsReview) } : {}),
         remark: { requestedAt: new Date(), reason, before, after: graded.score, gradedBy: graded.gradedBy, promptVersion: graded.promptVersion || null, model: graded.model || null },
       },

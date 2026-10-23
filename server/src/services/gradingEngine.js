@@ -1,4 +1,4 @@
-import { asData, callLLM, llmAvailable, parseJsonLoose, producedBy } from "./llm.js";
+import { asData, callLLMDetailed, llmAvailable, parseJsonLoose, producedBy } from "./llm.js";
 
 // Grades free-text theory/short-answer responses. MCQ responses never pass
 // through here - they're scored deterministically and instantly the moment
@@ -193,10 +193,20 @@ function rubricText(question) {
   return `QUESTION: ${question.prompt}\n\nMODEL ANSWER: ${question.answerKey}\n\nKEY POINTS:\n${points || "(none)"}`;
 }
 
+// When the AI marker cannot be used for an answer, the answer is marked by its
+// key points instead. Why is logged (the kind of failure only - never the
+// answer), stored with the response (`fallbackReason`) and told to the student.
+function markerUnavailable(kind, reason) {
+  console.warn(`[grade] ${kind}: marked by key points, AI marker unavailable reason=${reason}`);
+  return { failed: reason };
+}
+
 async function gradeWithLLM(question, answerText, { temperature = 0.2, rules = MARKING_RULES, kind = "grade" } = {}) {
-  const raw = await callLLM(`${rubricText(question)}\n\n${asData("student_answer", answerText)}`, { system: rules, temperature });
-  const parsed = parseJsonLoose(raw);
-  if (!parsed || typeof parsed.score !== "number" || Number.isNaN(parsed.score)) return null;
+  const reply = await callLLMDetailed(`${rubricText(question)}\n\n${asData("student_answer", answerText)}`, { system: rules, temperature });
+  if (!reply.text) return markerUnavailable(kind, reply.error?.kind || "no-reply");
+  const parsed = parseJsonLoose(reply.text);
+  if (!parsed || typeof parsed !== "object") return markerUnavailable(kind, "unreadable-reply");
+  if (typeof parsed.score !== "number" || Number.isNaN(parsed.score)) return markerUnavailable(kind, "no-score");
   const points = question.keyPoints || [];
   const flags = Array.isArray(parsed.keyPoints) && parsed.keyPoints.length === points.length ? parsed.keyPoints : null;
   return {
@@ -205,6 +215,17 @@ async function gradeWithLLM(question, answerText, { temperature = 0.2, rules = M
     keyPointResults: flags ? points.map((point, i) => ({ point, covered: flags[i] === true })) : null,
     gradedBy: "llm",
     ...producedBy(kind),
+  };
+}
+
+/** Key-point marking because the AI marker failed: the student is told so. */
+function byKeyPointsWithoutAi(question, answerText, reason) {
+  const graded = byKeyPoints(question, answerText);
+  const count = graded.note ? ` ${graded.note}` : "";
+  return {
+    ...graded,
+    note: `The AI marker was unavailable, so this answer was marked by the key points it mentions.${count} You can ask for it to be marked again.`,
+    fallbackReason: reason,
   };
 }
 
@@ -287,14 +308,13 @@ export async function gradeTheoryResponse(question, answerText, { imageNote = fa
   }
   if (llmAvailable()) {
     const graded = await gradeWithLLM(question, answerText, imageNote ? { rules: MARKING_RULES + IMAGE_NOTE } : undefined);
-    if (graded && mostlyOtherScript(answerText)) return capByOwnFlags(graded); // see mostlyOtherScript
-    if (graded) {
-      if (graded.score > 0 && !sharesWordsWithRubric(question, answerText)) {
-        return byKeyPoints(question, answerText, "None of the ideas in the model answer appear in your answer, so it did not earn marks.");
-      }
-      if (!graded.keyPointResults) graded.keyPointResults = keyPointMatches(answerText, question.keyPoints);
-      return capByKeyPoints(graded, question, answerText);
+    if (graded.failed) return byKeyPointsWithoutAi(question, answerText, graded.failed);
+    if (mostlyOtherScript(answerText)) return capByOwnFlags(graded); // see mostlyOtherScript
+    if (graded.score > 0 && !sharesWordsWithRubric(question, answerText)) {
+      return byKeyPoints(question, answerText, "None of the ideas in the model answer appear in your answer, so it did not earn marks.");
     }
+    if (!graded.keyPointResults) graded.keyPointResults = keyPointMatches(answerText, question.keyPoints);
+    return capByKeyPoints(graded, question, answerText);
   }
   return byKeyPoints(question, answerText);
 }
@@ -315,7 +335,7 @@ export async function remarkTheoryResponse(question, answerText, { imageNote = f
   if (!normalize(answerText)) return gradeTheoryResponse(question, answerText);
   if (addressesTheMarker(answerText) || !llmAvailable()) return gradeTheoryResponse(question, answerText, { imageNote });
   const graded = await gradeWithLLM(question, answerText, { temperature: 0, rules: REMARK_RULES + (imageNote ? IMAGE_NOTE : ""), kind: "remark" });
-  if (!graded) return byKeyPoints(question, answerText);
+  if (graded.failed) return byKeyPointsWithoutAi(question, answerText, graded.failed);
   if (mostlyOtherScript(answerText)) return capByOwnFlags(graded);
   if (graded.score > 0 && !sharesWordsWithRubric(question, answerText)) {
     return byKeyPoints(question, answerText, "None of the ideas in the model answer appear in your answer, so it did not earn marks.");
