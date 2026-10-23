@@ -100,18 +100,25 @@ function batches(notes) {
 
 /**
  * Ask the AI for the key terms of `notes` (topic notes: ordinary notes or
- * subtopics) and store what passes the checks on each note. Returns
- * { requested, stored, dropped, failed } (counts; never note text).
+ * subtopics) and check them, without storing anything. Returns
+ * { byNote: Map(note id -> [{ term, importance }]), report } where report is
+ * { requested, terms, dropped, failed, tokens: { prompt, completion } }
+ * (counts only; never note text). Used by suggestKeyTerms and the evaluation.
  */
-export async function suggestKeyTerms(notes) {
-  const report = { requested: 0, stored: 0, terms: 0, dropped: 0, failed: null };
+export async function askForKeyTerms(notes) {
+  const report = { requested: 0, terms: 0, dropped: 0, failed: null, tokens: { prompt: 0, completion: 0 } };
+  const byNote = new Map();
   const targets = (notes || []).filter((n) => n && n.rawText && !isSplitParent(n));
-  if (!targets.length || !aiTermsEnabled()) return report;
+  if (!targets.length || !aiTermsEnabled()) return { byNote, report };
   for (const group of batches(targets)) {
     const ids = new Map(group.map((n, i) => [`s${i + 1}`, n]));
     const body = [...ids].map(([id, n]) => `<section id="${id}" title="${String(n.title || "").replace(/"/g, "'").slice(0, 120)}">\n${String(n.rawText).slice(0, NOTE_CHARS)}\n</section>`).join("\n\n");
     report.requested++;
     const reply = await callLLMDetailed(asData("sections", body), { system: RULES, temperature: 0 });
+    if (reply.usage) {
+      report.tokens.prompt += reply.usage.prompt;
+      report.tokens.completion += reply.usage.completion;
+    }
     const parsed = reply.text ? parseJsonLoose(reply.text) : null;
     if (!parsed || !Array.isArray(parsed.sections)) {
       report.failed = reply.error?.kind || "invalid-response";
@@ -123,15 +130,35 @@ export async function suggestKeyTerms(notes) {
       const { kept, dropped } = checkTerms(note, sec.terms);
       report.dropped += dropped;
       if (!kept.length) continue;
-      await updateNote(note._id, {
-        aiTerms: { version: AI_TERMS_VERSION, fingerprint: textFingerprint(note.rawText), terms: kept, at: new Date(), ...producedBy("keyterms") },
-      });
-      report.stored++;
+      byNote.set(String(note._id), kept);
       report.terms += kept.length;
     }
   }
-  console.log(`[keyterms] ai: notes=${targets.length} requests=${report.requested} stored=${report.stored} terms=${report.terms} dropped=${report.dropped}${report.failed ? ` failed=${report.failed}` : ""}`);
-  return report;
+  return { byNote, report };
+}
+
+/** The stored form of a note's AI terms (also what the evaluation attaches in memory). */
+export const aiTermsRecord = (note, kept) => ({ version: AI_TERMS_VERSION, fingerprint: textFingerprint(note.rawText), terms: kept, at: new Date(), ...producedBy("keyterms") });
+
+/**
+ * Ask the AI for the key terms of `notes` and store what passes the checks on
+ * each note. Returns { requested, stored, terms, dropped, failed, tokens }
+ * (counts; never note text).
+ */
+export async function suggestKeyTerms(notes) {
+  const targets = (notes || []).filter((n) => n && n.rawText && !isSplitParent(n));
+  const { byNote, report } = await askForKeyTerms(targets);
+  let stored = 0;
+  for (const note of targets) {
+    const kept = byNote.get(String(note._id));
+    if (!kept) continue;
+    await updateNote(note._id, { aiTerms: aiTermsRecord(note, kept) });
+    stored++;
+  }
+  if (report.requested) {
+    console.log(`[keyterms] ai: notes=${targets.length} requests=${report.requested} stored=${stored} terms=${report.terms} dropped=${report.dropped} tokens=${report.tokens.prompt}+${report.tokens.completion}${report.failed ? ` failed=${report.failed}` : ""}`);
+  }
+  return { ...report, stored };
 }
 
 // ---- in the background ----------------------------------------------------

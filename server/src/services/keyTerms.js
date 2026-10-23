@@ -39,6 +39,60 @@ import { centroid, cosine } from "./embeddings.js";
 import { posAvailable, posProfile } from "./posTags.js";
 import { signalsFingerprint, signalsOf } from "./keyTermSignals.js";
 import { enabledScorers, keyphraseSignal } from "./keyphraseScores.js";
+import { tagText } from "./posTags.js";
+import { createRequire } from "node:module";
+
+// ---- the October 2026 key-term fixes (docs/KEYTERMS.md section 2b) ----------
+// Each can be switched off for measurement: KEYTERMS_FIXES lists the ones on
+// (default: all of DEFAULT_FIXES; "off" for none).
+//   common   domain specificity: an everyday English word (the ~4,000 most
+//            common, SCOWL size 10) is a key term only with evidence - the
+//            note defines it or the author marks it
+//   commonphrase  ...and a phrase said once needs a word that is not everyday
+//            (off: it dropped real terms - "prime number", "safe state")
+//   rare     ...the other side: a single uncommon noun said once ("starvation",
+//            "conductance") is a term, ranked below better-evidenced ones
+//   shapes   term shapes the word rules broke: named laws ("Kirchhoff's current
+//            law"), ordinals ("second derivative"), -ing modifiers ("growing
+//            phase"), -ing nouns ("marshalling"), nouns the tagger misread as
+//            verbs ("relocation register"), items of a list after a colon
+//            ("hold and wait, no preemption and circular wait")
+//   chunks   noun phrases from the tagger across words the rules treat as
+//            verbs: "procedure call", "call stack", "circular wait"
+//   limit    more than 16 terms for a long note: one per 40 words, up to 40
+//   formula  LaTeX commands, $...$ formulas and Greek letter names are never terms
+//   cvalue   C-value (Frantzi et al., 2000) for nested terms: a phrase seen
+//            mostly inside a longer term counts for less
+export const KEYTERM_FIXES = ["common", "commonphrase", "rare", "shapes", "chunks", "limit", "formula", "cvalue"];
+// On by default: the fixes that improved the labelled set (npm run eval:keyterms;
+// docs/KEYTERMS.md section 2b). commonphrase, chunks, limit and cvalue made no
+// difference or made it worse there, so they are off; re-test them on longer notes.
+export const DEFAULT_FIXES = ["common", "rare", "shapes", "formula"];
+export function keytermFixes() {
+  const v = String(process.env.KEYTERMS_FIXES ?? "").trim().toLowerCase();
+  if (!v) return new Set(DEFAULT_FIXES);
+  if (/^(?:off|none|false|0|no)$/.test(v)) return new Set();
+  return new Set(v.split(/[\s,]+/).filter((x) => KEYTERM_FIXES.includes(x)));
+}
+const fixesKey = () => [...keytermFixes()].sort().join("+");
+
+let commonSet = null;
+/** The ~4,000 most common English words (SCOWL size 10; wordlist-english, MIT/SCOWL licence). */
+function commonWords() {
+  if (commonSet) return commonSet;
+  try {
+    const require = createRequire(import.meta.url);
+    commonSet = new Set(require("wordlist-english/english-words-10.json").map((w) => String(w).toLowerCase()));
+  } catch (err) {
+    console.warn("[keyterms] common-word list unavailable:", err?.message || err);
+    commonSet = new Set();
+  }
+  return commonSet;
+}
+const ORDINALS = new Set(["first", "second", "third", "fourth", "fifth", "last", "zeroth", "nth"]);
+const NAMED_HEADS = /^(?:law|laws|rule|rules|theorem|theorems|algorithm|algorithms|principle|principles|clock|clocks|equation|equations|method|lemma|test|criterion|criteria|constant|effect|paradox|problem|protocol|code|cipher|attack|model|formula|series|distribution)$/;
+// "$x^2$", "\frac{a}{b}": replaced by spaces of the same length, so positions still line up
+const maskFormulas = (text) => String(text).replace(/\$[^$\n]{1,200}\$/g, (m) => " ".repeat(m.length)).replace(/\\[a-zA-Z]+/g, (m) => " ".repeat(m.length));
 
 export const MAX_TERM_WORDS = 4;
 const scorerWeight = () => {
@@ -197,6 +251,9 @@ const verbEvidence = (word, text) =>
 // frames": a word ending in -s straight after a noun, never used as a noun
 // itself, is the sentence's verb
 // ("and" does not make a noun here: "affects both equally and cancels out")
+// the note says what the word is: "A frame is ...", "... is called a frame", "known as frames"
+const definesWord = (word, text) =>
+  new RegExp(`(?:^|[.!?]\\s+|\\n)(?:an?\\s+|the\\s+)?(?:[A-Za-z-]+\\s+){0,2}${escapeRe(word)}s?\\s+(?:is|are)\\s+(?:an?|the|one|defined|called|known)\\b|\\b(?:called|known as|termed|referred to as)\\s+(?:an?|the)?\\s*${escapeRe(word)}`, "i").test(text);
 const articleNoun = (word, text) => new RegExp(`\\b(?:the|a|an|of|its|their|these|those|each|by)\\s+${escapeRe(word)}\\b`, "i").test(text);
 const looksLikeVerbS = (word, text) =>
   /[a-z]s$/i.test(word) &&
@@ -235,11 +292,16 @@ function acronymDefinitions(text) {
  * where `sentences` are indexes into `sentences` and `marks` says how the
  * author flagged it ("title" | "heading" | "bold" | "lead" | "acronym").
  */
-export function extractTerms(note, sentences, corpus = []) {
+export function extractTerms(note, sentences, corpus = [], { explain = null } = {}) {
+  // explain (a Map, for diagnosis): why each rejected candidate was rejected
+  const reject = (c, why) => explain?.set(c.key, why);
+  const fix = keytermFixes();
+  const common = fix.has("common") || fix.has("commonphrase") || fix.has("rare") ? commonWords() : new Set();
+  const isCommon = (w) => common.has(w) || common.has(singular(w));
   const body = sentences.map((s) => s.text).join("\n");
   const cands = new Map(); // key -> candidate
   const occurrences = []; // every candidate occurrence: { key, sentence, run, from, to }
-  const runsOf = sentences.map((s) => contentRuns(s.text));
+  const runsOf = sentences.map((s) => contentRuns(fix.has("formula") ? maskFormulas(s.text) : s.text));
 
   sentences.forEach((s, si) => {
     runsOf[si].forEach((run, ri) => {
@@ -276,9 +338,39 @@ export function extractTerms(note, sentences, corpus = []) {
     });
   });
 
+  // a phrase looked up as written ("hold and wait"), made a candidate if the
+  // run rules never produced it
+  const foundAsWritten = (phrase) => {
+    const words = String(phrase).replace(/[^A-Za-z0-9'’+\s-]+/g, " ").trim().split(/\s+/).filter(Boolean);
+    if (!words.length || words.length > 6) return null;
+    const key = termKey(words.map((w) => w.toLowerCase()));
+    if (cands.has(key)) return cands.get(key);
+    const re = termPattern(words.join(" "));
+    const hits = sentences.map((s, i) => (re.test(s.text) ? i : -1)).filter((i) => i >= 0);
+    if (!hits.length) return null;
+    let count = 0;
+    let surface = null;
+    for (const s of sentences) for (const m of s.text.matchAll(new RegExp(re.source, "gi"))) {
+      count++;
+      surface = surface || m[0];
+    }
+    const c = { key, n: words.length, count, forms: new Map([[surface || words.join(" "), 3]]), sentences: new Set(hits), marks: new Set(), abbr: null, whole: true, mid: 1 };
+    cands.set(key, c);
+    return c;
+  };
   // what the author marked
   const mark = (text, label) => {
     const runs = contentRuns(text);
+    // a lead-in or bold phrase the run rules split ("Hold and wait:", "**call
+    // stack**"): taken whole, as written, when it is short and in the sentences
+    if (fix.has("shapes") && (label === "lead" || label === "bold") && runs.length > 1) {
+      const whole = String(text).trim().replace(/[:.]+$/, "");
+      if (whole.split(/\s+/).length <= 4 && !/[,;()]/.test(whole)) {
+        const c = foundAsWritten(whole);
+        if (c) c.marks.add(label);
+        return;
+      }
+    }
     // a lead-in is a term only when it is one: "Atomicity:", not "DNS stores several record types:"
     if (label === "lead" && runs.length !== 1) return;
     for (const run of runs) {
@@ -346,6 +438,61 @@ export function extractTerms(note, sentences, corpus = []) {
     for (const c of members) family.add(c.key);
   }
 
+  if (fix.has("shapes")) {
+    // named laws and methods: "Kirchhoff's current law", "Lamport's logical clock"
+    for (const s of sentences) {
+      for (const m of s.text.matchAll(/\b([A-Z][a-z]+(?:[-–][A-Z][a-z]+)?['’]s)\s+((?:[A-Za-z-]+\s+){0,2}[A-Za-z-]+)/g)) {
+        const tail = m[2].split(/\s+/);
+        // the name's object ends at its head noun: "Ohm's law states" -> "Ohm's law"
+        const at = tail.findIndex((w) => NAMED_HEADS.test(w.toLowerCase()));
+        if (at < 0) continue;
+        const c = foundAsWritten(`${m[1]} ${tail.slice(0, at + 1).join(" ")}`);
+        if (c) c.marks.add("named");
+      }
+    }
+    // the items of a list after a colon: "Four conditions must hold for a
+    // deadlock: mutual exclusion, hold and wait, no preemption and circular wait."
+    for (const s of sentences) {
+      const m = s.text.match(/:\s+([^:]+?)[.;]?$/);
+      if (!m) continue;
+      let items = m[1].split(/\s*,\s*/);
+      if (items.length < 3) continue;
+      const last = items[items.length - 1].replace(/^(?:and|or)\s+/i, "");
+      const split = last.split(/\s+(?:and|or)\s+/i);
+      items = [...items.slice(0, -1), ...(split.length === 2 && split.every((x) => x.split(/\s+/).length <= 3) ? split : [last])];
+      if (!items.every((x) => x.split(/\s+/).length <= 4)) continue; // a list of clauses, not of terms
+      for (const item of items) {
+        const t = item.replace(/^(?:and|or|the|a|an)\s+/i, "").trim();
+        if (!t || /\d/.test(t)) continue;
+        const c = foundAsWritten(t);
+        if (c && c.n >= 2) c.marks.add("listed");
+      }
+    }
+  }
+  if (fix.has("chunks")) {
+    // noun phrases the tagger sees across words the run rules treat as verbs
+    // or breaks: "procedure call", "call stack", "recursive call", "circular wait"
+    for (const s of sentences) {
+      const tagged = tagText(fix.has("formula") ? maskFormulas(s.text) : s.text);
+      if (!tagged) break;
+      const words = tagged.filter((w) => w.pos !== "SPACE");
+      for (let i = 0; i < words.length; i++) {
+        for (let j = i + 1; j < Math.min(words.length, i + MAX_TERM_WORDS); j++) {
+          const span = words.slice(i, j + 1);
+          const ok = span.every((w, k) => (k < span.length - 1 ? ["NOUN", "PROPN", "ADJ"].includes(w.pos) : ["NOUN", "PROPN"].includes(w.pos)) && /^[A-Za-z][A-Za-z-]*$/.test(w.value));
+          if (!ok) break;
+          // adjacent in the text, not across punctuation
+          if (span.some((w, k) => k && s.text.slice(span[k - 1].end, w.start).trim())) break;
+          const key = termKey(span.map((w) => w.lower));
+          if (cands.has(key)) continue;
+          if (span.some((w) => GENERIC.has(w.lower) && !NOUN_GENERIC.has(w.lower))) continue;
+          const c = foundAsWritten(span.map((w) => w.value).join(" "));
+          if (c) c.chunk = true;
+        }
+      }
+    }
+  }
+
   // marks from outside the text: the student, the AI, the syllabus
   const signals = signalsOf(note);
   const phraseKey = (phrase) => termKey(String(phrase).replace(/[^A-Za-z0-9'’+\s-]+/g, " ").trim().split(/\s+/).filter(Boolean));
@@ -400,7 +547,10 @@ export function extractTerms(note, sentences, corpus = []) {
   const compound = (c) => {
     if (!pos || c.n < 2 || c.n > MAX_TERM_WORDS) return false;
     const words = c.key.split(" ");
-    if (GENERIC.has(words[0]) || EVALUATIVE.has(words[0]) || /(?:er|est)$/.test(words[0]) && pos.share(words[0]) !== null && pos.share(words[0]) < 0.5) return false;
+    const shapes = fix.has("shapes");
+    // an ordinal or a generic noun can open a term: "second derivative", "time quantum"
+    const genericOpener = GENERIC.has(words[0]) && !(shapes && (ORDINALS.has(words[0]) || NOUN_GENERIC.has(words[0])));
+    if (genericOpener || EVALUATIVE.has(words[0]) || /(?:er|est)$/.test(words[0]) && pos.share(words[0]) !== null && pos.share(words[0]) < 0.5) return false;
     if (GENERIC.has(words[words.length - 1]) && !NOUN_GENERIC.has(words[words.length - 1])) return false;
     // a variable, a number or a size is no part of a term said once: "user B",
     // "logical address L", "primitive root alpha", "128-bit message digest"
@@ -410,8 +560,13 @@ export function extractTerms(note, sentences, corpus = []) {
       // "binding maps logical address", "a function measures how fast": a last
       // word in -s with an object after it is the sentence's verb
       if (/s$/.test(o.lastRaw || "") && ["DET", "ADJ", "NOUN", "PROPN", "NUM", "PRON", "ADV", "SCONJ"].includes(pos.tagAfter(o.si, o.spans[o.spans.length - 1][1]))) return false;
-      const lastOk = tags[tags.length - 1] === "NOUN" || tags[tags.length - 1] === "PROPN" || (tags[tags.length - 1] === "VERB" && /ing$/.test(words[words.length - 1]) && ["NOUN", "PROPN"].includes(tags[tags.length - 2]));
-      const restOk = tags.slice(0, -1).every((t, i) => t === "NOUN" || t === "PROPN" || (i === 0 && t === "ADJ"));
+      const lastWord = words[words.length - 1];
+      // a noun the tagger read as a verb here ("the relocation register holds"):
+      // believed a noun when the note mostly uses it as one, or it ends like one
+      const misreadNoun = shapes && tags[tags.length - 1] === "VERB" && ((pos.share(lastWord) ?? 0) >= 0.5 || NOUN_ENDING.test(lastWord));
+      const lastOk = tags[tags.length - 1] === "NOUN" || tags[tags.length - 1] === "PROPN" || misreadNoun || (tags[tags.length - 1] === "VERB" && /ing$/.test(lastWord) && ["NOUN", "PROPN"].includes(tags[tags.length - 2]));
+      // "growing phase", "first derivative": an -ing word or an ordinal opening the term
+      const restOk = tags.slice(0, -1).every((t, i) => t === "NOUN" || t === "PROPN" || (i === 0 && (t === "ADJ" || (shapes && ((t === "VERB" && /ing$/.test(words[0])) || ORDINALS.has(words[0]) || NOUN_GENERIC.has(words[0]))))));
       return lastOk && restOk;
     });
   };
@@ -422,31 +577,43 @@ export function extractTerms(note, sentences, corpus = []) {
     const words = c.key.split(" ");
     const first = words[0];
     const last = words[words.length - 1];
-    if (removed.has(c.key)) continue;
+    if (removed.has(c.key)) { reject(c, "removed-by-student"); continue; }
     // a formula's variables are no terms: "R1", "1/R"
-    if (!c.marks.size && words.some((w) => /^(?:[a-z]\d+|\d+[a-z]?|[a-z0-9]*\d[a-z0-9]*\/[a-z0-9]+|[a-z0-9]+\/[a-z0-9]*\d[a-z0-9]*)$/i.test(w))) continue;
+    if (!c.marks.size && words.some((w) => /^(?:[a-z]\d+|\d+[a-z]?|[a-z0-9]*\d[a-z0-9]*\/[a-z0-9]+|[a-z0-9]+\/[a-z0-9]*\d[a-z0-9]*)$/i.test(w))) { reject(c, "formula-variable"); continue; }
     const nounish = c.n >= 2 && (c.count >= 2 || c.marks.size > 0 || c.subject);
-    if (words.every((w) => GENERIC.has(w)) && !(nounish && words.every((w) => NOUN_GENERIC.has(w)))) continue;
+    if (words.every((w) => GENERIC.has(w)) && !(nounish && words.every((w) => NOUN_GENERIC.has(w)))) { reject(c, "all-generic"); continue; }
     // a generic noun can open a longer term that recurs or is marked ("page table", "time slice")
-    if (GENERIC.has(first) && !(nounish && (NOUN_GENERIC.has(first) || TERM_ADJECTIVES.has(first)))) continue;
+    if (GENERIC.has(first) && !(nounish && (NOUN_GENERIC.has(first) || TERM_ADJECTIVES.has(first))) && !(fix.has("shapes") && c.n >= 2 && (ORDINALS.has(first) || NOUN_GENERIC.has(first)) && (nounish || compound(c)))) { reject(c, "generic-first-word"); continue; }
     // a generic word can end a longer term ("sequence number", "routing
     // table") when the phrase recurs or is marked, never a single word
-    if (GENERIC.has(last) && !(c.n >= 2 && NOUN_GENERIC.has(last) && (c.count >= 2 || c.marks.size || compound(c)))) continue;
+    if (GENERIC.has(last) && !(c.n >= 2 && NOUN_GENERIC.has(last) && (c.count >= 2 || c.marks.size || compound(c)))) { reject(c, "generic-last-word"); continue; }
     const surface = [...c.forms.entries()].sort((a, b) => b[1] - a[1])[0][0];
     const acronymLike = /^[A-Z0-9][A-Z0-9/+.-]*[A-Z0-9+]$/.test(surface);
     if (c.n === 1) {
-      if (last.length < 3 && !acronymLike) continue;
-      if (!acronymLike && !c.marks.size) {
+      if (last.length < 3 && !acronymLike) { reject(c, "too-short"); continue; }
+      if (fix.has("formula") && !c.marks.size && GREEK.has(last)) { reject(c, "greek-letter"); continue; }
+      // an everyday word ("state", "system", "memory") is a key term only when
+      // the note says what it is, or the author marked it
+      // (keeping everyday words said three or five times or more was measured too: worse)
+      if (fix.has("common") && !acronymLike && !c.marks.size && isCommon(last) && !definesWord(surface, body)) { reject(c, "single-word-everyday"); continue; }
+      // "Marshalling packs ...", "aging prevents ...": an -ing noun that is not an everyday word
+      const ingNoun = fix.has("shapes") && /ing$/.test(last) && !isCommon(last) && (c.opens || articleNoun(surface, body));
+      // an uncommon noun said once ("starvation", "conductance"): a term, ranked lower
+      const rareNoun = fix.has("rare") && c.count === 1 && !isCommon(last) && c.heads && pos && (pos.share(surface) ?? 0) >= 0.5;
+      if (rareNoun) c.weak = true;
+      if (!acronymLike && !c.marks.size && !ingNoun && !rareNoun) {
         // an adjective's ending ("-ive", "-able") does not make a word an
         // adjective when the note puts an article before it: "the derivative of"
         const adjectiveEnding = /(?:ed|ous|ive|able|ible|ful|less|ish)$/.test(last) && !articleNoun(surface, body);
         const byRules = c.heads && (nounEvidence(surface, body) || nounEvidence(last, body)) && !(verbEvidence(surface, body) || looksLikeVerbS(surface, body) || adjectiveEnding);
         const share = pos ? pos.share(surface) : null;
         if (share === null) {
-          if (!byRules) continue;
+          if (!byRules) { reject(c, "single-word-no-noun-evidence"); continue; }
         } else if (share < 0.34 && !NOUN_ENDING.test(last)) {
+          reject(c, "single-word-tagged-not-noun");
           continue; // the note uses it as a verb, an adjective or a function word
         } else if (!byRules && !(share >= 0.75 && c.count >= 2 && c.heads)) {
+          reject(c, c.count < 2 ? "single-word-said-once" : !c.heads ? "single-word-only-a-modifier" : "single-word-weak-evidence");
           continue;
         }
       }
@@ -455,25 +622,28 @@ export function extractTerms(note, sentences, corpus = []) {
       // ("bus topology", "star topology", "ring topology" each said once),
       // or a compound noun ("translation lookaside buffer")
       if (c.count < 2 && !c.marks.size && !family.has(c.key) && !c.subject) {
-        if (!compound(c)) continue;
+        if (!compound(c) && !c.chunk) { reject(c, "phrase-said-once-not-compound"); continue; }
+        // a phrase said once made only of everyday words ("consistent state", "fixed size block")
+        if (fix.has("commonphrase") && words.every((w) => isCommon(w))) { reject(c, "phrase-everyday-words"); continue; }
         c.onlyCompound = true; // said once, a term by its form alone: ranked below terms with more evidence
       }
       // the last word of a term is a noun: "routing table", not "page divides"
       if (pos && !c.marks.size) {
         const share = pos.share(surface.split(/\s+/).pop());
-        if (share !== null && share < 0.34 && !/ing$/.test(last) && !NOUN_ENDING.test(last)) continue;
+        if (share !== null && share < 0.34 && !/ing$/.test(last) && !NOUN_ENDING.test(last) && !(fix.has("shapes") && c.chunk)) { reject(c, "phrase-last-word-not-noun"); continue; }
       }
       // a variable, a size or a Greek letter is no part of an unmarked term: "user B", "128-bit digest", "root alpha"
-      if (!c.marks.size && words.some((w) => w.length === 1 || /^\d/.test(w) || GREEK.has(w))) continue;
+      if (!c.marks.size && words.some((w) => w.length === 1 || /^\d/.test(w) || GREEK.has(w))) { reject(c, "phrase-has-variable"); continue; }
       // "block cipher encrypts": the last word is the term's verb, not part of it
       const lastSurface = surface.split(/\s+/).pop();
       // a word ending in -s before the last word is a verb or a plural
       // subject, not a modifier: "computes key", "users agree"
-      if (!c.marks.size && surface.split(/\s+/).slice(0, -1).some((w) => /^[a-z]+s$/i.test(w) && !/(ss|us|is|ics|ies|ws|as|os|ous)$/i.test(w) && !/^[A-Z0-9]+s$/.test(w))) continue;
+      if (!c.marks.size && surface.split(/\s+/).slice(0, -1).some((w) => /^[a-z]+s$/i.test(w) && !/(ss|us|is|ics|ies|ws|as|os|ous)$/i.test(w) && !/^[A-Z0-9]+s$/.test(w))) { reject(c, "phrase-inner-s-word"); continue; }
       // a garbled subscript ("PU e" from PU_e, "K s" from K_s): a lone small letter is no word
-      if (surface.split(/\s+/).some((w) => /^[a-z]$/.test(w)) || surface.split(/\s+/).every((w) => w.length <= 2)) continue;
+      if (surface.split(/\s+/).some((w) => /^[a-z]$/.test(w)) || surface.split(/\s+/).every((w) => w.length <= 2)) { reject(c, "phrase-garbled"); continue; }
       // ("a topology every device uses" is not one: a word the note also uses as a noun is a noun)
-      if (!c.marks.size && ((verbEvidence(lastSurface, body) && !nounEvidence(lastSurface, body) && !family.has(c.key)) || looksLikeVerbS(lastSurface, body))) continue;
+      const nounByTags = fix.has("shapes") && pos && (pos.share(last) ?? 0) >= 0.5;
+      if (!c.marks.size && !nounByTags && ((verbEvidence(lastSurface, body) && !nounEvidence(lastSurface, body) && !family.has(c.key)) || looksLikeVerbS(lastSurface, body))) { reject(c, "phrase-ends-in-verb"); continue; }
     }
     accepted.set(c.key, { ...c, surface, acronymLike });
   }
@@ -495,7 +665,7 @@ export function extractTerms(note, sentences, corpus = []) {
   }
 
   const others = (corpus || []).filter((n) => n !== note && String(n?._id) !== String(note?._id)).map((n) => String(n.rawText || "").toLowerCase());
-  const BONUS = { title: 0.6, heading: 0.5, bold: 0.5, lead: 0.4, acronym: 0.4, student: 1, syllabus: 0.6 };
+  const BONUS = { title: 0.6, heading: 0.5, bold: 0.5, lead: 0.4, acronym: 0.4, student: 1, syllabus: 0.6, named: 0.5, listed: 0.3 };
   const AI_BONUS = { 1: 0.25, 2: 0.4, 3: 0.6 };
   // a term inside a syllabus topic ("deadlock" in "deadlock handling") ranks a little higher
   const inSyllabus = (key) => syllabusKeys.some((k) => k !== key && ` ${k} `.includes(` ${key} `));
@@ -506,13 +676,20 @@ export function extractTerms(note, sentences, corpus = []) {
   const terms = [];
   for (const c of accepted.values()) {
     const alone = c.whole ? c.count : standalone.get(c.key) || 0;
-    if (alone === 0 && !c.marks.size) continue; // only ever part of a longer term
+    if (alone === 0 && !c.marks.size) { reject(c, "only-inside-longer-term"); continue; } // only ever part of a longer term
     const term = displayForm(c);
     const re = termPattern(term, "i");
     const df = others.filter((t) => re.test(t)).length;
     const idf = 1 + Math.log((others.length + 1) / (df + 1));
     const bonus = 1 + [...c.marks].reduce((sum, m) => sum + (m === "ai" ? AI_BONUS[c.aiImportance] || 0.4 : BONUS[m] || 0), 0) + (!c.marks.has("syllabus") && inSyllabus(c.key) ? 0.25 : 0);
-    const strength = Math.log2(Math.min(c.n, MAX_TERM_WORDS) + 1) * (alone + 0.25 * (c.count - alone)) * (c.onlyCompound ? 0.6 : 1);
+    // C-value (Frantzi et al.): a term's frequency less the average frequency
+    // of the accepted longer terms it sits inside
+    let freq = alone + 0.25 * (c.count - alone);
+    if (fix.has("cvalue")) {
+      const longer = [...accepted.values()].filter((o) => o.n > c.n && ` ${o.key} `.includes(` ${c.key} `));
+      freq = longer.length ? Math.max(0.25, c.count - longer.reduce((t, o) => t + o.count, 0) / longer.length) : c.count;
+    }
+    const strength = Math.log2(Math.min(c.n, MAX_TERM_WORDS) + 1) * freq * (c.onlyCompound ? 0.6 : 1) * (c.weak ? 0.6 : 1);
     terms.push({
       term,
       key: c.key,
@@ -571,7 +748,7 @@ const STUDY_CACHE_LIMIT = 400;
  *     semantic: true when the embedding model was used }
  */
 export async function studyFor(note, { corpus = [], embedder = null } = {}) {
-  const cacheKey = `${note?._id}:${textFingerprint(note?.rawText)}:${signalsFingerprint(note)}:${posAvailable() ? "pos" : "nopos"}:${enabledScorers().join("+")}:${embedder ? embedder.model : "rules"}:${corpus.length}`;
+  const cacheKey = `${note?._id}:${textFingerprint(note?.rawText)}:${signalsFingerprint(note)}:${posAvailable() ? "pos" : "nopos"}:${enabledScorers().join("+")}:${fixesKey()}:${embedder ? embedder.model : "rules"}:${corpus.length}`;
   if (note?._id && studyCache.has(cacheKey)) return studyCache.get(cacheKey);
 
   let sentences = await keepRelevant(note, candidateSentences(note), embedder);
@@ -590,7 +767,9 @@ export async function studyFor(note, { corpus = [], embedder = null } = {}) {
       })
       .sort((a, b) => b.score - a.score || a.term.localeCompare(b.term));
   }
-  terms = terms.slice(0, MAX_TERMS);
+  // a long note gets more: one term per 40 words, up to 40 (the "limit" fix)
+  const words = String(note?.rawText || "").split(/\s+/).filter(Boolean).length;
+  terms = terms.slice(0, keytermFixes().has("limit") ? Math.max(MAX_TERMS, Math.min(40, Math.ceil(words / 40))) : MAX_TERMS);
 
   const patterns = terms.map((t) => [t.key, termPattern(t.term, "i")]);
   sentences = sentences.map((s) => ({ ...s, terms: patterns.filter(([, re]) => re.test(s.text)).map(([k]) => k) }));
@@ -685,7 +864,7 @@ const SOURCE_OF = { student: "you", ai: "ai", syllabus: "syllabus" };
 export function keyTermDetailsFor(note, corpus = [], max = SHOWN_TERMS) {
   if (!note?.rawText) return [];
   const others = (corpus || []).filter((n) => n !== note && String(n?._id) !== String(note?._id));
-  const cacheKey = `${note._id}:${textFingerprint(note.rawText)}:${signalsFingerprint(note)}:${posAvailable() ? "pos" : "nopos"}:${enabledScorers().join("+")}:${others.length}:${textFingerprint(others.map((n) => n._id).join(","))}`;
+  const cacheKey = `${note._id}:${textFingerprint(note.rawText)}:${signalsFingerprint(note)}:${posAvailable() ? "pos" : "nopos"}:${enabledScorers().join("+")}:${fixesKey()}:${others.length}:${textFingerprint(others.map((n) => n._id).join(","))}`;
   if (shownCache.has(cacheKey)) return shownCache.get(cacheKey).slice(0, max);
 
   const terms = extractTerms(note, candidateSentences(note), others);

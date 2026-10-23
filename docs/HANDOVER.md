@@ -376,6 +376,8 @@ Lint and the full suite (26 files) pass. Commands in §13.
 
 **Pending - after `quiz/keyterms`:** `keyterms-methods.patch` (one commit). YAKE, TextRank and RAKE re-rankers for key terms, YAKE for upload keywords, and BM25 for link vectors: all implemented and switchable, all off by default, because none improved the labelled results (one or two terms of 190) and BM25 separated related topics less well on a proxy (AUC 0.745 → 0.626). Re-test BM25 on the raters' link ratings (`docs/KEYTERMS.md` §2a). The graph page now shows and searches each topic's key terms.
 
+**Pending - after `keyterms-methods.patch`:** `keyterms-fixes.patch` (one commit). Fixes from an error analysis of the labelled set (`docs/KEYTERMS.md` §2b): everyday English words (SCOWL size 10, `wordlist-english`) need a definition or a mark to be key terms; uncommon nouns said once count; named laws, ordinals, -ing terms, nouns misread as verbs and colon lists are recognised; formula tokens are never terms (`KEYTERMS_FIXES`, default `common,rare,shapes,formula`). Terms tests are built from: 51% → 66% correct, 68% → 76% found (F1 0.58 → 0.71). `npm run eval:keyterms -- --ai` measures Groq's suggestions and their token cost with your key.
+
 ## 12. Next steps (suggested order)
 
 1. Merge `fix/classifier-and-reports`; then apply, push and merge `quiz/question-quality` (§13); check a live test build and the `[quality]` log lines.

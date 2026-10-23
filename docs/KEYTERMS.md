@@ -99,12 +99,73 @@ Compare the result with the TF-IDF run. If BM25 wins, set new thresholds from it
 
 **Key terms on the graph page.** This is what "use the key-term extractor for keywords" became. The graph API's nodes now carry `keyTerms`, the same terms the reading pane shows. The graph page lists them as "Key terms" for the selected note and searches them. The stored single-word `keywords` stay as they are, because cluster labels ("shared ideas") and the keyword map compare single words across notes: phrases would rarely be shared.
 
+## 2b. Fixing what the rules got wrong (current defaults)
+
+**How the errors were found.** Every wrong pick and every miss on the labelled set was listed. Each missed term was traced with a new diagnosis option, `extractTerms(note, sentences, corpus, { explain })`, which records why each candidate was rejected.
+
+| Cause of a miss | Terms |
+| --- | --- |
+| Rejected by a rule | 33 |
+| Not in any study sentence (only in headings, tables or over-long sentences) | 14 |
+| Below the 16-term cut | 8 |
+| Split apart by the word rules | 7 |
+
+Of the 33 rejected, 16 were two-word terms said once whose last word the tagger read as a verb ("relocation register", "logical address"), and 7 were uncommon single nouns said once ("starvation", "conductance").
+
+**About half of the wrong picks were everyday words** ("state", "system", "user", "data", "memory", "request").
+
+| Fix (`KEYTERM_FIXES`) | What it does | On by default |
+| --- | --- | --- |
+| `common` | An everyday English word (the ~4,000 most common: SCOWL size 10, package `wordlist-english`) is a key term only when the note defines it ("Electric current is ...", "... is called a frame") or the author marks it (title, heading, bold, label, syllabus, student, AI) | yes |
+| `rare` | An uncommon noun said once ("starvation") is a term, ranked × 0.6 | yes |
+| `shapes` | Named laws and methods ("Kirchhoff's current law", "Lamport's logical clock"); ordinals ("second derivative", recurring or a compound); -ing modifiers and nouns ("growing phase", "marshalling"); nouns the tagger read as verbs (believed when the note mostly uses the word as a noun, or it ends like one: -er, -tion ...); the items of a list after a colon ("mutual exclusion, hold and wait, no preemption and circular wait"); a bold or "Term:" phrase the word rules split | yes |
+| `formula` | `$...$` formulas and LaTeX commands are blanked before terms are found; Greek letter names are no terms ("frac", "alpha" were picked before) | yes |
+| `commonphrase` | A phrase said once must contain a non-everyday word | **no**: it dropped real terms ("prime number", "safe state", "lock manager") |
+| `chunks` | Noun phrases from the tagger across words the rules treat as verbs ("procedure call") | **no**: more wrong picks than right ones |
+| `limit` | One term per 40 words for long notes (up to 40) instead of 16 | **no**: no difference here (after `common`, no note reached 16) |
+| `cvalue` | C-value ranking for nested terms | **no**: no difference here |
+
+`KEYTERMS_FIXES` overrides the defaults: for example `common,shapes`, or `off` to restore the earlier behaviour. Also measured and rejected: keeping everyday words that recur 3 or 5 times or more. That scored worse: F1 0.670 and 0.688, against 0.706.
+
+**Results** (`npm run eval:keyterms -- --ablate`; full table in `server/evaluation/keyterms/report.md`). Matching now treats "processes" and "process" as the same, which the earlier report did not.
+
+| | Concept-records branch | Tagger, no fixes (`keyterms.patch`) | **Defaults now** |
+| --- | --- | --- | --- |
+| Terms tests are built from: share correct | 50% | 51% | **66%** |
+| ... marked terms found | 52% | 68% | **76%** |
+| ... F1 | 0.51 | 0.58 | **0.71** |
+| Highlighted terms: share correct | 76% | 74% | 75% |
+| ... marked terms found | 46% | 61% | 63% |
+| ... F1 | 0.57 | 0.67 | 0.68 |
+
+Taking each fix out of the defaults lowers F1 for the terms tests are built from:
+
+| Fix taken out | F1 drops to |
+| --- | --- |
+| `common` | 0.61 |
+| `shapes` | 0.68 |
+| `rare` | 0.70 |
+| `formula` | 0.70 |
+
+**Effect on questions** (`npm run eval:pipeline`, rules only, against the concept-records branch; this includes `keyterms.patch` as well):
+
+| | Concept-records branch | Now |
+| --- | --- | --- |
+| Questions accepted | 139 | 148 |
+| A concept asked the same way again (tests 2-3) | 25% | 14% |
+| Build time, all inputs | 12.0 s | 14.9 s |
+
+Bad sources (misread OCR, missing context) still give 0 questions. "Top-10 concepts covered" went from 61% to 57%, but each side measures against its own top 10, which the new terms change, so the two figures are not comparable.
+
+**AI suggestions, measured by you.** Run `GROQ_API_KEY=... npm run eval:keyterms -- --ai`. It asks Groq exactly as an upload does (`aiKeyTerms.askForKeyTerms`), stores nothing, and adds two things to the report: a "Defaults + AI suggestions" row, and the tokens used (prompt and completion, counted by Groq), terms kept and terms dropped. The upload log now prints the tokens too: `[keyterms] ai: ... tokens=<prompt>+<completion>`. The pipeline was checked against a stand-in server only; there are no real-Groq numbers yet.
+
 ## 3. Costs and switches
 
-- **Memory:** the tagger adds about 30-60 MB once loaded (on the first upload or test build). Render's free server has 512 MB, and OCR of a large photo was measured near that limit before (HANDOVER.md §6). OCR could not be run here to measure the combination. If the API restarts on large photo uploads, set `KEYTERMS_POS=off`.
+- **Memory:** the common-word list adds well under 1 MB. The tagger adds about 30-60 MB once loaded (on the first upload or test build). Render's free server has 512 MB, and OCR of a large photo was measured near that limit before (HANDOVER.md §6). OCR could not be run here to measure the combination. If the API restarts on large photo uploads, set `KEYTERMS_POS=off`.
 - **Speed:** loading takes about 0.2 s, once. Tagging takes about 0.13 s per 100,000 characters.
 - **AI cost:** one Groq request per upload (more only for very long documents), plus at most one per test build for older notes. Each is about 18,000 characters of input at most.
 - **Settings:**
+  - `KEYTERMS_FIXES`: which of §2b's fixes are on (default `common,rare,shapes,formula`; `off` for none).
   - `KEYTERMS_SCORERS` (yake, textrank, rake; off by default), `KEYTERMS_SCORER_WEIGHT` (0–2, default 0.5), `KEYWORDS_YAKE=on`, `LINK_WEIGHTING=bm25`: all off by default, see §2a.
   - `KEYTERMS_POS=off` turns the tagger off.
   - `KEYTERMS_AI=off` turns AI suggestions off.

@@ -98,6 +98,42 @@ check("...and not a single generic word, a formula, a long phrase or a repeat", 
 check("...with an importance of 1-3 (2 when none is given)", checked.kept.find((t) => t.term === "relocation register")?.importance === 2);
 
 // ---------------------------------------------------------------------------
+console.log("\n=== Key-term fixes (keyTerms.js KEYTERM_FIXES) ===");
+{
+  const { keytermFixes, DEFAULT_FIXES } = await import("../src/services/keyTerms.js");
+  const termsOf = (title, text, env = undefined) => {
+    const before = process.env.KEYTERMS_FIXES;
+    if (env === undefined) delete process.env.KEYTERMS_FIXES;
+    else process.env.KEYTERMS_FIXES = env;
+    const n = { _id: `fx-${title}-${env}`, title, rawText: text, content: normalizeContent(blocksFromPlainText(text), { title }), path: [] };
+    const explain = new Map();
+    const out = extractTerms(n, candidateSentences(n), [], { explain }).map((t) => t.term.toLowerCase());
+    if (before === undefined) delete process.env.KEYTERMS_FIXES;
+    else process.env.KEYTERMS_FIXES = before;
+    return { out, explain };
+  };
+  check("the default fixes are the ones that helped on the labelled set", DEFAULT_FIXES.join(",") === "common,rare,shapes,formula" && keytermFixes().has("common"));
+  const spool = "Spooling is the process of placing jobs in a buffer on disk so that a slow device can read them later. It lets the processor carry on with other work. This keeps the printer busy while the processor is free.";
+  const sp = termsOf("Spooling", spool);
+  check("an everyday word is no key term without evidence ('processor', 'printer')", !sp.out.includes("processor") && !sp.out.includes("printer") && sp.out.includes("spooling"), sp.out.join(", "));
+  check("...and the reason is recorded", sp.explain.get("processor") === "single-word-everyday");
+  check("...but every fix can be switched off", termsOf("Spooling", spool, "off").out.includes("processor"));
+  const defined = termsOf("Circuits", "Electric current is the rate of flow of electric charge through a conductor. The current in a series circuit is the same at every point. A resistor limits the current that flows in a circuit.");
+  check("an everyday word the note defines is a key term ('current')", defined.out.includes("current"), defined.out.join(", "));
+  const laws = termsOf("Circuits", "Kirchhoff's current law states that the currents entering a junction add up to the currents leaving it. Ohm's law relates voltage, current and resistance in a conductor.");
+  check("a named law is one term ('kirchhoff's current law', 'ohm's law')", laws.out.some((t) => /kirchhoff.s current law/.test(t)) && laws.out.some((t) => /ohm.s law/.test(t)), laws.out.join(", "));
+  const deriv = termsOf("Differentiation", "The second derivative of a function measures how fast its slope changes. A stationary point is a minimum when the second derivative there is positive.");
+  check("an ordinal opens a term ('second derivative')", deriv.out.includes("second derivative"), deriv.out.join(", "));
+  const listed = termsOf("Deadlocks", "A deadlock is a situation in which processes wait forever for resources held by each other. Four conditions must hold for a deadlock: mutual exclusion, hold and wait, no preemption and circular wait.");
+  check("the items of a list after a colon are terms ('hold and wait', 'circular wait')", ["hold and wait", "no preemption", "circular wait"].every((t) => listed.out.includes(t)), listed.out.join(", "));
+  const ing = termsOf("Distributed systems", "Marshalling packs the arguments of a remote call into a message for the network. The client stub performs marshalling before the message is sent.");
+  check("an uncommon -ing noun is a term ('marshalling')", ing.out.includes("marshalling"), ing.out.join(", "));
+  const rare = termsOf("Scheduling", "Priority scheduling can cause starvation of low-priority jobs. Round robin scheduling gives each job a fixed time quantum in turn.");
+  check("an uncommon noun said once is a term ('starvation')", rare.out.includes("starvation"), rare.out.join(", "));
+  const formula = termsOf("Differentiation", "The power rule gives the derivative of $x^{n}$ as $n x^{n-1}$, written \\frac{d}{dx} x^n = n x^{n-1}. The derivative of $\\alpha x$ is the constant alpha.");
+  check("formula commands and Greek letter names are no terms ('frac', 'alpha')", !formula.out.includes("frac") && !formula.out.includes("alpha"), formula.out.join(", "));
+}
+
 console.log("\n=== YAKE, TextRank and RAKE (keyphraseScores.js) ===");
 {
   const { yake, textrank, rake, enabledScorers, keyphraseSignal } = await import("../src/services/keyphraseScores.js");
