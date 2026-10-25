@@ -1,6 +1,6 @@
 import { findOwnedSubject } from "../models/Subject.js";
 import { findChildNotes, findNotesByIds, isSplitParent, topicLabelFor, updateNote } from "../models/Note.js";
-import { createTest, deleteTest, findTestsBySubject, findOwnedTest, setTestGeneration, setTestLength } from "../models/Test.js";
+import { createTest, deleteTest, deleteTestAndData, findTestsBySubject, findOwnedTest, setTestGeneration, setTestLength } from "../models/Test.js";
 import { createQuestions, findAcceptedQuestionsByTests, findQuestionsByIds, findQuestionsByTest } from "../models/Question.js";
 import { findReportsByOwner } from "../models/QuestionReport.js";
 import { requireAuth } from "../middleware/auth.js";
@@ -12,7 +12,7 @@ import { isProduction } from "../config.js";
 import { generateQuestions } from "../services/testEngine.js";
 import { conceptOf } from "../services/questionQuality.js";
 import { masteryMapForSubject } from "../models/Mastery.js";
-import { findAttemptsBySubject } from "../models/Attempt.js";
+import { findAttemptsBySubject, findOpenAttempt } from "../models/Attempt.js";
 import { findResponsesByAttempts } from "../models/Response.js";
 import { withSyllabus } from "../services/keyTermSignals.js";
 import { hasCurrentAiTerms, suggestInBackground } from "../services/aiKeyTerms.js";
@@ -343,6 +343,21 @@ router.get("/subjects/:id/tests", async (req, res) => {
 // For checking the generator while developing, a server started with
 // TEST_REVEAL_KEYS=1 sends them when asked with ?keys=1. Ignored in
 // production whatever the setting says.
+// DELETE /api/tests/:id - remove one of the student's tests with its
+// questions, attempts, answers and results (models/Test.js deleteTestAndData).
+// Mastery is kept. Refused while an attempt's answers are being marked, so a
+// result is never written for a test that is gone.
+router.delete("/tests/:id", async (req, res) => {
+  const test = await findOwnedTest(req.params.id, req.user.id);
+  if (!test) return res.status(404).json({ error: "test not found" });
+  const open = await findOpenAttempt(test._id, req.user.id);
+  if (open?.status === "closing") {
+    return res.status(409).json({ error: "an attempt at this test is being marked - try again in a moment", code: "closing" });
+  }
+  const removed = await deleteTestAndData(test._id, req.user.id);
+  res.json({ deleted: true, removed });
+});
+
 router.get("/tests/:id", async (req, res) => {
   const test = await findOwnedTest(req.params.id, req.user.id);
   if (!test) return res.status(404).json({ error: "test not found" });
