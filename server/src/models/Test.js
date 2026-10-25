@@ -1,4 +1,5 @@
 import { getCollection } from "../db/index.js";
+import { deleteAnswerImagesByAttempts } from "./AnswerImage.js";
 
 const tests = () => getCollection("tests");
 
@@ -65,4 +66,27 @@ export async function deleteTest(id) {
 
 export async function findOwnedTest(id, ownerId) {
   return tests().findOne({ _id: id, ownerId });
+}
+
+/**
+ * Delete one of a student's tests and everything made for it: its questions,
+ * every attempt at it with the answers, pictures and results, and the
+ * questions reported from it. The student's per-topic mastery is kept: what
+ * they showed they know stays true without the test. Returns how many went,
+ * per kind, or null when the test is not theirs.
+ */
+export async function deleteTestAndData(id, ownerId) {
+  const col = (name) => getCollection(name);
+  const test = await tests().findOne({ _id: id, ownerId });
+  if (!test) return null;
+  const attemptIds = (await col("attempts").find({ testId: id, ownerId })).map((a) => a._id);
+  const removed = {};
+  removed.responses = attemptIds.length ? await col("responses").deleteMany({ attemptId: attemptIds }) : 0;
+  removed.answer_images = await deleteAnswerImagesByAttempts(attemptIds);
+  removed.feedback_reports = attemptIds.length ? await col("feedback_reports").deleteMany({ attemptId: attemptIds }) : 0;
+  removed.question_reports = await col("question_reports").deleteMany({ testId: id, ownerId });
+  removed.attempts = attemptIds.length ? await col("attempts").deleteMany({ _id: attemptIds }) : 0;
+  removed.questions = await col("questions").deleteMany({ testId: id });
+  removed.tests = await tests().deleteMany({ _id: id, ownerId });
+  return removed;
 }

@@ -139,6 +139,8 @@ export default function Tests() {
   const [subject, setSubject] = useState(null);
   const [notes, setNotes] = useState(null);
   const [tests, setTests] = useState(null);
+  const [deletingTest, setDeletingTest] = useState(null); // test id awaiting confirmation
+  const [removingTest, setRemovingTest] = useState(false);
   const [progress, setProgress] = useState(null);
   const [title, setTitle] = useState("");
   // Always TOPIC note ids: plain notes and individual subtopics. Selecting a
@@ -256,6 +258,19 @@ export default function Tests() {
     <span className="flex items-center justify-center w-6 h-6 rounded-full bg-primary text-on-primary font-label-sm text-label-sm">{n}</span>
   );
 
+
+  async function removeTest(testId) {
+    setRemovingTest(true);
+    try {
+      await api.deleteTest(testId);
+      setTests((list) => (list || []).filter((t) => t._id !== testId));
+      setDeletingTest(null);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setRemovingTest(false);
+    }
+  }
   return (
     <div className="flex flex-col w-full">
       <form onSubmit={handleBuild} className="flex flex-col gap-space-2xl pb-space-xl max-w-7xl mx-auto w-full">
@@ -657,8 +672,9 @@ export default function Tests() {
           {(tests || []).map((t) => (
             <li
               key={t._id}
-              className="flex items-center justify-between rounded-xl bg-surface-container-lowest shadow-sm hover:shadow-md transition-shadow p-space-lg"
+              className="rounded-xl bg-surface-container-lowest shadow-sm hover:shadow-md transition-shadow p-space-lg"
             >
+              <div className="flex items-center justify-between gap-space-md">
               <div className="flex items-center gap-space-md min-w-0">
                 <span className="w-8 h-8 rounded-lg bg-surface-container-low flex items-center justify-center text-primary shrink-0">
                   <Icon name="fact_check" className="text-lg" />
@@ -681,13 +697,45 @@ export default function Tests() {
                   </div>
                 </div>
               </div>
-              <Link
-                to={`/tests/${t._id}/attempt`}
-                className="px-space-lg py-space-sm rounded-lg bg-primary text-on-primary font-ui-title text-ui-title shadow-sm hover:opacity-90 transition-all flex items-center gap-space-xs shrink-0"
-              >
-                <span>Take test</span>
-                <Icon name="arrow_forward" className="text-base" />
-              </Link>
+              <div className="flex items-center gap-space-sm shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setDeletingTest(deletingTest === t._id ? null : t._id)}
+                  aria-label={`Delete ${t.title}`}
+                  title="Delete test"
+                  data-testid="delete-test"
+                  className="p-space-sm rounded-lg text-on-surface-variant hover:text-error hover:bg-surface-container-high"
+                >
+                  <Icon name="delete" className="text-base" />
+                </button>
+                <Link
+                  to={`/tests/${t._id}/attempt`}
+                  className="px-space-lg py-space-sm rounded-lg bg-primary text-on-primary font-ui-title text-ui-title shadow-sm hover:opacity-90 transition-all flex items-center gap-space-xs"
+                >
+                  <span>Take test</span>
+                  <Icon name="arrow_forward" className="text-base" />
+                </Link>
+              </div>
+              </div>
+              {deletingTest === t._id && (
+                <div className="flex flex-wrap items-center justify-end gap-space-sm mt-space-sm font-body-sm text-body-sm" role="alert">
+                  <span className="text-error">
+                    Delete “{t.title}” with its questions, attempts and results? Your topic progress is kept. This cannot be undone.
+                  </span>
+                  <button
+                    type="button"
+                    disabled={removingTest}
+                    onClick={() => removeTest(t._id)}
+                    className="px-space-sm py-space-2xs rounded bg-error-container text-on-error-container disabled:opacity-60"
+                    data-testid="confirm-delete-test"
+                  >
+                    {removingTest ? "Deleting…" : "Delete"}
+                  </button>
+                  <button type="button" onClick={() => setDeletingTest(null)} className="px-space-sm py-space-2xs rounded hover:bg-surface-container-high">
+                    Cancel
+                  </button>
+                </div>
+              )}
             </li>
           ))}
         </ul>

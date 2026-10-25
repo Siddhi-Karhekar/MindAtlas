@@ -646,6 +646,34 @@ try {
   check("the revision card has a streak: tests were finished today", rev.status === 200 && rev.streak.days >= 1 && rev.streak.today === true, JSON.stringify(rev.streak));
   check("...and lists topics to revise, each with its subject", Array.isArray(rev.due) && rev.due.every((d) => d.subject && d.topic && ["shaky", "stale"].includes(d.reason)), JSON.stringify(rev.due).slice(0, 150));
 
+  console.log("\n=== Deleting a test ===");
+  {
+    const doomed = await call(`/subjects/${side._id}/tests`, { method: "POST", token: me, body: { title: "To delete", noteIds: sideNoteIds, mcqCount: 2, theoryCount: 0, marksPerQuestion: 1, durationMinutes: 5 } });
+    check("a test to delete was built", doomed.status === 201, doomed.error);
+    const tid = doomed.test._id;
+    const started = await call(`/tests/${tid}/attempts`, { method: "POST", token: me });
+    const q = started.question;
+    await call(`/attempts/${started.attempt._id}/responses`, { method: "POST", token: me, body: { questionId: q._id, answer: q.options?.[0] ?? "x" } });
+    const done = await call(`/attempts/${started.attempt._id}/submit`, { method: "POST", token: me });
+    check("...and an attempt at it was submitted", done.status === 200, done.error);
+    const progressBefore = await call(`/subjects/${side._id}/progress`, { token: me });
+
+    const notMine = await call(`/tests/${tid}`, { method: "DELETE", token: other });
+    check("another student cannot delete it (not found)", notMine.status === 404);
+    const del = await call(`/tests/${tid}`, { method: "DELETE", token: me });
+    check("the owner deletes it, with its questions, attempt, answers and report", del.status === 200 && del.removed.tests === 1 && del.removed.questions >= 2 && del.removed.attempts === 1 && del.removed.responses >= 1 && del.removed.feedback_reports === 1, JSON.stringify(del.removed));
+    const list = await call(`/subjects/${side._id}/tests`, { token: me });
+    check("it is gone from the test list", !(list.tests || []).some((t) => t._id === tid));
+    check("...opening it says not found", (await call(`/tests/${tid}`, { token: me })).status === 404);
+    check("...and so does its attempt's result", (await call(`/attempts/${started.attempt._id}/feedback`, { token: me })).status === 404);
+    check("deleting it again says not found", (await call(`/tests/${tid}`, { method: "DELETE", token: me })).status === 404);
+    const progressAfter = await call(`/subjects/${side._id}/progress`, { token: me });
+    const masteryOf = (p) => JSON.stringify((p.topics || []).map((t) => [t.topicId, t.pKnown, t.observations]));
+    check("the student's topic mastery is kept", (progressBefore.topics || []).length > 0 && masteryOf(progressAfter) === masteryOf(progressBefore), masteryOf(progressAfter));
+    check("...while the deleted attempt leaves the progress history", !(progressAfter.history || []).some((h) => String(h.attemptId) === String(started.attempt._id)));
+    check("other tests are untouched", (await call(`/tests/${exam.test._id}`, { token: me })).status === 200);
+  }
+
   console.log("\n=== Deleting a subject ===");
   check("nobody else can delete a subject", (await call(`/subjects/${side._id}`, { method: "DELETE", token: other })).status === 404);
   const gone2 = await call(`/subjects/${side._id}`, { method: "DELETE", token: me });

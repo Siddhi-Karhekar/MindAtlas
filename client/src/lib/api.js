@@ -203,6 +203,8 @@ export const api = {
   getKeywordMap: (noteId) => request(`/graph/notes/${noteId}/keyword-map`),
 
   listTests: (subjectId) => request(`/subjects/${subjectId}/tests`),
+  // the test with its questions, attempts and results (mastery is kept)
+  deleteTest: (testId) => request(`/tests/${testId}`, { method: "DELETE" }),
   createTest: (subjectId, { title, noteIds, mcqCount, theoryCount, marksPerQuestion, theoryMarks, negativeMarks, sectioned, durationMinutes }) =>
     request(`/subjects/${subjectId}/tests`, {
       method: "POST",

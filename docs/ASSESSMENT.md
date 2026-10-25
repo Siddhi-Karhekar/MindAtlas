@@ -70,6 +70,7 @@ where each rule lives. Checked by `server/test/assessment.test.mjs` (part of
 | A topic is not called weak, or strong, on fewer than three answers across all attempts; until then the report and the progress page call it an early sign, and the test builder does not suggest it. | `MIN_OBSERVATIONS_FOR_VERDICT` in `masteryEngine.js` |
 | Feedback points to the weakest topic, the note section behind each missed question, and the next test leans towards weak topics. Per-topic progress is tracked over time. | `feedbackEngine.js`, `routes/attempts.js` (progress) |
 | Coming back: a streak of days with a finished test, and topics worth revising next (below 60 % on enough answers, or not practised for a week), on the home page; each opens the test builder with that topic picked. | `services/revision.js`, `GET /api/revision` |
+| Deleting a test (the bin icon beside "Take test", with a confirmation): the test goes with its questions, every attempt at it with the answers, pictures and results, and the questions reported from it. The student's per-topic mastery is kept - what they showed they know stays true. Refused while an attempt at it is being marked; only the owner can delete. | `DELETE /api/tests/:id`, `models/Test.js` `deleteTestAndData`, `pages/Tests.jsx` |
 
 ## Not done
 
