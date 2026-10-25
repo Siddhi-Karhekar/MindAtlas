@@ -14,6 +14,13 @@ import { latexOf, numericalItem, recompute, relationsIn } from "./numerical.js";
 import { buildConceptRecords, conceptId, recordForExcerpt, termConceptId } from "./conceptRecords.js";
 import { selectConcepts } from "./conceptSelection.js";
 
+// Building a test is CPU work in one request. Between notes, and every few
+// drafts, the server stops briefly to answer other requests - its health
+// check above all: on a small hosting plan a build that never paused kept the
+// health check waiting until the host restarted the server mid-build, and the
+// student saw "Could not reach the server".
+const breathe = () => new Promise((resolve) => setImmediate(resolve));
+
 // The rules for which sentences are subject matter live in studyText.js; they
 // are re-exported here because this is where callers and tests have always
 // found them.
@@ -341,6 +348,22 @@ function hasNounEvidence(word, text) {
   return new RegExp(`\\b${NOUN_LEAD}\\s+${word}\\b`, "i").test(text);
 }
 
+// The same words are checked against the same notes for every question of a
+// test: remembered per notes text (a few at a time).
+const nounCache = new Map();
+function nounInCorpus(word, corpusText) {
+  // every word that follows a determiner or preposition, found in one pass
+  // (the same answer as hasNounEvidence for a plain word, without a pattern
+  // per word over the whole text)
+  let after = nounCache.get(corpusText);
+  if (!after) {
+    if (nounCache.size >= 4) nounCache.delete(nounCache.keys().next().value);
+    after = new Set([...corpusText.matchAll(new RegExp(`\\b${NOUN_LEAD}\\s+(?=(\\w+))`, "gi"))].map((m) => m[1].toLowerCase()));
+    nounCache.set(corpusText, after);
+  }
+  return /^\w+$/.test(word) ? after.has(word.toLowerCase()) : hasNounEvidence(word, corpusText);
+}
+
 const sentenceCache = new WeakMap();
 /** The note's question-worthy sentences, in order. */
 function contentSentences(note) {
@@ -569,7 +592,7 @@ function pickDistractors(note, notes, keyword, sentence, answer = keyword) {
     !sharesStem(w) &&
     !sentenceNorm.includes(w) &&
     isVerbish(w) === answerShape;
-  const noun = (w) => hasNounEvidence(w, corpusText);
+  const noun = (w) => nounInCorpus(w, corpusText);
 
   const otherNoteKeywords = [...new Set(notes.filter((n) => n !== note).flatMap((n) => n.keywords || []))];
   const allKeywords = [...new Set(notes.flatMap((n) => n.keywords || []))];
@@ -1338,7 +1361,7 @@ function pickPlannedConcept(note, study, queue, wantedTier, used, asked) {
   return null;
 }
 
-function generateMcqFallback(notes, mcqCount, masteryMap, studies, taken = new Set(), avoid = []) {
+async function generateMcqFallback(notes, mcqCount, masteryMap, studies, taken = new Set(), avoid = []) {
   const seenBefore = (prompt) => avoid.some((p) => sameQuestion(p, prompt));
   const drafts = [];
   // numerical questions take every fourth place while they last (never more
@@ -1355,6 +1378,7 @@ function generateMcqFallback(notes, mcqCount, masteryMap, studies, taken = new S
   const order = weightedNoteOrder(notes, mcqCount, masteryMap);
 
   for (let i = 0; i < mcqCount; i++) {
+    if (i % 3 === 2) await breathe(); // let the server answer other requests (see breathe)
     if (i % 4 === 3 && numbers.length) {
       drafts.push(numbers.shift());
       continue;
@@ -2000,7 +2024,7 @@ async function generateBatch({ type, notes, count, want = count, generateLLM, ge
     report.fallbackReason = "not-configured";
   }
   if (!drafts || drafts.length === 0) {
-    drafts = generateFallback(notes, count, masteryMap, studies, taken, avoid);
+    drafts = await generateFallback(notes, count, masteryMap, studies, taken, avoid);
     generatedBy = "rule-based-fallback";
   } else {
     // Rule-based drafts always go behind the LLM's own. Given the same notes,
@@ -2010,7 +2034,7 @@ async function generateBatch({ type, notes, count, want = count, generateLLM, ge
     // test keeps its length without lowering the bar (pickFresh takes them in
     // this order). Marked as rule-written, so the test and the admin page say
     // who wrote each question.
-    const extra = generateFallback(notes, count, masteryMap, studies, taken, avoid).map((d) => ({ ...d, writtenBy: "rule-based-fallback" }));
+    const extra = (await generateFallback(notes, count, masteryMap, studies, taken, avoid)).map((d) => ({ ...d, writtenBy: "rule-based-fallback" }));
     drafts = [...drafts, ...extra];
   }
   report.type = type;
@@ -2639,7 +2663,10 @@ export async function generateQuestions(
   let embedder = await getEmbedder({ waitMs: SEMANTIC_WAIT_MS });
   const studies = new Map();
   try {
-    for (const n of notes) studies.set(n, await studyFor(n, { corpus: notes, embedder }));
+    for (const n of notes) {
+      studies.set(n, await studyFor(n, { corpus: notes, embedder }));
+      await breathe();
+    }
   } catch (err) {
     // the model failed mid-run: nothing about a test may depend on it
     console.warn("[semantic] falling back to rule-based ranking for this test:", err?.message || err);
@@ -2650,7 +2677,9 @@ export async function generateQuestions(
 
   // How much each study sentence is worth asking and how the subject's terms
   // relate: both writers and the quality gate use them (qualityContext)
+  await breathe();
   const { evalCtx, sourceIndex } = qualityContext(notes, studies, contextText, avoid);
+  await breathe();
 
   // The concept records of every note (the machine-readable notes), and the
   // plan of which concepts this test may ask, in which format, best first
@@ -2729,7 +2758,8 @@ export async function generateQuestions(
     const candidates = [];
     const passed = [];
     let llmRejected = 0;
-    for (const d of batch.drafts) {
+    for (const [i, d] of batch.drafts.entries()) {
+      if (i % 10 === 9) await breathe();
       const gate = gateDraft(d, { type, marks: type === "theory" ? theoryMarks : marksPerQuestion, notes, contextText, sourceIndex, blocked, generatedBy: d?.writtenBy || batch.generatedBy, records: studies.records, eligible: eligible[type] });
       if (gate.discarded) {
         discarded.push(gate.discarded);
