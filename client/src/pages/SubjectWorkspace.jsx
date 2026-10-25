@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api } from "../lib/api.js";
+import KeyTermEditor from "../components/KeyTermEditor.jsx";
+import SyllabusCard from "../components/SyllabusCard.jsx";
 import { formatDate, readingMinutes, timeAgo, wordCount } from "../lib/format.js";
 import Icon from "../components/Icon.jsx";
 import NoteContent from "../components/NoteContent.jsx";
@@ -459,6 +461,15 @@ export default function SubjectWorkspace() {
               </span>
             </div>
           )}
+          {/* the syllabus changes every note's key terms: reload them after a save */}
+          <SyllabusCard
+            key={subject?._id || "none"}
+            subject={subject}
+            onSaved={(updated) => {
+              setSubject((cur) => ({ ...(cur || {}), ...updated }));
+              setReloads((r) => r + 1);
+            }}
+          />
         </aside>
 
         {/* Reading pane */}
@@ -564,15 +575,13 @@ export default function SubjectWorkspace() {
                 >
                   {selected.title}
                 </h2>
-                {termsOf(selected).length > 0 && (
-                  <div className="flex flex-wrap gap-space-xs items-center pt-space-2xs" data-testid="note-keywords">
-                    {termsOf(selected).slice(0, 8).map((k) => (
-                      <span key={k} className="px-space-sm py-space-2xs rounded font-label-md text-label-md font-semibold tracking-wide bg-topic-soft text-topic">
-                        {k}
-                      </span>
-                    ))}
-                  </div>
-                )}
+                {/* a split document's terms are its subtopics': they are marked there */}
+                <KeyTermEditor
+                  key={selected._id}
+                  note={selected}
+                  editable={selectedChildren.length === 0}
+                  onSaved={(updated) => setNotes((list) => (list || []).map((x) => (String(x._id) === String(updated._id) ? { ...x, ...updated } : x)))}
+                />
               </header>
               {selectedChildren.length > 0 && (
                 <section className="flex flex-col gap-space-sm mb-space-xl" data-testid="document-subtopics">

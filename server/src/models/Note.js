@@ -27,6 +27,13 @@ const notes = () => getCollection("notes");
 //     the author set in bold) - what the reading pane formats. Display only.
 // Notes saved before `content` existed get it worked out from `rawText` when
 // they are read (see withContent in routes/notes.js).
+//
+// A third, machine-readable form is kept for test generation: `concepts`,
+// the note's CONCEPT RECORDS (services/conceptRecords.js) - what each concept
+// is, what kind of question it can carry, how important it is, where in the
+// note it is stated - with a fingerprint of the text they were built from.
+// Built when a note is saved or edited, and rebuilt by a test build when it
+// is missing or out of date (a note saved before records existed).
 
 export async function createNote({
   ownerId,
@@ -44,6 +51,7 @@ export async function createNote({
   splitMethod = null,
   content = null,
   path = [],
+  ocrConfidence = null,
 }) {
   return notes().insertOne({
     ownerId,
@@ -61,6 +69,9 @@ export async function createNote({
     splitMethod,
     content,
     path,
+    // how sure OCR was of a photographed note's words (0-1), null otherwise:
+    // the concept records lower their reading confidence by it
+    ocrConfidence,
     createdAt: new Date(),
   });
 }

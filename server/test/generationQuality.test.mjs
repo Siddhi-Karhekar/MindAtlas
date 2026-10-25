@@ -111,13 +111,17 @@ const DEADLOCK = noteOf(
 // forms get built, so several builds are checked together.
 const dl = { accepted: [] };
 for (let run = 0; run < 6; run++) dl.accepted.push(...(await generateQuestions([DEADLOCK], { mcqCount: 8, theoryCount: 0, marksPerQuestion: 1 })).accepted);
-const multi = dl.accepted.filter((q) => q.type === "mcq" && /_____/.test(q.prompt) && q.answerKey.split(/\s+/).length > 1);
-const halves = multi.filter((q) => {
+// (a concept the notes define is asked directly first - "Which of the
+// following ...?", "What is ...?" - and blanked only when no direct form fits,
+// so whole multi-word terms are checked as answers of every form, and the
+// blanks among them for hiding the whole term)
+const multi = dl.accepted.filter((q) => q.type === "mcq" && q.answerKey.split(/\s+/).length > 1 && q.answerKey.split(/\s+/).length <= 4);
+const halves = multi.filter((q) => /_____/.test(q.prompt)).filter((q) => {
   const words = q.answerKey.toLowerCase().split(/\s+/);
   const p = q.prompt.toLowerCase();
   return words.some((w) => new RegExp(`(?:\\b${w}\\s+_____|_____\\s+${w}\\b)`).test(p));
 });
-check("fill-in-the-blank questions with multi-word answers are made", multi.length >= 1, [...new Set(dl.accepted.map((q) => q.answerKey))].join(", "));
+check("questions whose answers are whole multi-word terms are made", multi.length >= 1, [...new Set(dl.accepted.map((q) => q.answerKey))].join(", "));
 check("a word too broad to test anything is never a blank's answer ('system', 'data')", !dl.accepted.some((q) => /_____/.test(q.prompt) && /^(?:system|data|information|item)s?$/i.test(q.answerKey)));
 check("no blank hides only part of a multi-word term ('Deadlock _____', '_____ detection')", halves.length === 0, halves.map((q) => q.prompt).join(" | "));
 check("every blank's answer is a whole key term (one to four words)", dl.accepted.filter((q) => /_____/.test(q.prompt)).every((q) => q.answerKey.split(/\s+/).length <= 4));
@@ -142,7 +146,14 @@ function historyOf(tests) {
       conceptHistory.set(c, h);
     }
   });
-  return { avoid, recentConcepts: recent, conceptHistory };
+  // how each concept was asked (routes/tests.js passes the same)
+  const approachHistory = new Map();
+  for (const q of tests.flat()) {
+    const c = conceptOf(q, q.type);
+    if (!approachHistory.has(c)) approachHistory.set(c, new Set());
+    approachHistory.get(c).add(q.approach || q.form);
+  }
+  return { avoid, recentConcepts: recent, conceptHistory, approachHistory };
 }
 const rulesTests = [];
 for (let t = 0; t < 4; t++) {
@@ -151,9 +162,15 @@ for (let t = 0; t < 4; t++) {
 }
 const repeatsPerTest = rulesTests.map((qs, i) => qs.filter((q) => rulesTests.slice(0, i).flat().some((p) => sameQuestion(p.prompt, q.prompt))).length);
 check("rules only: four consecutive tests on one chapter repeat no question", repeatsPerTest.every((n) => n === 0), repeatsPerTest.join(", "));
+// A concept may come back - an important one should - but asked another way
+// (its definition once, a direct question or a comparison the next time).
+// Eight short notes run low on new concepts by the fourth test.
 const conceptsOf = (qs) => new Set(qs.map((q) => conceptOf(q, q.type)));
+const waysOf = (qs) => new Set(qs.map((q) => `${conceptOf(q, q.type)}|${q.approach || q.form}`));
 const overlapNext = rulesTests.slice(1).map((qs, i) => [...conceptsOf(qs)].filter((c) => conceptsOf(rulesTests[i]).has(c)).length);
-check("  ...and consecutive tests share at most one concept", overlapNext.every((n) => n <= 1), overlapNext.join(", "));
+const sameWayNext = rulesTests.slice(1).map((qs, i) => [...waysOf(qs)].filter((c) => waysOf(rulesTests[i]).has(c)).length);
+check("  ...the next two tests share at most one concept", overlapNext.slice(0, 2).every((n) => n <= 1), overlapNext.join(", "));
+check("  ...and no consecutive tests ask more than one concept the same way", sameWayNext.every((n) => n <= 1), sameWayNext.join(", "));
 
 // a chapter too small for new concepts every time: the least recently tested come back first
 const small = noteOf("Framing", "A frame is the unit the data link layer sends. Byte stuffing is a method that adds an escape byte before a flag byte inside the data. Bit stuffing is a method that inserts a zero after five consecutive ones in the data. A flag byte is a special byte that marks where a frame starts and ends.");

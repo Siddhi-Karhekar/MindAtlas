@@ -8,7 +8,8 @@
 //     edited note goes through exactly the path a new typed note does.
 
 import { blocksFromPlainText, normalizeContent, restoredTable, splitInlineBullets } from "./documentStructure.js";
-import { keyTermsFor } from "./keyTerms.js";
+import { keyTermDetailsFor } from "./keyTerms.js";
+import { withSyllabus } from "./keyTermSignals.js";
 import { isSplitParent } from "../models/Note.js";
 
 /**
@@ -36,8 +37,10 @@ export function withContent(note) {
  */
 export function publicNote(note) {
   if (!note) return note;
+  // (the concept records are served on their own: GET /api/notes/:id/concepts)
+  // (`syllabus` is the subject's, attached for key terms; `aiTerms` is shown as keyTermDetails)
   // eslint-disable-next-line no-unused-vars
-  const { vector, ownerId, ...rest } = withContent(note);
+  const { vector, ownerId, concepts, syllabus, aiTerms, ...rest } = withContent(note);
   return rest;
 }
 
@@ -48,9 +51,24 @@ export function publicNote(note) {
  * word every note uses ranks lower. (`keywords` stay the single TF-IDF words
  * the knowledge graph links notes by.)
  */
-export function withKeyTerms(notes, subjectNotes = notes) {
-  const corpus = (subjectNotes || []).filter((n) => !isSplitParent(n));
-  return notes.map((n) => (n ? { ...n, keyTerms: keyTermsFor(n, corpus) } : n));
+//
+// Also `keyTermDetails` ([{ term, sources: ["you" | "ai" | "syllabus" |
+// "notes"] }]: where each shown term came from) and `keyTermMarks` ({ add,
+// remove }: the terms the student added or took away). `subject`, when given,
+// brings its syllabus into the ranking (services/keyTermSignals.js).
+export function withKeyTerms(notes, subjectNotes = notes, { subject = null } = {}) {
+  const corpus = withSyllabus((subjectNotes || []).filter((n) => !isSplitParent(n)), subject);
+  return notes.map((n) => {
+    if (!n) return n;
+    const details = keyTermDetailsFor(withSyllabus([n], subject)[0], corpus);
+    const marks = n.termMarks || {};
+    return {
+      ...n,
+      keyTerms: details.map((t) => t.term),
+      keyTermDetails: details,
+      keyTermMarks: { add: Array.isArray(marks.add) ? marks.add : [], remove: Array.isArray(marks.remove) ? marks.remove : [] },
+    };
+  });
 }
 
 /** Any other record as the API sends it: without the owner's id. */

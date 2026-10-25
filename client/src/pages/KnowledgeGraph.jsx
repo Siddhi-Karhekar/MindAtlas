@@ -5,6 +5,7 @@ import { formatDate, wordCount } from "../lib/format.js";
 import Icon from "../components/Icon.jsx";
 import Ring from "../components/Ring.jsx";
 import { isSplitParent } from "../lib/notes.js";
+import { termsOf } from "../lib/noteFormat.js";
 
 const W = 1000;
 const H = 640;
@@ -468,7 +469,8 @@ export default function KnowledgeGraph() {
     return (
       n.title.toLowerCase().includes(q) ||
       Boolean(parent?.title.toLowerCase().includes(q)) ||
-      (n.keywords || []).some((k) => k.toLowerCase().includes(q))
+      (n.keywords || []).some((k) => k.toLowerCase().includes(q)) ||
+      (n.keyTerms || []).some((k) => k.toLowerCase().includes(q))
     );
   };
   const matches = (n) => {
@@ -1303,10 +1305,11 @@ export default function KnowledgeGraph() {
                 </div>
               )}
 
-              {selected.keywords?.length > 0 && (
+              {/* the note's key terms, as in the reading pane (the keyword map stays on single words) */}
+              {termsOf(selected).length > 0 && (
                 <div className="flex flex-col gap-space-xs">
                   <div className="flex items-center justify-between">
-                    <span className="font-label-sm text-label-sm uppercase tracking-wider text-on-surface-variant">Keywords</span>
+                    <span className="font-label-sm text-label-sm uppercase tracking-wider text-on-surface-variant">Key terms</span>
                     <button
                       type="button"
                       onClick={() => openMap(selected.id)}
@@ -1317,7 +1320,7 @@ export default function KnowledgeGraph() {
                     </button>
                   </div>
                   <div className="flex flex-wrap gap-space-xs">
-                    {selected.keywords.slice(0, 8).map((k) => (
+                    {termsOf(selected).slice(0, 8).map((k) => (
                       <span key={k} className="px-space-sm py-space-2xs rounded bg-secondary-container text-on-secondary-container font-label-md text-label-md">
                         {k}
                       </span>
@@ -1396,11 +1399,11 @@ export default function KnowledgeGraph() {
                 </div>
               )}
 
-              {selectedExternal.keywords?.length > 0 && (
+              {termsOf(selectedExternal).length > 0 && (
                 <div className="flex flex-col gap-space-xs">
-                  <span className="font-label-sm text-label-sm uppercase tracking-wider text-on-surface-variant">Keywords</span>
+                  <span className="font-label-sm text-label-sm uppercase tracking-wider text-on-surface-variant">Key terms</span>
                   <div className="flex flex-wrap gap-space-xs">
-                    {selectedExternal.keywords.slice(0, 8).map((k) => (
+                    {termsOf(selectedExternal).slice(0, 8).map((k) => (
                       <span key={k} className="px-space-sm py-space-2xs rounded bg-tertiary-container text-on-tertiary-container font-label-md text-label-md">
                         {k}
                       </span>

@@ -17,11 +17,13 @@
 // document its subtopics with it.
 
 import { deleteEdgesForNotes } from "../models/GraphEdge.js";
+import { buildNoteConcepts } from "./testEngine.js";
 import { deleteEmbeddingsForNotes } from "../models/NoteEmbedding.js";
 import { deleteMasteryForTopics } from "../models/Mastery.js";
 import {
   deleteNotesByIds,
   findChildNotes,
+  findNoteById,
   findNotesByOwner,
   findNotesBySubject,
   isSplitParent,
@@ -32,6 +34,9 @@ import { blocksFromPlainText, blocksToText, normalizeContent } from "./documentS
 import { updateGraphForNote } from "./graphEngine.js";
 import { withContent } from "./noteView.js";
 import { computeTfidf } from "./tfidf.js";
+import { suggestInBackground } from "./aiKeyTerms.js";
+import { withSyllabus } from "./keyTermSignals.js";
+import { findOwnedSubject } from "../models/Subject.js";
 
 const sameId = (a, b) => String(a) === String(b);
 
@@ -82,6 +87,26 @@ async function refreshParent(parentId, subjectNotes) {
  *   { note, edgesCreated, crossSubjectEdgesCreated, parent }
  * or throws an Error with `.status` and a message safe to show the student.
  */
+/**
+ * Rebuild and store one note's concept records from what is stored now (its
+ * text, its key-term marks and AI terms, its subject's syllabus). Returns the
+ * updated note, or null when it could not be done (the next test build
+ * rebuilds them anyway).
+ */
+export async function refreshNoteConcepts(note) {
+  try {
+    const current = (await findNoteById(note._id)) || note;
+    const subject = await findOwnedSubject(current.subjectId, current.ownerId);
+    const subjectNotes = (await findNotesBySubject(current.subjectId)).filter((n) => !isSplitParent(n) && !sameId(n._id, current._id));
+    const [self, ...others] = withSyllabus([current, ...subjectNotes], subject);
+    const concepts = await buildNoteConcepts(self, [...others, self]);
+    return concepts ? await updateNote(current._id, { concepts }) : null;
+  } catch (err) {
+    console.warn("[concepts] could not rebuild records:", err?.message || err);
+    return null;
+  }
+}
+
 export async function editNote(note, { title, text }) {
   const fail = (status, message) => Object.assign(new Error(message), { status });
   const fields = {};
@@ -115,7 +140,14 @@ export async function editNote(note, { title, text }) {
     Object.assign(fields, computeTfidf(fields.rawText, corpus));
     fields.editedAt = new Date();
   }
-  const updated = await updateNote(note._id, fields);
+  let updated = await updateNote(note._id, fields);
+  // the note's concept records follow its text (see conceptRecords.js)
+  if (fields.rawText !== undefined) {
+    updated = (await refreshNoteConcepts(updated)) || updated;
+    // new text: the AI's key terms are asked for again, in the background
+    // (services/aiKeyTerms.js), and the records rebuilt once they arrive
+    suggestInBackground([updated], () => refreshNoteConcepts(updated));
+  }
 
   // New words mean new links. The old ones are dropped first - except links
   // the student removed by hand, which stay removed.

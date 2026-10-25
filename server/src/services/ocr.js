@@ -52,7 +52,9 @@ export async function extractTextFromImage(buffer) {
         size: l.rowAttributes?.row_height || (l.bbox ? l.bbox.y1 - l.bbox.y0 : 0),
       }))
       .filter((l) => l.text);
-    return { text: data.text.trim(), ocrFailed: false, lines };
+    // the mean confidence of the words kept, 0-1: how sure the reading is
+    const confidence = confidentWords.length ? confidentWords.reduce((t, w) => t + w.confidence, 0) / confidentWords.length / 100 : null;
+    return { text: data.text.trim(), ocrFailed: false, lines, confidence };
   } catch (err) {
     // tesseract.js rejects with a plain string, not an Error, for job failures
     const message = String(err?.message || err);

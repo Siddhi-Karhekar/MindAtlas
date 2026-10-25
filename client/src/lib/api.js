@@ -189,6 +189,8 @@ export const api = {
   updateNote: (noteId, { title, content }) => request(`/notes/${noteId}`, { method: "PATCH", body: { title, content } }),
   // A split document takes its subtopics with it.
   deleteNote: (noteId) => request(`/notes/${noteId}`, { method: "DELETE" }),
+  // the student's own key terms for a note: { add: [term], remove: [term] }, replacing what was set
+  setKeyTerms: (noteId, marks) => request(`/notes/${noteId}/key-terms`, { method: "PUT", body: marks }),
 
   // A formatted file to keep or print. For a document that was split into
   // subtopics, exportNote gives the whole document.

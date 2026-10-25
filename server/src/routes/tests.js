@@ -1,5 +1,5 @@
 import { findOwnedSubject } from "../models/Subject.js";
-import { findChildNotes, findNotesByIds, isSplitParent, topicLabelFor } from "../models/Note.js";
+import { findChildNotes, findNotesByIds, isSplitParent, topicLabelFor, updateNote } from "../models/Note.js";
 import { createTest, deleteTest, findTestsBySubject, findOwnedTest, setTestGeneration, setTestLength } from "../models/Test.js";
 import { createQuestions, findAcceptedQuestionsByTests, findQuestionsByIds, findQuestionsByTest } from "../models/Question.js";
 import { findReportsByOwner } from "../models/QuestionReport.js";
@@ -14,6 +14,9 @@ import { conceptOf } from "../services/questionQuality.js";
 import { masteryMapForSubject } from "../models/Mastery.js";
 import { findAttemptsBySubject } from "../models/Attempt.js";
 import { findResponsesByAttempts } from "../models/Response.js";
+import { withSyllabus } from "../services/keyTermSignals.js";
+import { hasCurrentAiTerms, suggestInBackground } from "../services/aiKeyTerms.js";
+import { refreshNoteConcepts } from "../services/noteLifecycle.js";
 
 const router = safeRouter();
 router.use(requireAuth);
@@ -126,7 +129,8 @@ async function buildTest(req, res) {
   if (selectedInSubject.length === 0) {
     return res.status(400).json({ error: "none of the given noteIds belong to this subject" });
   }
-  const notesInSubject = await resolveTopicNotes(selectedInSubject);
+  // the subject's syllabus travels with each note: its terms rank higher (keyTermSignals.js)
+  const notesInSubject = withSyllabus(await resolveTopicNotes(selectedInSubject), subject);
   if (notesInSubject.length === 0) {
     return res.status(400).json({ error: "the selected notes have no text to build questions from" });
   }
@@ -211,6 +215,20 @@ async function buildTest(req, res) {
     conceptHistory.set(c, h);
   }
 
+  // How each concept was asked before (its form: a definition, a numerical, a
+  // comparison ...), so a concept that comes back is asked a new way
+  // (conceptSelection.js, testEngine.pickFresh). Keyed by concept id and by
+  // the concept's name, for questions stored before ids existed.
+  const approachHistory = new Map();
+  for (const q of earlierQuestions) {
+    const way = q.approach || q.form || q.cognitiveLevel;
+    if (!way) continue;
+    for (const k of [q.conceptId, conceptOf(q, q.type)].filter(Boolean)) {
+      if (!approachHistory.has(k)) approachHistory.set(k, new Set());
+      approachHistory.get(k).add(way);
+    }
+  }
+
   // Questions this student reported as wrong, unclear or not from the notes:
   // never generated again for them (testEngine discards them as "reported").
   const reports = (await findReportsByOwner(req.user.id)).filter((r) => String(r.subjectId) === String(subject._id) && BLOCKING_REPORTS.has(r.reason));
@@ -231,6 +249,9 @@ async function buildTest(req, res) {
     recentConcepts,
     conceptHistory,
     blocked,
+    approachHistory,
+    // a note whose concept records are missing or out of date gets them stored
+    onConcepts: (note, concepts) => updateNote(note._id, { concepts }),
     // earlier questions are used again only to reach these, never to fill the larger pool
     mcqTarget: safeMcqCount,
     theoryTarget: safeTheoryCount,
@@ -294,6 +315,14 @@ async function buildTest(req, res) {
     // questions from the student's earlier tests used again, because these
     // notes could not supply enough new ones
     repeatsUsed,
+  });
+
+  // Notes saved before AI key terms existed (or with an AI outage at upload)
+  // get them now, in the background, for the next test: never this one, which
+  // has been answered already. A few notes per build, one request.
+  const missing = notesInSubject.filter((n) => !hasCurrentAiTerms(n)).slice(0, 8);
+  suggestInBackground(missing, async () => {
+    for (const n of missing) await refreshNoteConcepts(n);
   });
 }
 

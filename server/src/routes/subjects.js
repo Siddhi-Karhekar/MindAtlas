@@ -5,7 +5,7 @@ import { requireAuth } from "../middleware/auth.js";
 import { safeRouter } from "../middleware/safeRouter.js";
 import { once } from "../middleware/once.js";
 import { LIMITS, text } from "../middleware/validate.js";
-import { publicDoc } from "../services/noteView.js";
+import { publicDoc, withKeyTerms } from "../services/noteView.js";
 import { clusterNotes } from "../services/graphEngine.js";
 import { exportSubject, parseFormat, sendExport } from "../services/noteExport/index.js";
 
@@ -29,12 +29,18 @@ router.delete("/:id", async (req, res) => {
   res.json({ ok: true, removed });
 });
 
-// PATCH /api/subjects/:id  { name?, group? } - rename, or move to another folder
+// PATCH /api/subjects/:id  { name?, group?, syllabus? } - rename, move to
+// another folder, or set the syllabus: the course's topics as text ("Unit 3:
+// paging, segmentation, ..."). Terms of the subject's notes that the syllabus
+// names rank higher as key terms (services/keyTermSignals.js); an empty
+// string clears it.
+const MAX_SYLLABUS = 20_000;
 router.patch("/:id", async (req, res) => {
   const fields = {};
   if (req.body?.name !== undefined) fields.name = text(req.body.name, "name", { max: LIMITS.subjectName });
   if (req.body?.group !== undefined) fields.group = groupField(req.body.group);
-  if (Object.keys(fields).length === 0) return res.status(400).json({ error: "nothing to change - send name or group" });
+  if (req.body?.syllabus !== undefined) fields.syllabus = text(req.body.syllabus, "syllabus", { required: false, max: MAX_SYLLABUS }) || null;
+  if (Object.keys(fields).length === 0) return res.status(400).json({ error: "nothing to change - send name, group or syllabus" });
   const subject = await updateSubject(req.params.id, req.user.id, fields);
   if (!subject) return res.status(404).json({ error: "subject not found" });
   res.json({ subject: publicDoc(subject) });
@@ -102,12 +108,19 @@ router.get("/:id/graph", loadOwnedSubject, async (req, res) => {
   // document parents are containers, not topics, so they are not clustered.
   const isSplitParent = (n) => !n.parentNoteId && (n.childCount || 0) > 0;
   const { clusterOf, clusters } = clusterNotes(notes.filter((n) => !isSplitParent(n)), edges);
+  // what the graph page shows and searches by: the key terms ("page table",
+  // "translation lookaside buffer") the reading pane shows. `keywords` (single
+  // TF-IDF words) stay for cluster labels and the keyword map, which compare
+  // words across notes.
+  const termsById = new Map(withKeyTerms(notes, notes, { subject: req.subject }).map((n) => [String(n._id), n.keyTerms]));
+  const externalTerms = new Map(withKeyTerms(external, external).map((n) => [String(n._id), n.keyTerms]));
 
   res.json({
     nodes: notes.map((n) => ({
       id: n._id,
       title: n.title,
       keywords: n.keywords,
+      keyTerms: termsById.get(String(n._id)) || [],
       sourceType: n.sourceType,
       createdAt: n.createdAt,
       clusterId: clusterOf.get(String(n._id)),
@@ -128,6 +141,7 @@ router.get("/:id/graph", loadOwnedSubject, async (req, res) => {
       id: n._id,
       title: n.title,
       keywords: n.keywords,
+      keyTerms: externalTerms.get(String(n._id)) || [],
       subjectId: n.subjectId,
       subjectName: subjectName.get(String(n.subjectId)) || "Another subject",
     })),

@@ -768,6 +768,10 @@ router.get("/attempts/:id/review", loadOwnedAttempt, async (req, res) => {
         flagged: Boolean(r?.flagged),
         // the passage of the notes this question was written from
         source: q.supportingExcerpt || null,
+        // why the MCQ's answer is right (and, for some, why the closest wrong
+        // option is wrong), from the notes - left out when it only repeats
+        // the passage shown above
+        explanation: !theory && q.explanation && !/ is right because the notes say: /.test(q.explanation) ? q.explanation : null,
         remark: r?.remark ? { requestedAt: r.remark.requestedAt, before: r.remark.before, after: r.remark.after } : null,
         canRemark: theory && answered && (Boolean(String(r.answer || "").trim()) || Boolean(r.imageIds?.length)) && !r.remark,
         reported: reportBy.get(String(qid))?.reason || null,

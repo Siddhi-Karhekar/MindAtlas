@@ -50,12 +50,13 @@ export const llmProvider = () => {
 // wording of that prompt changes. ("v1" was the wording before notes and
 // answers were passed as tagged data.)
 export const PROMPT_VERSIONS = Object.freeze({
-  mcq: "mcq-v6",
-  theory: "theory-v5",
+  mcq: "mcq-v7",
+  theory: "theory-v6",
   grade: "grade-v3",
   remark: "remark-v2",
   feedback: "feedback-v3",
   verify: "verify-v1",
+  keyterms: "keyterms-v1",
 });
 
 /** What to store alongside LLM output: which prompt and which model made it. */
@@ -115,7 +116,9 @@ async function once(body) {
   if (res.ok) {
     const data = await res.json().catch(() => null);
     const text = data?.choices?.[0]?.message?.content ?? null;
-    return text ? { text } : { error: { kind: "empty-response", status: res.status } };
+    // tokens the provider counted (OpenAI-compatible "usage"), for cost reports
+    const usage = data?.usage ? { prompt: Number(data.usage.prompt_tokens) || 0, completion: Number(data.usage.completion_tokens) || 0 } : null;
+    return text ? { text, usage } : { error: { kind: "empty-response", status: res.status } };
   }
   const after = Number(res.headers.get("retry-after"));
   // the status and the provider's error type only: an error body can echo
@@ -182,7 +185,7 @@ async function sendWithRetry(body) {
     attempts = attempt;
     try {
       const out = await once(body);
-      if (out.text) return { text: out.text, attempts, durationMs: Date.now() - started };
+      if (out.text) return { text: out.text, usage: out.usage || null, attempts, durationMs: Date.now() - started };
       error = out.error;
       if (!out.retryable) break;
       if (attempt === 1) await wait(out.waitMs);

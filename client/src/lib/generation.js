@@ -16,6 +16,7 @@ const REASONS = {
   "invalid-response": "the AI writer's reply could not be used",
   "empty-response": "the AI writer's reply could not be used",
   "no-questions": "the AI writer returned no questions",
+  "no-material": "these notes had nothing the AI writer could be asked about",
   "llm-questions-rejected": "the AI's questions did not pass the quality checks",
   "llm-questions-repeated": "the AI's questions repeated your earlier tests",
 };

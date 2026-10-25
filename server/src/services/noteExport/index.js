@@ -41,7 +41,7 @@ export async function exportNote(note, { format = "pdf", timeZone } = {}) {
   const subject = await findOwnedSubject(note.subjectId, note.ownerId);
   // key terms judged against the whole subject, as on screen
   const subjectNotes = await findNotesBySubject(note.subjectId);
-  const terms = (list) => withKeyTerms(list, subjectNotes);
+  const terms = (list) => withKeyTerms(list, subjectNotes, { subject });
   [note] = terms([note]);
   if (isSplitParent(note)) {
     const children = terms(await findChildNotes([note._id]));
@@ -64,7 +64,7 @@ export async function exportSubject(subject, { format = "pdf", timeZone } = {}) 
     err.status = 404;
     throw err;
   }
-  return write(subjectModel({ subject, notes: withKeyTerms(notes), date: dateLabel(new Date(), timeZone) }), format);
+  return write(subjectModel({ subject, notes: withKeyTerms(notes, notes, { subject }), date: dateLabel(new Date(), timeZone) }), format);
 }
 
 /**
