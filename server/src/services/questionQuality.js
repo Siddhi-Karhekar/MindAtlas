@@ -36,13 +36,29 @@ import { stem, tokenize } from "./tfidf.js";
 const DIFFICULTIES = ["easy", "medium", "hard"];
 const BLANK = /_{3,}/g;
 
-export const normalizeText = (s) =>
+const normalizeUncached = (s) =>
   String(s ?? "")
     .toLowerCase()
     .replace(/[“”"‘’'`]/g, "")
     .replace(/[^\p{L}\p{N}_ ]+/gu, " ")
     .replace(/\s+/g, " ")
     .trim();
+// The whole of a test's notes (tens of thousands of characters) is passed in
+// for every draft checked; normalising it afresh each time made building a
+// test from many notes take minutes on a small server. Long texts are
+// remembered (a few at a time); short ones are cheap to redo.
+const longTexts = new Map();
+export const normalizeText = (s) => {
+  const str = String(s ?? "");
+  if (str.length < 2000) return normalizeUncached(str);
+  let out = longTexts.get(str);
+  if (out === undefined) {
+    out = normalizeUncached(str);
+    if (longTexts.size >= 8) longTexts.delete(longTexts.keys().next().value);
+    longTexts.set(str, out);
+  }
+  return out;
+};
 
 const clean = (s) => String(s ?? "").replace(/\s+/g, " ").trim();
 

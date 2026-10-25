@@ -70,6 +70,20 @@ export function buildRelations(notes, studies) {
     return seen.has(k) ? k : null;
   };
 
+  // Each term's patterns, built once. (Building them afresh for every term in
+  // every sentence made a test from 28 notes spend seconds here alone.)
+  const patterns = terms.map((t) => {
+    const tp = termPattern(t.term, "i").source;
+    return {
+      ...t,
+      // the term's first letters as written: every mention, singular or plural, contains them
+      lead: String(t.term).trim().split(/\s+/)[0].toLowerCase().slice(0, 3),
+      mention: new RegExp(tp, "i"),
+      category: new RegExp(`(?:^|[.;]\\s+)(?:an?\\s+|the\\s+)?${tp}\\s+(?:\\([^)]*\\)\\s+)?(?:is|are)\\s+(?:an?|the|one of the)\\s+((?:[a-z][a-z-]*\\s+){0,3}?)([a-z][a-z-]+)(?=\\s+(?:that|which|who|where|used|in|of|for|to|with|by|whose|on)\\b|[,.;:]|$)`, "i"),
+      kind: new RegExp(`${tp}\\s+(?:is|are)\\s+(?:an?|one)\\s+(?:type|kind|form|example|member|variant|special case|subclass|instance)s?\\s+of\\s+(?:the\\s+|an?\\s+)?([A-Za-z][\\w -]{2,40}?)(?=[,.;:]|\\s+(?:that|which|in|used|where)\\b|$)`, "i"),
+    };
+  });
+
   for (const n of notes) {
     const study = studies.get(n);
     if (!study) continue;
@@ -94,10 +108,12 @@ export function buildRelations(notes, studies) {
           bySection.get(sec).add(k);
         }
       }
-      for (const t of terms) {
-        const tp = termPattern(t.term, "i").source;
+      const lower = text.toLowerCase();
+      for (const t of patterns) {
+        // most terms are not in a given sentence: skip them before any pattern runs
+        if (!lower.includes(t.lead) || !t.mention.test(text)) continue;
         // category: "A lock is a mechanism ...", "X is an integer variable that ..."
-        const m = new RegExp(`(?:^|[.;]\\s+)(?:an?\\s+|the\\s+)?${tp}\\s+(?:\\([^)]*\\)\\s+)?(?:is|are)\\s+(?:an?|the|one of the)\\s+((?:[a-z][a-z-]*\\s+){0,3}?)([a-z][a-z-]+)(?=\\s+(?:that|which|who|where|used|in|of|for|to|with|by|whose|on)\\b|[,.;:]|$)`, "i").exec(text);
+        const m = t.category.exec(text);
         const noun = m ? singular(m[2].toLowerCase()) : null;
         if (m && CATEGORY_NOUN.test(noun) && !NOT_CATEGORY.has(noun) && !/(?:ly|ed|ing)$/.test(noun)) {
           if (!categoryOf.has(t.key)) categoryOf.set(t.key, noun);
@@ -106,7 +122,7 @@ export function buildRelations(notes, studies) {
           if (whole && whole !== t.key) add(parentsOf, t.key, whole);
         }
         // "X is a type / kind / form / example / member of W"
-        const kind = new RegExp(`${tp}\\s+(?:is|are)\\s+(?:an?|one)\\s+(?:type|kind|form|example|member|variant|special case|subclass|instance)s?\\s+of\\s+(?:the\\s+|an?\\s+)?([A-Za-z][\\w -]{2,40}?)(?=[,.;:]|\\s+(?:that|which|in|used|where)\\b|$)`, "i").exec(text);
+        const kind = t.kind.exec(text);
         if (kind) add(parentsOf, t.key, keyOfPhrase(kind[1]));
       }
       // "W such as X, Y and Z" / "W include(s) X, Y and Z" / "the W family includes X"
