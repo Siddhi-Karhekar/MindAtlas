@@ -8,7 +8,7 @@ import Icon from "../components/Icon.jsx";
 import NoteContent from "../components/NoteContent.jsx";
 import DownloadMenu from "../components/DownloadMenu.jsx";
 import { flattenOutline, isSplitParent, isTopicNote, noteTree, outlineTree } from "../lib/notes.js";
-import { stableColorIndex, termsOf, topicClass } from "../lib/noteFormat.js";
+import { lineText, stableColorIndex, termsOf, topicClass } from "../lib/noteFormat.js";
 
 const SOURCE_LABEL = { typed: "Typed note", image: "Scanned image", file: "Uploaded file" };
 
@@ -90,6 +90,12 @@ export default function SubjectWorkspace() {
   const justEdited = Boolean(location.state?.edited);
   // delete asks once more, in place, before it goes ahead
   const [confirmDeleteId, setConfirmDeleteId] = useState(null);
+  // editing the formatted note in place: which note, a save in flight, what
+  // to tell the student, and the last deleted line (for Undo)
+  const [editingId, setEditingId] = useState(null);
+  const [editBusy, setEditBusy] = useState(false);
+  const [editMsg, setEditMsg] = useState(null); // { error?: true, text }
+  const [lastDeleted, setLastDeleted] = useState(null); // { noteId, after, block }
   const [deleting, setDeleting] = useState(false);
   const notice = location.state?.notice || "";
   const [reloads, setReloads] = useState(0);
@@ -233,6 +239,119 @@ export default function SubjectWorkspace() {
     });
     return s.size;
   }, [linkEdges]);
+
+  // ---- Editing the formatted note in place (NoteContent `edit`) ----
+  const sameText = (a, b) => String(a).trim().toLowerCase() === String(b).trim().toLowerCase();
+  const putNotes = (...changed) =>
+    setNotes((list) => (list || []).map((x) => changed.filter(Boolean).find((c) => String(c._id) === String(x._id)) || x));
+
+  // one change to the note's lines; the saved note, or false
+  async function lineEdit(edit, done) {
+    setEditBusy(true);
+    setEditMsg(null);
+    try {
+      const r = await api.editNoteLine(selected._id, edit);
+      const saved = { ...selected, ...r.note };
+      putNotes(saved, r.parent);
+      if (done) setEditMsg({ text: done });
+      return saved;
+    } catch (err) {
+      setEditMsg({ error: true, text: err.message });
+      return false;
+    } finally {
+      setEditBusy(false);
+    }
+  }
+
+  // change the student's own key-term marks (KeyTermEditor uses the same call)
+  async function markTerms(change, done, base = selected) {
+    const marks = base.keyTermMarks || {};
+    const add = [...(marks.add || [])];
+    const remove = [...(marks.remove || [])];
+    change({ add, remove });
+    setEditBusy(true);
+    setEditMsg(null);
+    try {
+      const r = await api.setKeyTerms(base._id, { add, remove });
+      putNotes({ ...base, ...r.note });
+      setEditMsg({ text: done });
+      return true;
+    } catch (err) {
+      setEditMsg({ error: true, text: err.message });
+      return false;
+    } finally {
+      setEditBusy(false);
+    }
+  }
+
+  const noteEdit = {
+    busy: editBusy,
+    onDelete: async (block, was) => {
+      const ok = await lineEdit({ op: "delete", index: block.index, was }, "Line deleted.");
+      if (ok) {
+        const { index, segments: _s, children: _c, ...plain } = block;
+        setLastDeleted({ noteId: String(selected._id), after: index - 1, block: plain });
+      }
+      return ok;
+    },
+    onInsert: (block, was, { type, text }) =>
+      lineEdit(
+        { op: "insert", after: block.index, was, block: { type, text, ...(type === "item" && block.type === "item" ? { depth: block.depth || 0, ordered: Boolean(block.ordered) } : {}) } },
+        "Line added."
+      ),
+    onEdit: (block, was, text) => lineEdit({ op: "edit", index: block.index, was, text }, "Line saved."),
+    onHighlight: (text) =>
+      markTerms(({ add, remove }) => {
+        const i = remove.findIndex((t) => sameText(t, text));
+        if (i >= 0) remove.splice(i, 1);
+        if (!add.some((t) => sameText(t, text))) add.push(text);
+      }, `\u201c${text}\u201d is highlighted as a key term - your next tests use it too.`),
+    onUnmark: (block, text) => {
+      // set in bold by the author: the bold comes off this line - and, if the
+      // word is also one of the note's key terms, it stops being one, so the
+      // next test does not ask about it either
+      if ((block.strong || []).some((t) => sameText(t, text))) {
+        return lineEdit({ op: "unbold", index: block.index, was: lineText(block), term: text }, `\u201c${text}\u201d is no longer highlighted.`).then((saved) => {
+          const term = saved && termsOf(saved).find((t) => sameText(t, text));
+          if (!term) return Boolean(saved);
+          return markTerms(({ add, remove }) => {
+            const i = add.findIndex((t) => sameText(t, term));
+            if (i >= 0) add.splice(i, 1);
+            if (!remove.some((t) => sameText(t, term))) remove.push(term);
+          }, `\u201c${text}\u201d is no longer highlighted or a key term.`, saved);
+        });
+      }
+      // a key term: it stops being one, everywhere in the note
+      const term = termsOf(selected).find((t) => sameText(t, text)) || text;
+      if (termsOf(selected).some((t) => sameText(t, term))) {
+        return markTerms(({ add, remove }) => {
+          const i = add.findIndex((t) => sameText(t, term));
+          if (i >= 0) add.splice(i, 1);
+          if (!remove.some((t) => sameText(t, term))) remove.push(term);
+        }, `\u201c${term}\u201d is no longer a key term or highlighted.`);
+      }
+      setEditMsg({ text: "That colour marks the name a list entry opens with - change the line's words to change it." });
+      return Promise.resolve(false);
+    },
+  };
+
+  async function undoDelete() {
+    if (!lastDeleted || lastDeleted.noteId !== String(selected?._id)) return;
+    const { after, block } = lastDeleted;
+    setEditBusy(true);
+    setEditMsg(null);
+    try {
+      // the line goes back where it was, with its words, kind and bold terms
+      const r = await api.editNoteLine(selected._id, { op: "insert", after, block });
+      putNotes(r.note && { ...selected, ...r.note }, r.parent);
+      setLastDeleted(null);
+      setEditMsg({ text: "Line restored." });
+    } catch (err) {
+      setEditMsg({ error: true, text: err.message });
+    } finally {
+      setEditBusy(false);
+    }
+  }
 
   // Delete the open note. A document goes with its subtopics; a document whose
   // last subtopic is deleted goes too. Tests already built are not affected.
@@ -642,13 +761,70 @@ export default function SubjectWorkspace() {
                   />
                 </details>
               ) : (
-                <NoteContent
-                  content={selected.content}
-                  keywords={termsOf(selected)}
-                  colorIndex={selectedColor ?? 0}
-                  bySection={!selectedNode}
-                  shrink={Math.min(selectedNode?.depth || 0, 2)}
-                />
+                <>
+                  {editingId === String(selected._id) ? (
+                    <div
+                      className="sticky top-0 z-10 mb-space-md p-space-md rounded-lg bg-secondary-container text-on-secondary-container flex flex-col gap-space-xs font-body-sm text-body-sm"
+                      data-testid="note-edit-bar"
+                    >
+                      <div className="flex flex-wrap items-center justify-between gap-space-sm">
+                        <span>
+                          <strong>Editing.</strong> Use the buttons beside a line to change it, add a line below or delete it. Select words to highlight them; click a highlighted
+                          word to remove its highlight.
+                        </span>
+                        <span className="flex items-center gap-space-sm">
+                          {lastDeleted?.noteId === String(selected._id) && (
+                            <button type="button" onClick={undoDelete} disabled={editBusy} className="underline disabled:opacity-50" data-testid="undo-delete-line">
+                              Undo delete
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEditingId(null);
+                              setEditMsg(null);
+                              setLastDeleted(null);
+                            }}
+                            className="h-8 px-space-md rounded-lg bg-primary text-on-primary font-ui-body text-ui-body"
+                            data-testid="note-edit-done"
+                          >
+                            Done
+                          </button>
+                        </span>
+                      </div>
+                      {editBusy && <span>Saving…</span>}
+                      {!editBusy && editMsg && (
+                        <span role={editMsg.error ? "alert" : "status"} className={editMsg.error ? "text-error font-semibold" : ""}>
+                          {editMsg.text}
+                        </span>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="mb-space-sm flex justify-end">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditingId(String(selected._id));
+                          setEditMsg(null);
+                          setLastDeleted(null);
+                        }}
+                        className="font-label-md text-label-md text-secondary hover:text-primary flex items-center gap-space-2xs"
+                        data-testid="note-edit-inline"
+                      >
+                        <Icon name="edit_note" className="text-base" />
+                        Edit lines &amp; highlights
+                      </button>
+                    </div>
+                  )}
+                  <NoteContent
+                    content={selected.content}
+                    keywords={termsOf(selected)}
+                    colorIndex={selectedColor ?? 0}
+                    bySection={!selectedNode}
+                    shrink={Math.min(selectedNode?.depth || 0, 2)}
+                    edit={editingId === String(selected._id) ? noteEdit : null}
+                  />
+                </>
               )}
               {selectedParent && siblings.length > 1 && (
                 <nav className="mt-space-xl pt-space-lg border-t border-surface-container-high flex items-center justify-between gap-space-md">
