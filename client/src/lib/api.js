@@ -191,6 +191,9 @@ export const api = {
   deleteNote: (noteId) => request(`/notes/${noteId}`, { method: "DELETE" }),
   // the student's own key terms for a note: { add: [term], remove: [term] }, replacing what was set
   setKeyTerms: (noteId, marks) => request(`/notes/${noteId}/key-terms`, { method: "PUT", body: marks }),
+  // one change on the formatted note: { op: "delete" | "insert" | "edit" | "unbold", ... }
+  // (server/src/services/noteLines.js)
+  editNoteLine: (noteId, edit) => request(`/notes/${noteId}/lines`, { method: "PATCH", body: edit }),
 
   // A formatted file to keep or print. For a document that was split into
   // subtopics, exportNote gives the whole document.

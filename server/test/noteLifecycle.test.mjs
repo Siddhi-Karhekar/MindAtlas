@@ -164,6 +164,97 @@ try {
   check("  ...keeping the outline: chapter, subtopic, then its text", shape(r.parent.content).startsWith("h1 h2 p b0 b0 h2 p h1 h2 p"), shape(r.parent?.content || []));
   check("  ...the subtopic keeps its place", r.note.parentNoteId === parent._id && r.note.order === 0 && r.note.path[0] === "Memory");
 
+  console.log("\n=== Editing the formatted note line by line ===");
+  {
+    const id = kids[0]._id;
+    const lines = async () => (await call(`/notes/${id}`, { token: me.token })).note.content;
+    const line = (op) => call(`/notes/${id}/lines`, { method: "PATCH", token: me.token, body: op });
+    let c = await lines();
+    r = await line({ op: "insert", after: 1, was: c[1].text, block: { type: "item", text: "a page fault brings a missing page in from disk" } });
+    check("a line can be added below another (a bullet, at its depth)", r.status === 200 && shape(r.note.content) === "p b0 b0 b0" && r.note.content[2].text === "a page fault brings a missing page in from disk", `HTTP ${r.status} ${r.error || ""} ${shape(r.note?.content || [])}`);
+    check("  ...the note's plain text follows (questions quote it)", /a page fault brings a missing page in from disk/.test(r.note.rawText));
+    check("  ...and so does its document", /a page fault brings a missing page in from disk/.test(r.parent?.rawText || ""));
+    c = r.note.content;
+    r = await line({ op: "edit", index: 0, was: c[0].text, text: "Paging divides physical memory into equal frames." });
+    check("a line's words can be changed", r.status === 200 && r.note.content[0].text === "Paging divides physical memory into equal frames.");
+    c = r.note.content;
+    r = await line({ op: "delete", index: 3, was: c[3].text });
+    check("a line can be deleted", r.status === 200 && shape(r.note.content) === "p b0 b0" && !/caches translations/.test(r.note.rawText), shape(r.note?.content || []));
+    r = await line({ op: "delete", index: 0, was: "words that are not on that line" });
+    check("a change made on an out-of-date page is refused, not applied to another line", r.status === 409 && r.code === "stale");
+    r = await line({ op: "insert", after: 0, block: { type: "para", text: "   " } });
+    check("an empty new line is refused", r.status === 400);
+    r = await line({ op: "explode", index: 0 });
+    check("an unknown change is refused", r.status === 400);
+    check("someone else cannot edit the lines", (await call(`/notes/${id}/lines`, { method: "PATCH", token: other.token, body: { op: "delete", index: 0 } })).status === 404);
+    check("a split document is edited through its subtopics", (await call(`/notes/${parent._id}/lines`, { method: "PATCH", token: me.token, body: { op: "delete", index: 0 } })).status === 400);
+    c = await lines();
+    let left = c.length;
+    for (let i = 0; i < left - 1; i++) {
+      const now = await lines();
+      await line({ op: "delete", index: 0, was: now[0].text });
+    }
+    c = await lines();
+    r = await line({ op: "delete", index: 0, was: c[0].text });
+    check("the last line cannot be deleted (delete the note instead)", r.status === 400 && /empty/.test(r.error), r.error);
+    r = await line({ op: "insert", after: 0, was: c[0].text, block: { type: "para", text: "Paging maps **pages** to frames through the page table." } });
+    c = r.note.content;
+    const bolded = c.find((b) => (b.strong || []).length);
+    check("bold typed in a new line is kept as a highlight", Boolean(bolded) && bolded.strong.includes("pages"), JSON.stringify(c));
+    r = await line({ op: "unbold", index: c.indexOf(bolded), was: bolded.text, term: "pages" });
+    check("...and its highlight can be taken off", r.status === 200 && !r.note.content.some((b) => (b.strong || []).includes("pages")) && /through the page table/.test(r.note.rawText));
+  }
+
+  console.log("\n=== Changes made on the formatted note reach the next test ===");
+  {
+    // a subject of its own, so the other notes do not take the questions
+    const subj = (await call("/subjects", { method: "POST", token: me.token, body: { name: "Networks (edits)" } })).subject;
+    const text = [
+      "A router forwards packets between networks using a routing table.",
+      "",
+      "A switch forwards frames inside one local network using MAC addresses.",
+      "",
+      "A hub repeats every signal to all of its ports and has no forwarding table.",
+      "",
+      "A firewall filters traffic between networks according to a set of security rules.",
+      "",
+      "A modem converts digital data into analog signals for transmission over telephone lines.",
+    ].join("\n");
+    const note = (await add("Network devices", text, me.token, subj._id)).note;
+    const lines = async () => (await call(`/notes/${note._id}`, { token: me.token })).note.content;
+    let c = await lines();
+    const hubAt = c.findIndex((b) => /hub repeats/.test(b.text));
+    r = await call(`/notes/${note._id}/lines`, { method: "PATCH", token: me.token, body: { op: "delete", index: hubAt, was: c[hubAt].text } });
+    check("a line is deleted from the formatted note", r.status === 200 && !/hub repeats/.test(r.note.rawText));
+    c = r.note.content;
+    r = await call(`/notes/${note._id}/lines`, {
+      method: "PATCH",
+      token: me.token,
+      body: { op: "insert", after: c.length - 1, was: c[c.length - 1].text, block: { type: "para", text: "A gateway connects two networks that use different protocols by translating between them." } },
+    });
+    check("a line is added to it", r.status === 200 && /gateway connects/.test(r.note.rawText));
+    r = await call(`/notes/${note._id}/key-terms`, { method: "PUT", token: me.token, body: { add: ["security rules"], remove: [] } });
+    check("a phrase is highlighted as a key term", r.status === 200 && r.note.keyTerms.some((t) => t.toLowerCase() === "security rules"));
+
+    const built = await call(`/subjects/${subj._id}/tests`, { method: "POST", token: me.token, body: { title: "After edits", noteIds: [note._id], mcqCount: 4, theoryCount: 2, marksPerQuestion: 1, durationMinutes: 10 } });
+    check("a test is built from the edited note", built.status === 201, built.error);
+    const qs = (await call(`/tests/${built.test._id}`, { token: me.token })).questions.filter((q) => q.status === "accepted");
+    const seen = JSON.stringify(qs).toLowerCase();
+    check("  ...nothing in it comes from the deleted line", !/hub|repeats every signal/.test(seen), qs.map((q) => q.prompt).join(" | ").slice(0, 300));
+    const concepts = await call(`/notes/${note._id}/concepts`, { token: me.token });
+    const keys = (concepts.records || []).map((x) => x.key);
+    const material = JSON.stringify([...(concepts.records || []), ...(concepts.excluded || [])]).toLowerCase();
+    check("  ...the line added is part of what tests are built from", /gateway connects two networks/.test(material), keys.join(", "));
+    check("  ...and so is the highlighted phrase", keys.some((k) => k.startsWith("security rule")), keys.join(", "));
+    check("  ...which the test asks about", /security rules/.test(seen), qs.map((q) => q.prompt).join(" | ").slice(0, 400));
+
+    // taking the highlight off: the term is no longer asked about
+    r = await call(`/notes/${note._id}/key-terms`, { method: "PUT", token: me.token, body: { add: [], remove: ["security rules"] } });
+    const after = await call(`/notes/${note._id}/concepts`, { token: me.token });
+    check("an unhighlighted phrase is dropped from what tests are built from", r.status === 200 && !(after.records || []).some((x) => x.key.startsWith("security rule")), (after.records || []).map((x) => x.key).join(", "));
+    await call(`/subjects/${subj._id}`, { method: "DELETE", token: me.token });
+  }
+
   r = await call(`/notes/${kids[1]._id}`, { method: "DELETE", token: me.token });
   check("deleting one subtopic keeps the document", r.status === 200 && r.parentDeleted === false && r.deletedIds.length === 1, JSON.stringify(r).slice(0, 120));
   check("  ...which now has two subtopics and no trace of the third", r.parent.childCount === 2 && !/segment base limit/.test(r.parent.rawText));

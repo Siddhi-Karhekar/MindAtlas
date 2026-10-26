@@ -8,7 +8,8 @@ import { deleteNote, editNote, refreshNoteConcepts } from "../services/noteLifec
 import { findOwnedSubject } from "../models/Subject.js";
 import { withSyllabus } from "../services/keyTermSignals.js";
 import { termPattern } from "../services/keyTerms.js";
-import { editTextFor, publicNote, withKeyTerms } from "../services/noteView.js";
+import { contentToEditText, editTextFor, publicNote, withContent, withKeyTerms } from "../services/noteView.js";
+import { applyLineEdit } from "../services/noteLines.js";
 import { exportNote, parseFormat, sendExport } from "../services/noteExport/index.js";
 
 // One note, by id: read it for editing, download it, change it, delete it. (Creating and
@@ -89,6 +90,26 @@ router.patch("/:id", loadOwnedNote, async (req, res, next) => {
     });
   } catch (err) {
     if (err.status) return res.status(err.status).json({ error: err.message });
+    next(err);
+  }
+});
+
+// PATCH /api/notes/:id/lines  { op, index | after, was?, text?, block?, term? }
+// One change made on the formatted note: delete a line, add one below another,
+// change a line's words, or take the bold off a word (services/noteLines.js).
+// Saved like any other edit (editNote): keywords, links and concept records
+// follow; tests already built stay as they were.
+router.patch("/:id/lines", loadOwnedNote, async (req, res, next) => {
+  try {
+    if (isSplitParent(req.note)) return res.status(400).json({ error: "this document is split into subtopics - edit the subtopic you want to change" });
+    const content = applyLineEdit(withContent(req.note).content, req.body || {});
+    const text = contentToEditText(content);
+    if (text.length > LIMITS.noteText) return res.status(400).json({ error: "the note would be too long" });
+    const result = await editNote(req.note, { text });
+    const [note, parent] = withKeyTerms([result.note, result.parent], await findNotesBySubject(req.note.subjectId), { subject: await subjectOf(req.note) });
+    res.json({ note: publicNote(note), parent: parent ? publicNote(parent) : null });
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ error: err.message, ...(err.code ? { code: err.code } : {}) });
     next(err);
   }
 });

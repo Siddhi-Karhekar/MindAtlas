@@ -177,16 +177,17 @@ export function layoutContent(content, keywords = []) {
   const used = new Set();
   let run = null;
   keywords = distinctKeywords(keywords);
-  for (const b of content || []) {
+  // `index`: where the block is in `content`, for editing the note line by line
+  for (const [index, b] of (content || []).entries()) {
     if (b.type === "item") {
       if (!run) out.push({ type: "list", items: (run = []) });
-      run.push({ ...b, segments: markText(b.text, { strong: b.strong, keywords, used }) });
+      run.push({ ...b, index, segments: markText(b.text, { strong: b.strong, keywords, used }) });
       continue;
     }
     run = null;
-    if (b.type === "heading") out.push(b);
-    else if (b.type === "para") out.push({ ...b, segments: markText(b.text, { strong: b.strong, keywords, used }) });
-    else out.push(b);
+    if (b.type === "heading") out.push({ ...b, index });
+    else if (b.type === "para") out.push({ ...b, index, segments: markText(b.text, { strong: b.strong, keywords, used }) });
+    else out.push({ ...b, index });
   }
   return out.map((b) => (b.type === "list" ? { ...b, items: nestItems(b.items) } : b));
 }
@@ -222,4 +223,11 @@ export function colorSections(blocks, { baseIndex = 0, bySection = false, colorO
  */
 export function termsOf(note) {
   return Array.isArray(note?.keyTerms) ? note.keyTerms : note?.keywords || [];
+}
+
+/** The words a content block shows (a table: all its cells), as the server checks them. */
+export function lineText(block) {
+  if (!block) return "";
+  if (block.type === "table") return (block.rows || []).flat().join(" ");
+  return String(block.text || "");
 }

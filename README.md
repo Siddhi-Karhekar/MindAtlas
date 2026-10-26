@@ -60,6 +60,16 @@ Team roles and branch conventions are in [`CONTRIBUTING.md`](CONTRIBUTING.md).
   Rule-based throughout - no API key. Notes saved before this get their
   `content` worked out when they are read. Old `.doc` / `.ppt` files are
   refused with a "Save As .docx / .pptx" message.
+- **Notes can be edited where they are read.** "Edit lines & highlights"
+  above a note puts a small toolbar beside every line of the formatted note:
+  change its words, add a line (paragraph, bullet point or heading) below
+  it, or delete it, with Undo for the last delete (`PATCH
+  /api/notes/:id/lines`, `services/noteLines.js`). Selecting words offers
+  to highlight them as a key term; clicking a highlighted word takes the
+  highlight off (a key term stops being one; a word set in bold loses its
+  bold). Every change is saved as an edit of the note, so the next test is
+  built from the changed text and the changed key terms; tests already
+  built do not change.
 - **Notes can be edited and deleted** (`services/noteLifecycle.js`). A note
   opens for editing as text - `#` headings, `-` bullets, `**key terms**` -
   whatever it was uploaded as, and saving recomputes its keywords and its
