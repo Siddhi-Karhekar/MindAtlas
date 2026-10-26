@@ -219,9 +219,16 @@ try {
 
 // ---------------------------------------------------------------------------
 // The answer fields are never sent while a test is being taken
+// (an allowlist: services/questionView.js; both routes use it)
+const { questionForAttempt, questionForListing } = await import("../src/services/questionView.js");
 const attempts = fs.readFileSync(path.join(here, "..", "src", "routes", "attempts.js"), "utf8");
 const tests = fs.readFileSync(path.join(here, "..", "src", "routes", "tests.js"), "utf8");
-check("the quality record, the check and the computation are kept from the student during a test", ["quality", "verification", "computation"].every((f) => new RegExp(`const \\{ answerKey, supportingExcerpt, keyPoints,[^}]*\\b${f}\\b`).test(attempts) && new RegExp(`withoutKeys = \\(\\{ answerKey, supportingExcerpt, keyPoints,[^}]*\\b${f}\\b`).test(tests)));
+const stored = { _id: "q", type: "mcq", prompt: "P", options: ["a", "b"], answerKey: "a", supportingExcerpt: "s", keyPoints: ["k"], quality: { ok: true }, verification: { verdict: "a" }, computation: { value: 1 }, explanation: "e", distractorReasons: ["d"], classification: {}, concept: "a", conceptId: "c-1", learningObjective: "know a", cognitiveLevel: "recall", approach: "x", sourceKind: "fact" };
+const secret = ["answerKey", "supportingExcerpt", "keyPoints", "quality", "verification", "computation", "explanation", "distractorReasons", "classification", "concept", "conceptId", "learningObjective"];
+check(
+  "the answer, the quality record, the check, the computation and the concept are kept from the student during a test",
+  [questionForAttempt(stored), questionForListing(stored)].every((q) => secret.every((f) => !(f in q))) && /questionForAttempt\(question\)/.test(attempts) && /questions\.map\(questionForListing\)/.test(tests)
+);
 
 console.log(failures ? `\n${failures} FAILING CHECK(S)` : "\nAll checks passed.");
 process.exit(failures ? 1 : 0);

@@ -164,6 +164,26 @@ export async function suggestKeyTerms(notes) {
 // ---- in the background ----------------------------------------------------
 const running = new Set(); // note ids being asked about now
 let queue = Promise.resolve();
+let waiting = 0; // notes queued or being asked about
+
+// Every edit of a note's text asks again, and the AI's free quota is shared by
+// everyone: a script that edits a note over and over must not use it up (test
+// building and marking need it too). Per student, at most AI_TERMS_PER_HOUR
+// background asks (one per saved note, upload or test build, each a batch of
+// notes); past that, and while the queue is long, notes wait for a later ask -
+// the next test build asks for whatever is still missing (routes/tests.js).
+const ownerAsks = new Map(); // owner id -> [times asked]
+const perHour = () => Math.max(0, Number(process.env.AI_TERMS_PER_HOUR ?? 60));
+const MAX_WAITING = 200;
+function withinBudget(owner) {
+  const now = Date.now();
+  const recent = (ownerAsks.get(owner) || []).filter((t) => now - t < 3_600_000);
+  const ok = recent.length < perHour();
+  if (ok) recent.push(now);
+  ownerAsks.set(owner, recent);
+  if (ownerAsks.size > 10_000) ownerAsks.clear();
+  return ok;
+}
 
 /** Whether a note's stored AI terms still apply to its text. */
 export const hasCurrentAiTerms = (note) => Boolean(note?.aiTerms && note.aiTerms.version === AI_TERMS_VERSION && note.aiTerms.fingerprint === textFingerprint(note.rawText));
@@ -175,9 +195,15 @@ export const hasCurrentAiTerms = (note) => Boolean(note?.aiTerms && note.aiTerms
  */
 export function suggestInBackground(notes, after = null) {
   if (!aiTermsEnabled()) return Promise.resolve(null);
-  const todo = (notes || []).filter((n) => n && !isSplitParent(n) && !hasCurrentAiTerms(n) && !running.has(String(n._id)));
-  if (!todo.length) return Promise.resolve(null);
+  const candidates = (notes || []).filter((n) => n && !isSplitParent(n) && !hasCurrentAiTerms(n) && !running.has(String(n._id)));
+  if (!candidates.length || waiting >= MAX_WAITING) return Promise.resolve(null);
+  if (!withinBudget(String(candidates[0].ownerId || ""))) {
+    console.warn(`[keyterms] ai: skipped, hourly limit for this student reached (notes=${candidates.length})`);
+    return Promise.resolve(null);
+  }
+  const todo = candidates.slice(0, MAX_WAITING - waiting);
   for (const n of todo) running.add(String(n._id));
+  waiting += todo.length;
   const run = queue
     .catch(() => {})
     .then(() => suggestKeyTerms(todo))
@@ -191,6 +217,7 @@ export function suggestInBackground(notes, after = null) {
     })
     .finally(() => {
       for (const n of todo) running.delete(String(n._id));
+      waiting -= todo.length;
     });
   queue = run;
   return run;

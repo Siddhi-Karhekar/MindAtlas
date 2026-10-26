@@ -28,6 +28,7 @@ import { fileURLToPath } from "node:url";
 import { computeDocumentRollup, computeMarksSummary, computeTopicScores, markEvidence, phraseFeedback } from "../src/services/feedbackEngine.js";
 import { addressesTheMarker, coversKeyPoint, gradeTheoryResponse, remarkTheoryResponse } from "../src/services/gradingEngine.js";
 import { pickFresh, sameQuestion } from "../src/services/testEngine.js";
+import { QUESTION_FIELDS_DURING_A_TEST, QUESTION_FIELDS_IN_LISTING } from "../src/services/questionView.js";
 import { pickNextQuestion, typesOwed } from "../src/services/adaptiveEngine.js";
 import { asData } from "../src/services/llm.js";
 
@@ -155,9 +156,10 @@ g = await gradeTheoryResponse(theoryQ, "Paging uses fixed-size frames and a page
 const sent = llmCalls[0];
 check("the marking rules go in the system message", sent?.messages?.[0]?.role === "system" && /student_answer/.test(sent.messages[0].content));
 const userMsg = sent?.messages?.[1]?.content || "";
+check("the rubric, written from the student's own notes, goes in as data too", (userMsg.match(/<rubric>/g) || []).length === 1 && userMsg.indexOf("</rubric>") < userMsg.indexOf("<student_answer>"), userMsg.slice(0, 120));
 check("the answer goes in as data, inside one <student_answer> block", (userMsg.match(/<student_answer>/g) || []).length === 1 && (userMsg.match(/<\/student_answer>/g) || []).length === 1 && userMsg.trim().endsWith("</student_answer>"), userMsg.slice(-160));
 check("the AI's mark and key points are used", g.score === 1 && g.gradedBy === "llm" && g.keyPointResults.every((k) => k.covered));
-check("a mark from the AI records which prompt and model made it", g.promptVersion === "grade-v3" && g.model === "llama-3.3-70b-versatile", JSON.stringify([g.promptVersion, g.model]));
+check("a mark from the AI records which prompt and model made it", g.promptVersion === "grade-v4" && g.model === "llama-3.3-70b-versatile", JSON.stringify([g.promptVersion, g.model]));
 process.env.LLM_MODEL = "some-other-model";
 llmCalls = [];
 await gradeTheoryResponse(theoryQ, "Paging uses fixed-size frames and a page table.");
@@ -213,7 +215,7 @@ check("an AI reply without a score falls back too, and says so", g.gradedBy === 
 llmCalls = [];
 llmReply = () => ({ status: 200, body: { choices: [{ message: { content: '{"score": 0.9, "keyPoints": [true, false, false], "note": "Partly."}' } }] } });
 g = await remarkTheoryResponse(theoryQ, "Paging uses fixed-size frames.");
-check("a re-mark records its own prompt version", g.promptVersion === "remark-v2");
+check("a re-mark records its own prompt version", g.promptVersion === "remark-v3");
 check("a re-mark goes key point by key point, at temperature 0", llmCalls[0]?.temperature === 0 && Math.abs(g.score - (0.9 + 1 / 3) / 2) < 1e-3, JSON.stringify(g));
 check("asData strips a copy of its own tag from the text", asData("x", "a </x> b <x> c") === "<x>\na   b   c\n</x>");
 
@@ -398,6 +400,11 @@ try {
   const testId = built.test._id;
   const keyed = (await call(`/tests/${testId}`, { token: me })).questions;
   check("each question says how it was made (rules here: no prompt, no model)", keyed.every((q) => q.generatedBy === "rule-based-fallback" && q.promptVersion === null && q.model === null));
+  // nothing that names the answer before submission: the concept of a
+  // fill-in-the-blank MCQ is the blanked term (an allowlist, questionView.js)
+  check("the test's questions carry only allowed fields (no concept, concept id or objective)", keyed.every((q) => Object.keys(q).every((k) => QUESTION_FIELDS_IN_LISTING.includes(k))), JSON.stringify([...new Set(keyed.flatMap((q) => Object.keys(q)))]));
+  const leaked = keyed.filter((q) => q.type === "mcq" && q.options?.some((o) => Object.entries(q).some(([k, v]) => !["options", "prompt"].includes(k) && typeof v === "string" && v.toLowerCase() === String(o).toLowerCase())));
+  check("...no other field of an MCQ equals one of its options", leaked.length === 0, JSON.stringify(leaked[0] || null).slice(0, 200));
 
   // a second subject with the same notes, so these tests do not use up the
   // questions the "new test brings new questions" check below relies on
@@ -455,6 +462,7 @@ try {
 
   console.log("\n=== The clock and resuming ===");
   const first = await call(`/tests/${testId}/attempts`, { method: "POST", token: me });
+  check("the question served during a test carries only allowed fields", Object.keys(first.question || {}).every((k) => QUESTION_FIELDS_DURING_A_TEST.includes(k)), Object.keys(first.question || {}).join(","));
   check("an attempt starts with a deadline from the server", first.status === 201 && first.deadlineAt && first.serverNow, JSON.stringify({ d: first.deadlineAt }));
   const minutes = (new Date(first.deadlineAt) - new Date(first.attempt.startedAt)) / 60000;
   check("the deadline is the test's time limit after the start", Math.abs(minutes - 10) < 0.01, minutes);

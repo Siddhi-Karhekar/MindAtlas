@@ -99,7 +99,10 @@ export function uploadLimits() {
 export const answerImageLimits = () => ({
   maxPerAnswer: 3, // also the most a vision model is sent at once (Groq: 3)
   maxMb: Math.min(10, envNumber("ANSWER_IMAGE_MAX_MB", 5)),
-  // every answer picture a student has, across all tests: a ceiling on storage
-  maxPerStudent: envNumber("ANSWER_IMAGES_MAX_PER_STUDENT", 300),
+  // every answer picture a student has, across all tests: a ceiling on storage.
+  // Pictures are kept in the database (base64), so 100 x 5 MB is already
+  // about 0.7 GB for one student - more than a free database holds. Raise it
+  // only with storage to match.
+  maxPerStudent: envNumber("ANSWER_IMAGES_MAX_PER_STUDENT", 100),
   types: ["image/jpeg", "image/png", "image/webp"],
 });

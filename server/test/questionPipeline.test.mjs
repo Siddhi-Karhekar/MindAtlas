@@ -218,7 +218,9 @@ const PORT = 4581;
 const API = `http://localhost:${PORT}/api`;
 const server = spawn(process.execPath, ["src/index.js"], {
   cwd: fileURLToPath(new URL("..", import.meta.url)),
-  env: { ...process.env, PORT: String(PORT), MONGODB_URI: "", DB_FILE: "memory", GROQ_API_KEY: "", NODE_ENV: "development" },
+  // TEST_REVEAL_KEYS: the stored questions in full (?keys=1, never in
+  // production) - a student gets only what questionView.js allows
+  env: { ...process.env, PORT: String(PORT), MONGODB_URI: "", DB_FILE: "memory", GROQ_API_KEY: "", NODE_ENV: "development", TEST_REVEAL_KEYS: "1" },
   stdio: "ignore",
 });
 try {
@@ -244,7 +246,7 @@ try {
   const build = (title, n = 6) => call(`/subjects/${subject._id}/tests`, { method: "POST", body: { title, noteIds: [up.note._id], mcqCount: n, theoryCount: 2 } });
   // what a student can be given: the accepted questions (a draft the quality
   // gate rejects is stored as discarded in each build that drafted it)
-  const questionsOf = async (r) => ((await call(`/tests/${r.test._id}`)).questions || []).filter((q) => q.status === "accepted");
+  const questionsOf = async (r) => ((await call(`/tests/${r.test._id}?keys=1`)).questions || []).filter((q) => q.status === "accepted");
 
   // two tests asked for at the same moment (two tabs, a double click on two forms)
   const [a, b] = await Promise.all([build("Morning"), build("Evening")]);

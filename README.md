@@ -86,7 +86,8 @@ Team roles and branch conventions are in [`CONTRIBUTING.md`](CONTRIBUTING.md).
   account configured (`SMTP_*`), new addresses have to be confirmed and
   "Forgot password?" sends a reset link; without one, neither is offered.
   [`docs/SECURITY.md`](docs/SECURITY.md) lists every protection, how it was
-  checked, and what is not covered.
+  checked, and what is not covered. The October 2026 audit, its fixes and the
+  remaining risks are in [`docs/SECURITY_AUDIT.md`](docs/SECURITY_AUDIT.md).
 - **Notes can be downloaded as a PDF or a Word file**
   (`services/noteExport/`): one note, a whole document with all its
   subtopics, or every note of a subject. The file follows the reading pane -
