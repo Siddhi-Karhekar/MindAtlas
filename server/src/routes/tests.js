@@ -10,6 +10,8 @@ import { idList, integer, text } from "../middleware/validate.js";
 import { publicDoc } from "../services/noteView.js";
 import { isProduction } from "../config.js";
 import { generateQuestions } from "../services/testEngine.js";
+import { questionForListing } from "../services/questionView.js";
+import { oneAtATime } from "../services/serial.js";
 import { conceptOf } from "../services/questionQuality.js";
 import { masteryMapForSubject } from "../models/Mastery.js";
 import { findAttemptsBySubject, findOpenAttempt } from "../models/Attempt.js";
@@ -36,17 +38,6 @@ const BLOCKING_REPORTS = new Set(["wrong-answer", "unclear", "not-in-notes", "in
 // One test build at a time per student and subject. Two builds started
 // together (a double click, two tabs) would each read the same history and
 // pick the same questions; queued, the second sees the first's questions.
-const building = new Map();
-function oneAtATime(key, work) {
-  const before = building.get(key) || Promise.resolve();
-  const run = before.catch(() => {}).then(work);
-  const tail = run.catch(() => {});
-  building.set(key, tail);
-  tail.then(() => {
-    if (building.get(key) === tail) building.delete(key);
-  });
-  return run;
-}
 
 function poolSizeFor(target) {
   if (target <= 0) return 0;
@@ -347,7 +338,8 @@ router.get("/subjects/:id/tests", async (req, res) => {
 // questions, attempts, answers and results (models/Test.js deleteTestAndData).
 // Mastery is kept. Refused while an attempt's answers are being marked, so a
 // result is never written for a test that is gone.
-router.delete("/tests/:id", async (req, res) => {
+router.delete("/tests/:id", (req, res) => oneAtATime(`attempt|${req.user.id}|${req.params.id}`, () => removeTest(req, res)));
+async function removeTest(req, res) {
   const test = await findOwnedTest(req.params.id, req.user.id);
   if (!test) return res.status(404).json({ error: "test not found" });
   const open = await findOpenAttempt(test._id, req.user.id);
@@ -356,7 +348,7 @@ router.delete("/tests/:id", async (req, res) => {
   }
   const removed = await deleteTestAndData(test._id, req.user.id);
   res.json({ deleted: true, removed });
-});
+}
 
 router.get("/tests/:id", async (req, res) => {
   const test = await findOwnedTest(req.params.id, req.user.id);
@@ -364,9 +356,8 @@ router.get("/tests/:id", async (req, res) => {
 
   const questions = await findQuestionsByTest(test._id);
   const withKeys = req.query.keys === "1" && process.env.TEST_REVEAL_KEYS === "1" && !isProduction();
-  // eslint-disable-next-line no-unused-vars
-  const withoutKeys = ({ answerKey, supportingExcerpt, keyPoints, quality, verification, computation, explanation, distractorReasons, classification, ...q }) => q;
-  res.json({ test: publicDoc(test), questions: withKeys ? questions : questions.map(withoutKeys) });
+  // an allowlist (services/questionView.js): nothing that names the answer
+  res.json({ test: publicDoc(test), questions: withKeys ? questions : questions.map(questionForListing) });
 });
 
 export default router;

@@ -33,6 +33,8 @@ import { markActivity } from "../models/User.js";
 import { findTestsBySubject } from "../models/Test.js";
 import { findNotesByIds, findNotesBySubject, topicLabelFor } from "../models/Note.js";
 import { isReported, topicRevealsAnswer } from "../services/testEngine.js";
+import { questionForAttempt } from "../services/questionView.js";
+import { oneAtATime } from "../services/serial.js";
 import { uploadSingle } from "../middleware/upload.js";
 import { answerImageLimits } from "../config.js";
 import { checkUploadContent, imageSize } from "../services/uploadCheck.js";
@@ -58,8 +60,10 @@ function forAttemptTaking(question) {
   // progress - only after submission, via the review.
   // (nor what the quality gate recorded: its checks name the answer - the
   // AI checker's verdict, the numbers a computed answer comes from)
-  // eslint-disable-next-line no-unused-vars
-  const { answerKey, supportingExcerpt, keyPoints, quality, verification, computation, explanation, distractorReasons, classification, ...safe } = question;
+  // an allowlist (services/questionView.js): the concept a question tests,
+  // its id and its learning objective can each give the answer away
+  const safe = questionForAttempt(question);
+  const { answerKey } = question;
   // The topic label is shown beside the question. When it names the answer
   // ("A _____ is a high level abstraction ..." under "Unit 3 › Monitors"),
   // show only the document until the attempt is over.
@@ -215,7 +219,13 @@ function attemptPayload({ attempt, test, question, resumed = false }) {
 // coming back later) returns to it, with the same clock. Starting over to get
 // easier questions, or more time, is not possible. An open attempt whose time
 // has run out is submitted with the answers it has, and the student is told.
-router.post("/tests/:id/attempts", once({ remember: false }), async (req, res) => {
+// One start at a time per student and test (services/serial.js): two
+// requests sent together - whatever their bodies - could otherwise both find
+// no open attempt and open two, one of them answerable from the other's review.
+router.post("/tests/:id/attempts", once({ remember: false }), (req, res) =>
+  oneAtATime(`attempt|${req.user.id}|${req.params.id}`, () => startAttempt(req, res))
+);
+async function startAttempt(req, res) {
   const test = await findOwnedTest(req.params.id, req.user.id);
   if (!test) return res.status(404).json({ error: "test not found" });
   const startOver = req.body?.startOver === true;
@@ -269,7 +279,7 @@ router.post("/tests/:id/attempts", once({ remember: false }), async (req, res) =
   });
 
   res.status(201).json(attemptPayload({ attempt, test, question: firstQuestion }));
-});
+}
 
 async function loadOwnedAttempt(req, res, next) {
   const attempt = await findOwnedAttempt(req.params.id, req.user.id);

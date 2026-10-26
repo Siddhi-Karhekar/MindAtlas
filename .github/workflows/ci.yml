@@ -68,6 +68,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: docker build --tag mindatlas:ci .
+      # the image starts as its unprivileged user and answers its health check
+      - name: Image starts and is healthy (not as root)
+        run: |
+          docker run -d --name mindatlas-smoke -p 4000:4000 \
+            -e ALLOW_FILE_DB=true -e JWT_SECRET="$(openssl rand -hex 32)" -e CORS_ORIGIN=http://localhost:4000 -e FORCE_HTTPS=off \
+            mindatlas:ci
+          for i in $(seq 1 30); do curl -fsS http://localhost:4000/api/health && break; sleep 2; done
+          curl -fsS http://localhost:4000/api/health
+          test "$(docker exec mindatlas-smoke id -u)" != "0"
+          docker stop --time 30 mindatlas-smoke
+          docker logs mindatlas-smoke | tail -20
 
   secrets:
     name: No committed secrets (gitleaks)

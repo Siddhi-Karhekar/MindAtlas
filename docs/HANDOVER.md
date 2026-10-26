@@ -190,7 +190,7 @@ Every rule with its code location: `docs/ASSESSMENT.md`. Detailed walkthroughs: 
 - Database: `questions.generatedBy` (+ `promptVersion`, `model`), `tests.generation`, `responses.gradedBy` (+ `fallbackReason`), `feedback_reports.generatedBy`.
 - `/api/auth/config` shows `"ai":{"enabled":true,"name":"Groq"}` when a key is set.
 
-**Prompt versions** (`llm.js` `PROMPT_VERSIONS`): `mcq-v7` (question-quality branch, concept headers and `conceptId`; `mcq-v6`, `mcq-v5` before), `theory-v6` (`theory-v5` before), `grade-v3`, `remark-v2`, `feedback-v3`, `verify-v1` (the blind MCQ check), `keyterms-v1` (key terms suggested at upload, `docs/KEYTERMS.md`). Bump a version whenever its prompt's wording changes.
+**Prompt versions** (`llm.js` `PROMPT_VERSIONS`): `mcq-v7` (question-quality branch, concept headers and `conceptId`; `mcq-v6`, `mcq-v5` before), `theory-v6` (`theory-v5` before), `grade-v4` (rubric sent as data, Oct 2026), `remark-v3`, `feedback-v3`, `verify-v1` (the blind MCQ check), `keyterms-v1` (key terms suggested at upload, `docs/KEYTERMS.md`). Bump a version whenever its prompt's wording changes.
 
 **Privacy:** Groq receives note text, written answers and photos attached to theory answers, never names or emails. Groq's terms say it does not train on inputs, and make the app owner responsible for users under 18.
 

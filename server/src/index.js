@@ -168,6 +168,16 @@ app.post(
   "/api/questions/:questionId/report",
   rateLimit({ windowMs: 15 * MINUTES, max: envNumber("RATE_LIMIT_REPORT_MAX", 60), message: "too many reports, please try again later", key: sessionKey })
 );
+// Changing a note's text rebuilds its keywords, links and concept records,
+// and may ask the AI for its key terms: limited per student and per address.
+const noteEditLimits = [
+  rateLimit({ windowMs: 15 * MINUTES, max: envNumber("RATE_LIMIT_NOTE_EDIT_MAX", 300), message: "too many changes to notes, please wait a few minutes", key: sessionKey }),
+  rateLimit({ windowMs: 15 * MINUTES, max: envNumber("RATE_LIMIT_NOTE_EDIT_MAX", 300) * 5, message: "too many changes to notes from this address, please wait a few minutes" }),
+];
+app.patch("/api/notes/:id", noteEditLimits);
+app.patch("/api/notes/:id/lines", noteEditLimits);
+app.put("/api/notes/:id/key-terms", noteEditLimits);
+app.patch("/api/subjects/:id", noteEditLimits);
 // Reading an uploaded file (OCR, PDF parsing) is the next heaviest.
 const uploadLimit = rateLimit({
   windowMs: 15 * MINUTES,
@@ -227,10 +237,38 @@ app.use((err, req, res, next) => {
 
 const PORT = process.env.PORT || 4000;
 
+// Slow or stuck clients cannot hold connections open for ever (Node's own
+// defaults are 5 minutes per request). Closing an attempt with many theory
+// answers is the slowest real request; it fits well inside this.
+const REQUEST_TIMEOUT_MS = Math.max(30_000, envNumber("REQUEST_TIMEOUT_SECONDS", 330) * 1000);
+
 connectDB()
   .then(() => {
-    app.listen(PORT, () => console.log(`[server] listening on :${PORT}`));
+    const server = app.listen(PORT, () => console.log(`[server] listening on :${PORT}`));
+    server.requestTimeout = REQUEST_TIMEOUT_MS;
+    server.headersTimeout = 30_000;
+    server.keepAliveTimeout = 65_000; // longer than the hosting proxy's, so it never meets a closed socket
     warmSemanticModel(); // background; a no-op unless the add-on is installed
+
+    // A deploy or restart sends SIGTERM: stop taking new connections and let
+    // the requests in flight (a test being built, an attempt being marked)
+    // finish, for up to SHUTDOWN_GRACE_SECONDS, then exit. An attempt cut off
+    // part-way is finished later anyway (routes/attempts.js, stale closes).
+    let stopping = false;
+    const stop = (signal) => {
+      if (stopping) return;
+      stopping = true;
+      console.log(`[server] ${signal}: finishing requests in flight, then stopping`);
+      const grace = Math.max(1, envNumber("SHUTDOWN_GRACE_SECONDS", 25)) * 1000;
+      setTimeout(() => {
+        console.warn("[server] requests still running after the grace period - stopping anyway");
+        process.exit(0);
+      }, grace).unref();
+      server.close(() => process.exit(0));
+      server.closeIdleConnections?.();
+    };
+    process.on("SIGTERM", () => stop("SIGTERM"));
+    process.on("SIGINT", () => stop("SIGINT"));
   })
   .catch((err) => {
     console.error("[server] failed to start:", err);

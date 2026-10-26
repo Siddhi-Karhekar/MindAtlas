@@ -52,8 +52,8 @@ export const llmProvider = () => {
 export const PROMPT_VERSIONS = Object.freeze({
   mcq: "mcq-v7",
   theory: "theory-v6",
-  grade: "grade-v3",
-  remark: "remark-v2",
+  grade: "grade-v4",
+  remark: "remark-v3",
   feedback: "feedback-v3",
   verify: "verify-v1",
   keyterms: "keyterms-v1",
