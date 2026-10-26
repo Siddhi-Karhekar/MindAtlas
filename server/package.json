@@ -26,15 +26,15 @@
   "dependencies": {
     "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",
-    "docx": "^9.8.1",
+    "docx": "^9.14.0",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
     "jsonwebtoken": "^9.0.2",
     "jszip": "^3.10.1",
     "mammoth": "^1.12.3",
     "mongodb": "^6.8.0",
-    "multer": "^2.0.0",
-    "nodemailer": "^10.0.14",
+    "multer": "^2.5.0",
+    "nodemailer": "^10.2.1",
     "pdfjs-dist": "^4.10.38",
     "pdfkit": "^0.20.2",
     "tesseract.js": "^5.1.1",
@@ -43,6 +43,6 @@
     "wordlist-english": "1.2.1"
   },
   "devDependencies": {
-    "oxlint": "^1.87.0"
+    "oxlint": "^1.89.0"
   }
 }
