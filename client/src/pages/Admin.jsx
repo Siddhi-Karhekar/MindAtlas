@@ -8,6 +8,7 @@ const REASON = {
   "wrong-answer": "Marked answer is wrong",
   unclear: "Unclear",
   "not-in-notes": "Not from the notes",
+  invalid: "Marked invalid (never show again)",
   repeated: "Asked before",
   other: "Other",
 };

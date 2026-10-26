@@ -646,6 +646,52 @@ try {
   check("the revision card has a streak: tests were finished today", rev.status === 200 && rev.streak.days >= 1 && rev.streak.today === true, JSON.stringify(rev.streak));
   check("...and lists topics to revise, each with its subject", Array.isArray(rev.due) && rev.due.every((d) => d.subject && d.topic && ["shaky", "stale"].includes(d.reason)), JSON.stringify(rev.due).slice(0, 150));
 
+  console.log("\n=== Marking a question invalid: never shown again ===");
+  {
+    const small = await call(`/subjects/${side._id}/tests`, { method: "POST", token: me, body: { title: "Invalid marks", noteIds: sideNoteIds, mcqCount: 2, theoryCount: 0, marksPerQuestion: 1, durationMinutes: 5 } });
+    check("a test to mark questions in was built", small.status === 201, small.error);
+    const sid = small.test._id;
+    const accepted = (await call(`/tests/${sid}`, { token: me })).questions.filter((x) => x.status === "accepted");
+    const runThrough = async () => {
+      const start = await call(`/tests/${sid}/attempts`, { method: "POST", token: me });
+      if (start.status !== 201 && start.status !== 200) return { start, served: [] };
+      const served = [];
+      let q = start.question;
+      for (let i = 0; i < 10 && q; i++) {
+        served.push(q._id);
+        q = (await call(`/attempts/${start.attempt._id}/responses`, { method: "POST", token: me, body: { questionId: q._id, answer: q.options?.[0] ?? "x" } })).nextQuestion;
+      }
+      await call(`/attempts/${start.attempt._id}/submit`, { method: "POST", token: me });
+      return { start, served };
+    };
+    const first = await runThrough();
+    const bad = first.served[0];
+    const marked = await call(`/questions/${bad}/report`, { method: "POST", token: me, body: { reason: "invalid", attemptId: first.start.attempt._id } });
+    check("a question can be marked invalid", marked.status === 201 && marked.reported === "invalid", marked.error);
+    check("...not someone else's", (await call(`/questions/${bad}/report`, { method: "POST", token: other, body: { reason: "invalid" } })).status === 404);
+    const review = await call(`/attempts/${first.start.attempt._id}/review`, { token: me });
+    check("the review shows it as invalid", review.items.find((i) => String(i.questionId) === String(bad))?.reported === "invalid");
+    const second = await runThrough();
+    check("it is never served in a later attempt", second.served.length > 0 && !second.served.includes(bad), second.served.join());
+
+    // a rule-built test on the same notes would write it again: it is left out
+    const again = await call(`/subjects/${side._id}/tests`, { method: "POST", token: me, body: { title: "After the mark", noteIds: sideNoteIds, mcqCount: 2, theoryCount: 0, marksPerQuestion: 1, durationMinutes: 5 } });
+    const badPrompt = accepted.find((x) => String(x._id) === String(bad))?.prompt;
+    const againQs = (await call(`/tests/${again.test._id}`, { token: me })).questions;
+    check("a new test never brings it back (discarded as reported)", !againQs.some((x) => x.status === "accepted" && sameQuestion(x.prompt, badPrompt)) , againQs.filter((x) => x.discardReason === "reported").length);
+
+    // every question marked: the test cannot be started, and says why
+    for (const x of accepted) await call(`/questions/${x._id}/report`, { method: "POST", token: me, body: { reason: "invalid" } });
+    const none = await call(`/tests/${sid}/attempts`, { method: "POST", token: me });
+    check("with every question marked invalid, the test says so instead of showing them", none.status === 400 && none.code === "all_invalid", JSON.stringify(none).slice(0, 160));
+
+    const undone = await call(`/questions/${bad}/report`, { method: "DELETE", token: me });
+    check("a mark can be undone", undone.status === 200 && undone.removed === 1);
+    check("...only by the owner", (await call(`/questions/${bad}/report`, { method: "DELETE", token: other })).status === 404);
+    const back = await runThrough();
+    check("an undone question can be served again", back.served.map(String).includes(String(bad)), back.served.join());
+  }
+
   console.log("\n=== Deleting a test ===");
   {
     const doomed = await call(`/subjects/${side._id}/tests`, { method: "POST", token: me, body: { title: "To delete", noteIds: sideNoteIds, mcqCount: 2, theoryCount: 0, marksPerQuestion: 1, durationMinutes: 5 } });

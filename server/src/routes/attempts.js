@@ -16,7 +16,7 @@ import {
 } from "../models/Attempt.js";
 import { upsertResponse, findResponsesByAttempt, recordRemark, updateResponseGrade } from "../models/Response.js";
 import { createFeedbackReport, findFeedbackByAttempt, findFeedbackBySubject, updateFeedbackScores } from "../models/FeedbackReport.js";
-import { REPORT_REASONS, findReportsByOwner, saveQuestionReport } from "../models/QuestionReport.js";
+import { REPORT_REASONS, deleteQuestionReport, findInvalidBySubject, findReportsByOwner, saveQuestionReport } from "../models/QuestionReport.js";
 import { requireAuth } from "../middleware/auth.js";
 import { safeRouter } from "../middleware/safeRouter.js";
 import { once } from "../middleware/once.js";
@@ -32,7 +32,7 @@ import { findOwnedSubject, findSubjectsByOwner } from "../models/Subject.js";
 import { markActivity } from "../models/User.js";
 import { findTestsBySubject } from "../models/Test.js";
 import { findNotesByIds, findNotesBySubject, topicLabelFor } from "../models/Note.js";
-import { topicRevealsAnswer } from "../services/testEngine.js";
+import { isReported, topicRevealsAnswer } from "../services/testEngine.js";
 import { uploadSingle } from "../middleware/upload.js";
 import { answerImageLimits } from "../config.js";
 import { checkUploadContent, imageSize } from "../services/uploadCheck.js";
@@ -119,13 +119,27 @@ function testInfo(test) {
 // without any they have reported as broken - unless that would leave nothing.
 // For an attempt under way, only reports made before it started count, so
 // reporting (from another attempt's review) never shortens a test mid-way.
+//
+// A question marked invalid is stricter: it is never given again - not even
+// when that leaves nothing - and neither is a rewording of it, or the same
+// answer from the same passage, in this test or any other test of the
+// subject (testEngine.isReported).
 async function deliverablePool(test, ownerId, { startedAt = null } = {}) {
   const pool = await findQuestionsByTest(test._id, { onlyAccepted: true });
   const since = startedAt ? new Date(startedAt).getTime() : Infinity;
-  const reports = (await findReportsByOwner(ownerId, { testId: test._id })).filter((r) => new Date(r.reportedAt).getTime() < since);
+  const before = (r) => new Date(r.reportedAt).getTime() < since;
+  const invalidMarks = (await findInvalidBySubject(ownerId, test.subjectId)).filter(before);
+  const invalidIds = new Set(invalidMarks.map((r) => String(r.questionId)));
+  const blocked = (await findQuestionsByIds(invalidMarks.map((r) => r.questionId))).map((q) => ({
+    prompt: q.prompt,
+    excerpt: q.supportingExcerpt,
+    answer: q.type === "mcq" ? q.answerKey : null,
+  }));
+  const valid = pool.filter((q) => !invalidIds.has(String(q._id)) && !isReported(q, blocked));
+  const reports = (await findReportsByOwner(ownerId, { testId: test._id })).filter(before);
   const reported = new Set(reports.map((r) => String(r.questionId)));
-  const usable = pool.filter((q) => !reported.has(String(q._id)));
-  return usable.length ? usable : pool;
+  const usable = valid.filter((q) => !reported.has(String(q._id)));
+  return usable.length ? usable : valid;
 }
 
 // Choose and record the next question of an attempt, keeping to the test's
@@ -224,7 +238,13 @@ router.post("/tests/:id/attempts", once({ remember: false }), async (req, res) =
 
   const pool = await deliverablePool(test, req.user.id);
   if (pool.length === 0) {
-    return res.status(400).json({ error: "this test has no accepted questions to attempt" });
+    const marked = (await findQuestionsByTest(test._id, { onlyAccepted: true })).length > 0;
+    return res.status(400).json({
+      error: marked
+        ? "you have marked every question in this test as invalid - build a new test, or undo a mark from an earlier attempt's review"
+        : "this test has no accepted questions to attempt",
+      code: marked ? "all_invalid" : "no_questions",
+    });
   }
 
   const targetCount = Math.min(test.targetQuestionCount || pool.length, pool.length);
@@ -889,6 +909,16 @@ router.post("/questions/:questionId/report", async (req, res) => {
     comment,
   });
   res.status(201).json({ ok: true, reported: reason });
+});
+
+// DELETE /api/questions/:questionId/report - undo a report or an "invalid"
+// mark: the question may be given and generated again.
+router.delete("/questions/:questionId/report", async (req, res) => {
+  const [question] = await findQuestionsByIds([req.params.questionId]);
+  const test = question ? await findOwnedTest(question.testId, req.user.id) : null;
+  if (!test) return res.status(404).json({ error: "question not found" });
+  const removed = await deleteQuestionReport(question._id, req.user.id);
+  res.json({ ok: true, removed });
 });
 
 // GET /api/revision?tz=Asia/Kolkata - for the home page: the streak of days

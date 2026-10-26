@@ -240,6 +240,8 @@ export const api = {
     request(`/attempts/${attemptId}/questions/${questionId}/remark`, { method: "POST", body: { reason }, timeoutMs: 90_000 }),
   reportQuestion: (questionId, { reason, comment, attemptId }) =>
     request(`/questions/${questionId}/report`, { method: "POST", body: { reason, comment, attemptId } }),
+  // undo a report or an "invalid" mark
+  unreportQuestion: (questionId) => request(`/questions/${questionId}/report`, { method: "DELETE" }),
 
   getProgress: (subjectId) => request(`/subjects/${subjectId}/progress`),
 };

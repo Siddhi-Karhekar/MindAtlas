@@ -10,7 +10,11 @@ import { getCollection } from "../db/index.js";
 // generator (docs/EVALUATION.md).
 const reports = () => getCollection("question_reports");
 
-export const REPORT_REASONS = ["wrong-answer", "unclear", "not-in-notes", "repeated", "other"];
+// "invalid": the student marks the question as one they never want to see
+// again - stricter than a report: it is left out of every later attempt and
+// every later test for them, with any rewording of it (routes/attempts.js
+// deliverablePool, routes/tests.js), and can be undone.
+export const REPORT_REASONS = ["wrong-answer", "unclear", "not-in-notes", "repeated", "other", "invalid"];
 
 export async function saveQuestionReport({ questionId, testId, subjectId, ownerId, attemptId = null, reason, comment = "" }) {
   return reports().findOneAndUpdate(
@@ -18,6 +22,16 @@ export async function saveQuestionReport({ questionId, testId, subjectId, ownerI
     { $set: { questionId, testId, subjectId, ownerId, attemptId, reason, comment, reportedAt: new Date() } },
     { upsert: true }
   );
+}
+
+/** Undo a report or an "invalid" mark (the student's own). Returns how many went. */
+export async function deleteQuestionReport(questionId, ownerId) {
+  return reports().deleteMany({ questionId, ownerId });
+}
+
+/** The questions a student marked invalid in one subject. */
+export async function findInvalidBySubject(ownerId, subjectId) {
+  return reports().find({ ownerId, subjectId, reason: "invalid" });
 }
 
 export async function findReportsByOwner(ownerId, { testId = null } = {}) {

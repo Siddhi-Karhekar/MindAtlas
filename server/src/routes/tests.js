@@ -31,7 +31,7 @@ const RECENT_TESTS = 2;
 
 // Reports that say a question is broken - not merely a repeat, or "other" -
 // keep it (or a rewording of it) out of every later test on these notes.
-const BLOCKING_REPORTS = new Set(["wrong-answer", "unclear", "not-in-notes"]);
+const BLOCKING_REPORTS = new Set(["wrong-answer", "unclear", "not-in-notes", "invalid"]);
 
 // One test build at a time per student and subject. Two builds started
 // together (a double click, two tabs) would each read the same history and
