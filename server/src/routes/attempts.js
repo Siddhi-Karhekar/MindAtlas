@@ -139,7 +139,8 @@ async function deliverablePool(test, ownerId, { startedAt = null } = {}) {
     excerpt: q.supportingExcerpt,
     answer: q.type === "mcq" ? q.answerKey : null,
   }));
-  const valid = pool.filter((q) => !invalidIds.has(String(q._id)) && !isReported(q, blocked));
+  // retiredAt: an admin took the question out for every student (admin page)
+  const valid = pool.filter((q) => !q.retiredAt && !invalidIds.has(String(q._id)) && !isReported(q, blocked));
   const reports = (await findReportsByOwner(ownerId, { testId: test._id })).filter(before);
   const reported = new Set(reports.map((r) => String(r.questionId)));
   const usable = valid.filter((q) => !reported.has(String(q._id)));
@@ -248,7 +249,12 @@ async function startAttempt(req, res) {
 
   const pool = await deliverablePool(test, req.user.id);
   if (pool.length === 0) {
-    const marked = (await findQuestionsByTest(test._id, { onlyAccepted: true })).length > 0;
+    const accepted = await findQuestionsByTest(test._id, { onlyAccepted: true });
+    const marked = accepted.length > 0;
+    // every question was taken out by the team (admin page), not by the student
+    if (marked && accepted.every((q) => q.retiredAt)) {
+      return res.status(400).json({ error: "every question in this test was withdrawn because it was faulty - build a new test", code: "all_retired" });
+    }
     return res.status(400).json({
       error: marked
         ? "you have marked every question in this test as invalid - build a new test, or undo a mark from an earlier attempt's review"

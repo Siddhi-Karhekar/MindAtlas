@@ -89,6 +89,13 @@ class MemoryCollection {
     return { ...existing };
   }
 
+  async countDocuments(filter = {}) {
+    assertSafeFilter(filter);
+    let n = 0;
+    for (const doc of this.docs.values()) if (matches(doc, filter)) n += 1;
+    return n;
+  }
+
   /**
    * Delete every document matching `filter`; returns how many went. An empty
    * filter is refused: it would empty the collection, and nothing in the app
@@ -208,10 +215,23 @@ export function createMemoryDb({ file = null, saveDelayMs = 150 } = {}) {
     }
   }
 
+  // For the admin page: documents and approximate size per collection (the
+  // size of its JSON - close to what the file on disk holds).
+  async function stats() {
+    const rows = [...collections].map(([name, col]) => ({
+      name,
+      count: col.docs.size,
+      bytes: Buffer.byteLength(JSON.stringify([...col.docs.values()])),
+    }));
+    const dataBytes = rows.reduce((sum, r) => sum + r.bytes, 0);
+    return { dataBytes, storageBytes: dataBytes, indexBytes: 0, collections: rows };
+  }
+
   return {
     kind: file ? "file" : "memory",
     file,
     collection: getCollection,
+    stats,
     flush: saveNow,
     async close() {
       saveNow();

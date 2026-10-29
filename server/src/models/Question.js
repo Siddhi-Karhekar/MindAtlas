@@ -25,6 +25,18 @@ export async function findQuestionsByIds(ids) {
   return questions().find({ _id: ids });
 }
 
+/**
+ * Retire a question for every student (admin page): it stays in tests and in
+ * reviews of attempts already taken, but is never given in a new attempt
+ * (routes/attempts.js, deliverablePool). Pass retired=false to bring it back.
+ */
+export async function setQuestionRetired(id, retired, { by = null, reason = "" } = {}) {
+  return questions().findOneAndUpdate(
+    { _id: id },
+    { $set: retired ? { retiredAt: new Date(), retiredBy: by, retiredReason: reason } : { retiredAt: null, retiredBy: null, retiredReason: null } }
+  );
+}
+
 /** Every accepted question of these tests: what a student has already been asked. */
 export async function findAcceptedQuestionsByTests(testIds) {
   if (!testIds.length) return [];

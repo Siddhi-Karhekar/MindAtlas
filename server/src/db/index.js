@@ -81,6 +81,11 @@ export function dbInfo() {
   return { kind: "memory", persistent: false };
 }
 
+/** Storage used, per collection (admin page). Null when the store cannot say. */
+export async function dbStats() {
+  return dbInstance?.stats ? dbInstance.stats() : null;
+}
+
 export function getCollection(name) {
   if (!dbInstance) throw new Error("Database not connected yet - call connectDB() first");
   return dbInstance.collection(name);
