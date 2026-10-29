@@ -247,4 +247,12 @@ export const api = {
   unreportQuestion: (questionId) => request(`/questions/${questionId}/report`, { method: "DELETE" }),
 
   getProgress: (subjectId) => request(`/subjects/${subjectId}/progress`),
+
+  // admin page, continued: health, usage, accounts, the admin log, and acting on reports
+  adminHealth: () => request("/admin/health"),
+  adminUsage: () => request("/admin/usage"),
+  adminUsers: () => request("/admin/users"),
+  adminLog: () => request("/admin/log"),
+  adminReviewQuestion: (questionId, status, note) => request(`/admin/questions/${questionId}/review`, { method: "POST", body: { status, note } }),
+  adminRetireQuestion: (questionId, retired, reason) => request(`/admin/questions/${questionId}/retire`, { method: "POST", body: { retired, reason } }),
 };

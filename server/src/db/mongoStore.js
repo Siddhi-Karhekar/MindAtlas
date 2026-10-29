@@ -91,6 +91,10 @@ export class MongoCollectionWrapper {
     return fromMongoDoc(doc);
   }
 
+  async countDocuments(filter = {}) {
+    return this.col.countDocuments(toMongoFilter(filter));
+  }
+
   /** Delete every document matching `filter`; returns how many went. Same contract as memoryStore.js. */
   async deleteMany(filter) {
     if (!filter || Object.keys(filter).length === 0) throw new Error("deleteMany needs a filter");
@@ -146,6 +150,20 @@ export async function createMongoDb(uri) {
   );
   return {
     kind: "mongo",
+    // For the admin page: how much of the database's storage the app uses.
+    // dbStats and collStats are part of the readWrite role, so the app's own
+    // database user may run them.
+    async stats() {
+      const s = await db.stats();
+      const names = (await db.listCollections({}, { nameOnly: true }).toArray()).map((c) => c.name);
+      const collections = await Promise.all(
+        names.map(async (name) => {
+          const c = await db.command({ collStats: name }).catch(() => null);
+          return { name, count: c?.count ?? 0, bytes: c?.size ?? 0 };
+        })
+      );
+      return { dataBytes: s.dataSize, storageBytes: s.storageSize, indexBytes: s.indexSize, collections };
+    },
     collection(name) {
       return new MongoCollectionWrapper(db.collection(name));
     },
