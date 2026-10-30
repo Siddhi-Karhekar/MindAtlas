@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { api } from "../lib/api.js";
+import { saveBlob } from "../lib/saveFile.js";
 import { formatDate, wordCount } from "../lib/format.js";
 import Icon from "../components/Icon.jsx";
 import Ring from "../components/Ring.jsx";
@@ -208,6 +209,7 @@ export default function KnowledgeGraph() {
   const [colorBy, setColorBy] = useState("links");
   const [pending, setPending] = useState(null); // id of the link being corrected
   const [notice, setNotice] = useState(null); // { text, undoEdgeId?, label?, error? }
+  const [exporting, setExporting] = useState(false); // a PDF is being made
   // A note's keyword map, shown in place of the subject graph:
   // { subjectId, noteId, data (null while loading), keyword (the open one) }.
   // Tied to the subject it was opened in, so opening another subject's graph
@@ -346,6 +348,26 @@ export default function KnowledgeGraph() {
       setNotice({ text: err.message, error: true });
     } finally {
       setPending(null);
+    }
+  }
+
+  // The whole graph, or the keyword map on screen, as a PDF. The graph is
+  // sent with where its notes are drawn, since the student may have moved them;
+  // search, filters and the selection are left out, so nothing prints dimmed.
+  async function downloadPdf() {
+    setExporting(true);
+    try {
+      const file = map
+        ? await api.exportKeywordMap(map.noteId, map.keyword)
+        : await api.exportGraph(subjectId, {
+            positions: Object.fromEntries([...pos].map(([id, [x, y]]) => [id, [Math.round(x * 10) / 10, Math.round(y * 10) / 10]])),
+            colorBy: byCluster ? "clusters" : "links",
+          });
+      saveBlob(file.blob, file.fileName || `${map ? "keyword map" : "knowledge graph"}.pdf`);
+    } catch (err) {
+      setNotice({ text: err.message, error: true });
+    } finally {
+      setExporting(false);
     }
   }
 
@@ -864,6 +886,19 @@ export default function KnowledgeGraph() {
             <div className="h-4 w-px bg-outline-variant/60"></div>
             <button type="button" onClick={fit} title="Reset viewport" className="px-space-sm h-8 flex items-center justify-center rounded-full hover:bg-surface-container text-on-surface font-label-md text-label-md transition-colors">
               Reset
+            </button>
+            <div className="h-4 w-px bg-outline-variant/60"></div>
+            <button
+              type="button"
+              onClick={downloadPdf}
+              disabled={exporting || Boolean(map && !map.data)}
+              data-testid="graph-download-pdf"
+              title={map ? "Download this keyword map as a PDF" : "Download the whole graph as a PDF"}
+              aria-label={map ? "Download this keyword map as a PDF" : "Download the whole graph as a PDF"}
+              className="px-space-sm h-8 flex items-center gap-space-2xs justify-center rounded-full hover:bg-surface-container text-on-surface font-label-md text-label-md transition-colors disabled:opacity-50"
+            >
+              <Icon name={exporting ? "progress_activity" : "picture_as_pdf"} className={`text-base ${exporting ? "animate-spin" : ""}`} />
+              PDF
             </button>
           </div>
         </header>
