@@ -4,6 +4,7 @@
 // routing, auth and ownership checks are exercised exactly as the client
 // sees them.
 import { spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 const PORT = 4598;
@@ -69,6 +70,39 @@ try {
   await note(chem, "Electrochemical cells", "An electrochemical cell converts chemical energy into electrical energy. Oxidation happens at the anode and reduction at the cathode. A salt bridge completes the circuit between the two half cells.");
 
   const graph = async (sid) => (await call(`/subjects/${sid}/graph`, { token: alice })).data;
+  // What Home showed for a subject when it fetched the subject's whole graph
+  // (Home.jsx before GET /subjects/summary). The summary must say the same.
+  const fromGraph = (gr) => {
+    const links = gr.edges.filter((e) => e.edgeType !== "contains");
+    const topLevel = gr.nodes.filter((n) => !n.parentNoteId);
+    const topics = gr.nodes.filter((n) => n.parentNoteId || !(n.childCount > 0));
+    const linked = new Set(links.flatMap((e) => [String(e.source), String(e.target)]));
+    const latest = [...topLevel].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))[0] || null;
+    return {
+      noteCount: topLevel.length,
+      edgeCount: links.length,
+      linkedPct: topics.length ? Math.round((linked.size / topics.length) * 100) : 0,
+      latest: latest && { id: String(latest.id), title: latest.title, keyTerms: latest.keyTerms },
+    };
+  };
+  const summaryAsGraphs = async (label) => {
+    const { status, data } = await call("/subjects/summary", { token: alice });
+    const subjects = (await call("/subjects", { token: alice })).data.subjects;
+    check(`${label}: one row per subject, in the subjects' order`,
+      status === 200 && data.summaries?.map((r) => r.subject._id).join() === subjects.map((x) => x._id).join());
+    for (const row of data.summaries || []) {
+      const got = {
+        noteCount: row.noteCount,
+        edgeCount: row.edgeCount,
+        linkedPct: row.linkedPct,
+        latest: row.latest && { id: String(row.latest.id), title: row.latest.title, keyTerms: row.latest.keyTerms },
+      };
+      const want = fromGraph(await graph(row.subject._id));
+      const same = JSON.stringify(got) === JSON.stringify(want);
+      check(`${label}: ${row.subject.name} has the numbers its graph gives`, same, same ? "" : `${JSON.stringify(got)} vs ${JSON.stringify(want)}`);
+    }
+    return data.summaries || [];
+  };
   const pairOf = (e) => [String(e.source), String(e.target)].sort().join();
   const cellPairKey = [cellStructure, cellDivision].map(String).sort().join();
   let g = await graph(bio);
@@ -102,6 +136,15 @@ try {
   check("adding a new related note does not bring it back",
     !g.edges.some((e) => e.id === sameLink.id) && g.removedEdges.some((e) => e.id === sameLink.id));
 
+  console.log("\n=== Home summary (GET /api/subjects/summary) ===");
+  check("needs a signed-in user", (await call("/subjects/summary")).status === 401);
+  const bobsRows = await call("/subjects/summary", { token: bob });
+  check("another student sees none of these subjects", bobsRows.status === 200 && bobsRows.data.summaries?.length === 0);
+  const withRemoved = await summaryAsGraphs("with a link marked as wrong");
+  const bioRow = withRemoved.find((r) => r.subject._id === bio);
+  check("the newest note is the one just added, with its key terms",
+    bioRow?.latest?.title === "Cells and DNA" && bioRow.latest.keyTerms?.length > 0, bioRow?.latest?.keyTerms?.join(", "));
+
   const restored = await correct(sameLink.id, "restore", alice);
   g = await graph(bio);
   check("restore brings it back", restored.status === 200 && restored.data.edge?.removed === false
@@ -132,6 +175,16 @@ try {
   check("each keyword has a weight, related words and sentences",
     m.data.keywords.every((k) => typeof k.weight === "number" && Array.isArray(k.subKeywords) && Array.isArray(k.sentences))
     && cellEntry?.sentences.length > 0);
+
+  console.log("\n=== Home summary with a split document ===");
+  const networks = await subject("Networks");
+  const form = new FormData();
+  form.append("file", new Blob([readFileSync(new URL("../../sample-notes/networks_unit2.md", import.meta.url))]), "networks_unit2.md");
+  const uploaded = await fetch(`${API}/subjects/${networks}/notes`, { method: "POST", headers: { Authorization: `Bearer ${alice}` }, body: form });
+  const upData = await uploaded.json().catch(() => ({}));
+  check("the sample document is split into subtopics", uploaded.status === 201 && upData.children?.length > 1, `${upData.children?.length} subtopics`);
+  const rows = await summaryAsGraphs("after the upload");
+  check("a split document counts as one note", rows.find((r) => r.subject._id === networks)?.noteCount === 1);
 } catch (err) {
   console.error("FAILED:", err.message);
   failures++;

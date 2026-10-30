@@ -6,7 +6,6 @@ import { forgetSubject, getLastSubject, getSubjectVisits, setLastSubject } from 
 import { timeAgo } from "../lib/format.js";
 import Icon from "../components/Icon.jsx";
 import Ring from "../components/Ring.jsx";
-import { isSplitParent } from "../lib/notes.js";
 import { termsOf } from "../lib/noteFormat.js";
 
 const ICONS = ["psychology", "lan", "balance", "biotech", "science", "calculate", "history_edu", "menu_book", "public", "architecture"];
@@ -14,30 +13,6 @@ function iconFor(name) {
   let h = 0;
   for (const ch of name) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
   return ICONS[h % ICONS.length];
-}
-
-// Summarise one subject from its graph payload: how many notes, how many of
-// them have at least one link to another note, and when the newest one landed.
-// A split document counts as one note here; its subtopics are what can be
-// linked, and document -> subtopic "contains" edges are structure, not links.
-function summarise(subject, graph) {
-  const nodes = graph?.nodes || [];
-  const edges = (graph?.edges || []).filter((e) => e.edgeType !== "contains");
-  const topLevel = nodes.filter((n) => !n.parentNoteId);
-  const topics = nodes.filter((n) => !isSplitParent(n));
-  const linked = new Set();
-  for (const e of edges) {
-    linked.add(String(e.source));
-    linked.add(String(e.target));
-  }
-  const latest = [...topLevel].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))[0] || null;
-  return {
-    subject,
-    noteCount: topLevel.length,
-    edgeCount: edges.length,
-    linkedPct: topics.length ? Math.round((linked.size / topics.length) * 100) : 0,
-    latest,
-  };
 }
 
 export default function Home() {
@@ -55,11 +30,9 @@ export default function Home() {
   async function load() {
     api.getRevision().then(setRevision).catch(() => setRevision(null));
     try {
-      const { subjects } = await api.listSubjects();
-      const graphs = await Promise.all(
-        subjects.map((s) => api.getGraph(s._id).catch(() => ({ nodes: [], edges: [] })))
-      );
-      setRows(subjects.map((s, i) => summarise(s, graphs[i])));
+      // each subject with its note and link counts and newest note, in one call
+      const { summaries } = await api.subjectSummaries();
+      setRows(summaries);
     } catch (err) {
       setError(err.message);
       setRows([]);

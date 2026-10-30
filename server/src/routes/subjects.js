@@ -1,5 +1,5 @@
 import { createSubject, deleteSubjectAndData, findSubjectsByOwner, findOwnedSubject, updateSubject } from "../models/Subject.js";
-import { findNotesByIds, findNotesBySubject } from "../models/Note.js";
+import { findNotesByIds, findNotesByOwner, findNotesBySubject, isSplitParent } from "../models/Note.js";
 import { findCrossSubjectEdges, findEdgesBySubject, isRemoved, toApiEdge } from "../models/GraphEdge.js";
 import { requireAuth } from "../middleware/auth.js";
 import { safeRouter } from "../middleware/safeRouter.js";
@@ -49,6 +49,47 @@ router.patch("/:id", async (req, res) => {
 router.get("/", async (req, res) => {
   const subjects = await findSubjectsByOwner(req.user.id);
   res.json({ subjects: subjects.map(publicDoc) });
+});
+
+// GET /api/subjects/summary - the home page in one call: every subject with
+// its number of notes and links, the share of its topics that are linked,
+// and its newest note. Home used to fetch each subject's whole graph for
+// these four things (clustering, key terms and cross-subject links included,
+// one request per subject); the numbers are worked out the same way:
+//   noteCount - notes that are not a subtopic (a split document is one note)
+//   edgeCount - links within the subject, without the ones marked as wrong
+//   linkedPct - notes at either end of those links, out of the topics (every
+//               note but a split document's own, which is never linked)
+//   latest    - the newest note that is not a subtopic, with its key terms
+router.get("/summary", async (req, res) => {
+  const subjects = await findSubjectsByOwner(req.user.id);
+  const subjectIds = subjects.map((s) => String(s._id));
+  const [notes, edges] = await Promise.all([
+    findNotesByOwner(req.user.id),
+    // an array matches any of its values: every subject's links in one query
+    subjectIds.length ? findEdgesBySubject(subjectIds) : [],
+  ]);
+  const notesOf = Map.groupBy(notes, (n) => String(n.subjectId));
+  const edgesOf = Map.groupBy(edges, (e) => String(e.subjectId));
+
+  res.json({
+    summaries: subjects.map((subject) => {
+      const nodes = notesOf.get(String(subject._id)) || [];
+      const links = edgesOf.get(String(subject._id)) || [];
+      const topLevel = nodes.filter((n) => !n.parentNoteId);
+      const topics = nodes.filter((n) => !isSplitParent(n));
+      const linked = new Set(links.flatMap((e) => [String(e.sourceNoteId), String(e.targetNoteId)]));
+      const newest = topLevel.reduce((a, n) => (!a || new Date(n.createdAt) > new Date(a.createdAt) ? n : a), null);
+      const [latest] = newest ? withKeyTerms([newest], nodes, { subject }) : [];
+      return {
+        subject: publicDoc(subject),
+        noteCount: topLevel.length,
+        edgeCount: links.length,
+        linkedPct: topics.length ? Math.round((linked.size / topics.length) * 100) : 0,
+        latest: latest ? { id: latest._id, title: latest.title, createdAt: latest.createdAt, keywords: latest.keywords, keyTerms: latest.keyTerms } : null,
+      };
+    }),
+  });
 });
 
 export async function loadOwnedSubject(req, res, next) {

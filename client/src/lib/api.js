@@ -151,6 +151,8 @@ export const api = {
   deleteAccount: (password) => request("/auth/me", { method: "DELETE", body: { password } }),
 
   listSubjects: () => request("/subjects"),
+  // the home page: every subject with its counts and newest note (noteCount, edgeCount, linkedPct, latest)
+  subjectSummaries: () => request("/subjects/summary"),
   createSubject: (name, group) => request("/subjects", { method: "POST", body: group ? { name, group } : { name } }),
   deleteSubject: (subjectId) => request(`/subjects/${subjectId}`, { method: "DELETE" }),
   // rename a subject, or move it to a folder (a semester); group "" takes it out
