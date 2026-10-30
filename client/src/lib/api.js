@@ -107,8 +107,17 @@ function fileNameFrom(disposition) {
 }
 
 // A download: the answer is the file itself, not JSON. Returns { blob, fileName }.
-async function download(path) {
-  const res = await fetch(`${API_BASE}${path}`, { headers: authHeaders(false), credentials: "include", signal: AbortSignal.timeout(90_000) });
+// `body` makes it a POST, for a file built from what the page sends.
+async function download(path, { body } = {}) {
+  const headers = authHeaders(false);
+  if (body) headers["Content-Type"] = "application/json";
+  const res = await fetch(`${API_BASE}${path}`, {
+    method: body ? "POST" : "GET",
+    headers,
+    credentials: "include",
+    body: body ? JSON.stringify(body) : undefined,
+    signal: AbortSignal.timeout(90_000),
+  });
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
     if (res.status === 401) onSignedOut();
@@ -206,6 +215,10 @@ export const api = {
   // action: "remove" (the student says this link is wrong) or "restore"
   correctEdge: (edgeId, action) => request(`/graph/edges/${edgeId}/correct`, { method: "POST", body: { action } }),
   getKeywordMap: (noteId) => request(`/graph/notes/${noteId}/keyword-map`),
+  // The graph or a keyword map as a PDF. The graph sends where its nodes are
+  // drawn ({ positions: { id: [x, y] }, colorBy }); the map, its open keyword.
+  exportGraph: (subjectId, layout) => download(`/subjects/${subjectId}/graph/export?${exportQuery("pdf")}`, { body: layout }),
+  exportKeywordMap: (noteId, keyword) => download(`/graph/notes/${noteId}/keyword-map/export?${exportQuery("pdf")}`, { body: { keyword } }),
 
   listTests: (subjectId) => request(`/subjects/${subjectId}/tests`),
   // the test with its questions, attempts and results (mastery is kept)

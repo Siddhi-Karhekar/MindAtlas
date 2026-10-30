@@ -171,6 +171,8 @@ const exportLimit = rateLimit({
 });
 app.get("/api/notes/:id/export", exportLimit);
 app.get("/api/subjects/:id/export", exportLimit);
+app.post("/api/subjects/:id/graph/export", exportLimit);
+app.post("/api/graph/notes/:noteId/keyword-map/export", exportLimit);
 // Marking an answer again calls the LLM; reports are cheap but stored.
 app.post(
   "/api/attempts/:id/questions/:questionId/remark",
