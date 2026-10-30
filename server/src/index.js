@@ -11,6 +11,7 @@ import { originGuard } from "./middleware/origin.js";
 import { rateLimit } from "./middleware/rateLimit.js";
 import { securityHeaders, requireHttps } from "./middleware/securityHeaders.js";
 import { checkRequestShape } from "./middleware/validate.js";
+import { requestTiming } from "./middleware/timing.js";
 import authRoutes from "./routes/auth.js";
 import subjectRoutes from "./routes/subjects.js";
 import noteRoutes from "./routes/notes.js";
@@ -50,6 +51,10 @@ if (!app.get("trust proxy") && isProduction()) {
   );
 }
 
+// How long each API request takes and how much of it is the database: a
+// Server-Timing header and a log line for slow ones (middleware/timing.js).
+app.use("/api", requestTiming);
+
 // HTTPS only in production, and the headers that tell browsers what this
 // site may and may not do (middleware/securityHeaders.js).
 app.use(requireHttps);
@@ -71,6 +76,13 @@ app.use(
     credentials: true,
     // lets the web client read the file name of a download (notes as PDF / Word)
     exposedHeaders: ["Content-Disposition"],
+    // How long a browser may reuse the answer to its "may I?" (preflight)
+    // request before a save, instead of asking again every time - each ask is
+    // a whole extra round trip. 2 hours is the most Chrome allows. Browsers
+    // keep it per address, so it helps a request repeated to the same address
+    // (saving the same note again); one address for client and API
+    // (DEPLOY.md, "Still to do") removes preflights altogether.
+    maxAge: 7200,
   })
 );
 

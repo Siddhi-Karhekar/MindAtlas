@@ -2,6 +2,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { createMemoryDb } from "./memoryStore.js";
 import { createMongoDb } from "./mongoStore.js";
+import { timedCollection } from "../middleware/timing.js";
 
 let dbInstance = null;
 
@@ -88,7 +89,8 @@ export async function dbStats() {
 
 export function getCollection(name) {
   if (!dbInstance) throw new Error("Database not connected yet - call connectDB() first");
-  return dbInstance.collection(name);
+  // each call is counted against the request that made it (middleware/timing.js)
+  return timedCollection(dbInstance.collection(name));
 }
 
 export async function disconnectDB() {
