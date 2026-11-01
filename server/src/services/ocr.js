@@ -8,6 +8,67 @@ import { createWorker } from "tesseract.js";
 const MIN_WORD_CONFIDENCE = 60;
 const MIN_CONFIDENT_WORDS = 3;
 
+// Phones often store a photo on its side, with an EXIF tag saying which way to
+// turn it. tesseract.js obeys the tag, but finds it with a byte pattern that only
+// matches big-endian order, in the first 500 bytes of the file. A tag written
+// little-endian is missed and the page is read on its side: on printed notes, 0.4%
+// character errors became 91.7% (docs/measurements/ocr.md).
+
+/** A JPEG's EXIF orientation and the byte order it is written in, or null if it has none. */
+export function readRotationTag(buf) {
+  try {
+    if (buf[0] !== 0xff || buf[1] !== 0xd8) return null;
+    let at = 2;
+    while (at + 4 < buf.length) {
+      if (buf[at] !== 0xff) return null;
+      while (buf[at + 1] === 0xff) at += 1;
+      const marker = buf[at + 1];
+      if (marker === 0xda || marker === 0xd9) return null; // the picture itself starts: no tag before it
+      if (marker === 0xd8 || (marker >= 0xd0 && marker <= 0xd7) || marker === 0x01) {
+        at += 2;
+        continue;
+      }
+      const length = buf.readUInt16BE(at + 2);
+      if (marker === 0xe1 && buf.toString("latin1", at + 4, at + 10) === "Exif\0\0") {
+        const tiff = at + 10;
+        const little = buf.toString("latin1", tiff, tiff + 2) === "II";
+        const u16 = (p) => (little ? buf.readUInt16LE(p) : buf.readUInt16BE(p));
+        const u32 = (p) => (little ? buf.readUInt32LE(p) : buf.readUInt32BE(p));
+        const dir = tiff + u32(tiff + 4);
+        for (let n = 0; n < u16(dir); n++) {
+          const entry = dir + 2 + n * 12;
+          if (u16(entry) === 0x0112) return { orientation: u16(entry + 8), byte_order: little ? "II" : "MM" };
+        }
+        return null;
+      }
+      at += 2 + length;
+    }
+  } catch {
+    // a header cut short counts as no tag
+  }
+  return null;
+}
+
+/**
+ * The orientation tesseract.js finds in a file: its own test, from
+ * tesseract.js/src/worker-script/utils/setImage.js.
+ */
+export const orientationOcrSees = (buf) => parseInt(Array.from(buf.subarray(0, 500)).join(" ").match(/1 18 0 3 0 0 0 1 0 (\d)/)?.[1], 10) || 1;
+
+/**
+ * The photo with its rotation tag where tesseract.js will find it, if it would
+ * miss it otherwise: the tag's bytes, in the order it looks for, in a JPEG comment
+ * at the very start. Decoders skip comments, so the picture is untouched, and the
+ * reading is the one a big-endian tag gets. recognize()'s rotateRadians option is
+ * no use here: it keeps the page's size, so a quarter turn cuts the page off.
+ */
+export function withRotationOcrCanSee(buffer) {
+  const tag = readRotationTag(buffer);
+  if (!tag || tag.orientation < 2 || tag.orientation > 8 || orientationOcrSees(buffer) === tag.orientation) return buffer;
+  const comment = Buffer.from([0xff, 0xfe, 0x00, 0x0c, 0x01, 0x12, 0x00, 0x03, 0x00, 0x00, 0x00, 0x01, 0x00, tag.orientation]);
+  return Buffer.concat([buffer.subarray(0, 2), comment, buffer.subarray(2)]);
+}
+
 /**
  * Extract text from an image buffer via Tesseract OCR. Mirrors the
  * architecture doc's OCR service (Tesseract locally, cloud Vision API as a
@@ -34,7 +95,7 @@ export async function extractTextFromImage(buffer) {
     // rejects instead, and a worker we can always terminate.
     worker = await createWorker([], 1, { errorHandler: () => {} });
     await worker.reinitialize("eng");
-    const { data } = await worker.recognize(buffer);
+    const { data } = await worker.recognize(withRotationOcrCanSee(buffer));
     const confidentWords = (data.words || []).filter(
       (w) => w.confidence >= MIN_WORD_CONFIDENCE && /[a-z]{2}/i.test(w.text)
     );

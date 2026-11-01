@@ -47,7 +47,7 @@ function png(width, height) {
 }
 
 // ---- the stand-in AI service
-let vision = "clear"; // clear | partial | unreadable | down
+let vision = "clear"; // clear | partial | unreadable | down | symbols
 const visionBodies = [];
 const markingBodies = [];
 const fake = createServer((req, res) => {
@@ -67,6 +67,8 @@ const fake = createServer((req, res) => {
       const asked = (JSON.parse(body).messages.at(-1).content.find((p) => p.type === "text")?.text || "").replace(/<\/?question>/g, " ");
       const transcript =
         vision === "unreadable" ? "" : `${asked.replace(/Transcribe.*$/s, "").trim()} ${String(NOTES).replace(/\s+/g, " ").slice(0, 4000)} A loader places the executable program into $main\\ memory$. [diagram: memory with the loader at the bottom]`;
+      // as a real model writes them: one backslash, which is not valid JSON
+      if (vision === "symbols") return reply(JSON.stringify({ transcript: `${transcript} SYMBOLS`, legibility: "clear", unreadable_parts: "" }).replace("SYMBOLS", String.raw`$50\%$ of $\{a, b\}$`));
       return reply(JSON.stringify({ transcript, legibility: vision, unreadable_parts: vision === "partial" ? "the last line" : "" }));
     }
     if (body.includes("student_answer")) {
@@ -210,6 +212,8 @@ try {
   check("a page read only in part: marked on what was read, provisional, flagged for review", partial.needsReview === true && partial.marksAwarded > 0 && /provisional/.test(partial.graderNote), `${partial.marksAwarded} ${partial.graderNote}`);
   const unreadable = await scenario("unreadable");
   check("a page that could not be read: no mark invented, flagged, asked for a clearer photo", unreadable.needsReview === true && unreadable.marksAwarded === 0 && /could not be read/.test(unreadable.graderNote) && /clearer photo/.test(unreadable.graderNote), unreadable.graderNote);
+  const symbols = await scenario("symbols");
+  check("a reading with LaTeX symbols such as \\% and \\{ is used, not thrown away for OCR", symbols.imageReading?.by === "vision" && symbols.imageReading.text.includes(String.raw`$50\%$ of $\{a, b\}$`) && symbols.needsReview === false, JSON.stringify({ by: symbols.imageReading?.by, review: symbols.needsReview }));
   const down = await scenario("down");
   check("the image model down: read by OCR instead, and flagged for review", down.needsReview === true && (down.imageReading?.by === "ocr" || /could not be read/.test(down.graderNote)), JSON.stringify(down.imageReading));
 
