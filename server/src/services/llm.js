@@ -219,8 +219,10 @@ const LATEX_AFTER_JSON_ESCAPE =
  * once, not twice: "\frac{a}{b}" arrives as \frac{a}{b}. JSON then either
  * fails to parse (\sqrt, \alpha: not escapes at all, so every question in the
  * reply was lost) or silently corrupts it (\frac, \theta, \beta, \neq: read as
- * control characters). Backslashes that start a LaTeX command are doubled
- * here, before parsing; real escapes (\" \\ \n between words, \u00e9) are kept.
+ * control characters). JSON allows only \" \\ \/ \b \f \n \r \t and \uXXXX, so any
+ * other backslash (\% \{ \, \_ \sqrt) would lose the whole reply: it is LaTeX and
+ * is doubled here, before parsing, as are \frac and the like. Real escapes (\" \\
+ * \n between words, \u00e9) are kept.
  */
 export function escapeLatexBackslashes(text) {
   const s = String(text ?? "");
@@ -238,8 +240,8 @@ export function escapeLatexBackslashes(text) {
       continue;
     }
     const rest = s.slice(i + 1, i + 24);
-    const latex = /^[a-zA-Z]/.test(next) && (!/^[bfnrtu]/.test(next) || LATEX_AFTER_JSON_ESCAPE.test(rest)) && !/^u[0-9a-fA-F]{4}/.test(rest);
-    out += latex ? "\\\\" : c;
+    const realEscape = /^[bfnrt]/.test(next) ? !LATEX_AFTER_JSON_ESCAPE.test(rest) : /^u[0-9a-fA-F]{4}/.test(rest);
+    out += realEscape || !next ? c : "\\\\";
   }
   return out;
 }

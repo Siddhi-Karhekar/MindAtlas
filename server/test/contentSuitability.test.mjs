@@ -226,6 +226,15 @@ try {
 }
 check("JSON escapes that are real are kept (\\n between words, \\\", \\\\, \\u00e9)", JSON.stringify(parseJsonLoose(String.raw`{"a":"x\ny \"q\" \\ é"}`)) === JSON.stringify({ a: 'x\ny "q" \\ é' }));
 check("  ...and an already-doubled \\\\frac stays as it is", escapeLatexBackslashes(String.raw`"\\frac"`) === String.raw`"\\frac"`);
+for (const latex of ["\\%", "\\{", "\\}", "\\,", "\\;", "\\_", "\\&", "\\$", "\\#", "\\ ", "\\!", "\\(", "\\[", "\\1"]) {
+  check(`LaTeX ${latex} does not lose the whole reply, and is kept as written`, parseJsonLoose(`{"a":"x ${latex} y"}`)?.a === `x ${latex} y`, JSON.stringify(parseJsonLoose(`{"a":"x ${latex} y"}`)));
+}
+check("a \\u that is not a real escape does not lose the reply either", parseJsonLoose(String.raw`{"a":"$\unknown$"}`)?.a === String.raw`$\unknown$`);
+const everyCharacter = [...Array(95).keys()].map((n) => String.fromCharCode(32 + n));
+const lost = everyCharacter.filter((c) => !parseJsonLoose(`{"a":"x\\${c}y"}`));
+check("a backslash before any printable character leaves the reply readable", lost.length === 0, lost.join(" "));
+check("real escapes keep their meaning beside LaTeX symbols", JSON.stringify(parseJsonLoose(String.raw`{"a":"line\nnext \"q\" 50\% é \t."}`)) === JSON.stringify({ a: 'line\nnext "q" 50\\% é \t.' }), JSON.stringify(parseJsonLoose(String.raw`{"a":"line\nnext \"q\" 50\% é \t."}`)));
+check("a backslash at the very end is left alone", escapeLatexBackslashes("x\\") === "x\\");
 
 // ---------------------------------------------------------------------------
 console.log("\n=== E. Formatting ===");
