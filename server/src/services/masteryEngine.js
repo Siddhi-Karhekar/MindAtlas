@@ -47,6 +47,14 @@ export const BKT_DEFAULTS = {
 const clamp01 = (x) => Math.max(0, Math.min(1, x));
 const round4 = (x) => Number(x.toFixed(4));
 
+// The highest mastery can go. At exactly 1 the update has no way down: a wrong
+// answer's posterior is slip / slip, whatever the slip. Rounding to four places
+// used to land there after 8 right MCQs in a row, or 5 full-mark theory answers,
+// and the topic then stayed at 1 for good (docs/measurements/mastery.md). 0.9999
+// is the largest value four places can hold below 1. The cap also applies to the
+// value coming in, so a topic already stored at 1 moves again when next answered.
+const MASTERY_CAP = 0.9999;
+
 /** Guess rate for a question, by type. Falls back to the MCQ rate. */
 export function guessRateFor(question, params = BKT_DEFAULTS) {
   if (question?.type === "theory") return params.guessTheory;
@@ -74,7 +82,7 @@ export function guessRateFor(question, params = BKT_DEFAULTS) {
  */
 export function updateMastery(pKnownBefore, score, guessRate, params = BKT_DEFAULTS) {
   const { slip, transit } = params;
-  const pL = clamp01(pKnownBefore);
+  const pL = Math.min(clamp01(pKnownBefore), MASTERY_CAP);
   const g = clamp01(guessRate);
   const s = clamp01(score);
 
@@ -92,7 +100,7 @@ export function updateMastery(pKnownBefore, score, guessRate, params = BKT_DEFAU
 
   // Learning opportunity: even a wrong answer teaches something.
   const next = posterior + (1 - posterior) * transit;
-  return round4(clamp01(next));
+  return round4(Math.min(clamp01(next), MASTERY_CAP));
 }
 
 /**
