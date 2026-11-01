@@ -137,8 +137,8 @@ export async function runGroqPath(options = {}) {
 
   const keySet = Boolean(process.env.GROQ_API_KEY?.trim());
   if (opts.ai && !keySet) throw new Error("GROQ_API_KEY is not set: the AI builds cannot run. In a git worktree, pass it with node --env-file=<path to server/.env>");
-  let files = collectFiles(opts.notes);
-  if (opts.only) files = files.filter((f) => opts.only.includes(path.basename(f)));
+  const allFiles = collectFiles(opts.notes);
+  const files = opts.only ? allFiles.filter((f) => opts.only.includes(path.basename(f))) : allFiles;
   if (!files.length) throw new Error(`no note files in ${opts.notes.join(", ")}${opts.only ? ` named ${opts.only.join(", ")}` : ""}`);
 
   const git = gitCommit();
@@ -148,8 +148,9 @@ export async function runGroqPath(options = {}) {
   const saved = openRun(outDir, { commit: git.commit, seed: opts.seed, model, mcq: opts.mcq, theory: opts.theory });
 
   const documents = [];
-  for (const [i, file] of files.entries()) {
-    const doc = await notesFromFile(file, { idPrefix: `d${i + 1}` });
+  for (const file of files) {
+    // numbered in the whole list, so a document's ids do not depend on --only
+    const doc = await notesFromFile(file, { idPrefix: `d${allFiles.indexOf(file) + 1}` });
     const bytes = fs.readFileSync(file);
     documents.push({ ...doc, name: path.basename(file), info: { file: path.basename(file), folder: path.basename(path.dirname(file)), bytes: bytes.length, sha256: sha256(bytes), topics: doc.notes.length, split: doc.splitMethod, chars: doc.fullText.length } });
   }
