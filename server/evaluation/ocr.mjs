@@ -309,7 +309,8 @@ async function readEverything(opts, readings, log) {
     log(`  ${key} done`);
   }
 
-  // the photos the library would read on their side, turned upright first
+  // the photos whose tag the library misses, turned upright first: a check that the
+  // app's handling of their tag (services/ocr.js) reads them as it should
   for (const name of names) {
     const row = done.get(`handwriting|${name}`);
     const key = `handwriting_turned|${name}`;
