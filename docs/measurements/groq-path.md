@@ -409,7 +409,8 @@ LLM_MODEL=openai/gpt-oss-20b npm run eval:groq
 It writes `results.md`, `results.json`, `builds.jsonl`, `requests.jsonl`, `app.log` and `replies.jsonl` to a
 new folder in `server/evaluation-output/` (git-ignored), or to `--out <dir>`. `replies.jsonl` holds the AI's raw
 replies, which quote the notes, so it must stay git-ignored and never be shared. A stopped run is picked up
-again from these files, but only on the same commit.
+again from these files, but only on the same commit. The replay through the old parser reads it from git, so in a
+shallow clone it says it did not run, and everything else still works.
 
 The run behind this report passed `--out` only, and it picked up the 3 spaced builds of the comparison on the
 same commit, so they were not run twice. The comparison added `--only 4_ML.pdf,2_ML.pdf,2_DEDV.pdf --no-rules

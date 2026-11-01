@@ -4,8 +4,8 @@
 // readers against values worked out by hand, the recorder, and whole runs through
 // the real generateQuestions against a stand-in for Groq: a clean reply, a refusal,
 // a time-out, a missing model, bad JSON and more, each of which must be counted as
-// the right outcome. It needs no key and no network: the stand-in is a local server
-// on a port the system picks. Every word here is made up.
+// the right outcome. It needs no key, no network and no git history: the stand-in is
+// a local server on a port the system picks. Every word here is made up.
 import { createServer } from "node:http";
 import fs from "node:fs";
 import os from "node:os";
@@ -204,7 +204,10 @@ process.env.LLM_MODEL = "stand-in-model";
 process.env.SEMANTIC_MODEL = "kept-as-it-was";
 const fetchBefore = globalThis.fetch;
 
-const QUIET_RUN = { notes: [docFile], mcq: 4, theory: 2, gap: 0, quiet: true };
+// The old parser comes from git, and CI's checkout has no history. These runs use a
+// stand-in, and the real one is checked above whenever the history is there.
+const OLD_PARSER_STAND_IN = async () => (text) => (text.includes("\\%") ? null : parseJsonLoose(text));
+const QUIET_RUN = { notes: [docFile], mcq: 4, theory: 2, gap: 0, quiet: true, parser: OLD_PARSER_STAND_IN };
 let runCount = 0;
 async function run(caseMode, more = {}) {
   mode = caseMode;
@@ -310,6 +313,14 @@ check("the blind check still runs, because the AI answered once", pb.log.quality
 check("requests by kind add up: 1 MCQ, 2 theory, 1 check", partly.requests.filter((r) => r.kind === "mcq").length === 1 && partly.requests.filter((r) => r.kind === "theory").length === 2 && partly.requests.filter((r) => r.kind === "verify").length === 1);
 const noCheck = await run("verify-refused");
 check("a refused blind check is reported, and the questions stand", /failed:rate-limited/.test(noCheck.builds[0].log.quality.mcq.verify) && noCheck.builds[0].by_llm >= 1, noCheck.builds[0].log.quality.mcq.verify);
+
+console.log("\n=== A checkout with no git history ===");
+const noHistory = await run("clean", {
+  parser: async () => {
+    throw new Error("no such commit");
+  },
+});
+check("the run still finishes, and says the replay did not run", noHistory.builds.length === 1 && /could not be read from git/.test(noHistory.results.replay.reason) && resultsMarkdown(noHistory.results).includes("Not run: the old parser"), String(noHistory.results.replay?.reason));
 
 console.log("\n=== Rules only against the AI, on the same notes ===");
 const both = await run("clean", { rules: true, pacing: "both" });
