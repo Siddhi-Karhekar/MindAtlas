@@ -11,7 +11,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
-  conditionSummary, describeRequest, durationMs, funnelOf, inFlightMs, isDailyStop, limitsSeen, median, outcomeOf, readingOf, readLogLines, readRefusal, recordingFetch, replayReplies, resultsMarkdown, scoreRun, spacedWaitMs,
+  byKind, conditionSummary, describeRequest, durationMs, funnelOf, inFlightMs, isDailyStop, limitsSeen, median, outcomeOf, readingOf, readLogLines, readRefusal, recordingFetch, replayReplies, resultsMarkdown, scoreRun, spacedWaitMs,
 } from "../evaluation/lib/groqPath.js";
 import { oldParser, runGroqPath } from "../evaluation/groqPath.mjs";
 import { parseJsonLoose } from "../src/services/llm.js";
@@ -359,6 +359,11 @@ check("passed but not needed by hand: 12 - 3 - 2 - 1 - 5 = 1", table.types.mcq.a
 check("one build all AI, one all rules", table.written.all_ai === 1 && table.written.all_rules === 1);
 check("fallback reasons counted", table.types.mcq.fallback_reasons[0].reason === "rate-limited" && table.types.mcq.fallback_reasons[0].n === 1);
 check("the blind check: ran once, found 2 key mismatches in the AI's", table.verify.builds_checked === 1 && table.verify.questions_checked === 9 && table.verify.found.ai[0].reason === "verify:key-mismatch" && table.verify.found.ai[0].n === 2);
+const kinds = byKind([
+  { kind: "theory", status: 200, outcome: "empty", finish_reason: "length", ms: 10, tokens: { prompt: 100, completion: 50, total: 150, reasoning: 49 } },
+  { kind: "theory", status: 429, outcome: "refused-minute", ms: 1 },
+]);
+check("an empty reply's tokens still count in the table by kind", kinds.theory.prompt_tokens.median === 100 && kinds.theory.completion_tokens.median === 50 && kinds.theory.finish_reasons.length === 1 && kinds.theory.requests === 2, JSON.stringify(kinds.theory));
 const limits = limitsSeen(reqs).m;
 check("the request window from headers: 86.4 s for 1 of 1,000 is 24 hours", Math.abs(limits.request_window_hours - 24) < 0.01, String(limits.request_window_hours));
 check("the refusal's numbers are collected", limits.refusals.TPM.count === 1 && limits.refusals.TPM.largest_requested === 3000 && limits.retry_after_seconds.longest === 20);

@@ -411,12 +411,13 @@ export function conditionSummary(builds, allRequests) {
 }
 
 const kindRow = (requests) => {
-  const ok = requests.filter((r) => r.outcome === "ok");
+  // an empty reply was still answered, and its tokens were still spent
+  const answered = requests.filter((r) => r.status === 200);
   const outcomes = {};
   for (const r of requests) outcomes[r.outcome] = (outcomes[r.outcome] || 0) + 1;
   const finish = {};
-  for (const r of ok) finish[String(r.finish_reason)] = (finish[String(r.finish_reason)] || 0) + 1;
-  const tokens = ok.map((r) => r.tokens).filter(Boolean);
+  for (const r of answered) finish[String(r.finish_reason)] = (finish[String(r.finish_reason)] || 0) + 1;
+  const tokens = answered.map((r) => r.tokens).filter(Boolean);
   return {
     requests: requests.length,
     outcomes,
