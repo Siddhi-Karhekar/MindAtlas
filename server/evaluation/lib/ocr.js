@@ -154,48 +154,7 @@ export function gnhkReference(tokens) {
 // A photo's rotation tag
 // ---------------------------------------------------------------------------
 
-/** The EXIF orientation of a JPEG and the byte order it is written in, or null if it has none. */
-export function readRotationTag(buf) {
-  try {
-    if (buf[0] !== 0xff || buf[1] !== 0xd8) return null;
-    let at = 2;
-    while (at + 4 < buf.length) {
-      if (buf[at] !== 0xff) return null;
-      while (buf[at + 1] === 0xff) at += 1;
-      const marker = buf[at + 1];
-      if (marker === 0xda || marker === 0xd9) return null; // the picture itself starts: no tag before it
-      if (marker === 0xd8 || (marker >= 0xd0 && marker <= 0xd7) || marker === 0x01) {
-        at += 2;
-        continue;
-      }
-      const length = buf.readUInt16BE(at + 2);
-      if (marker === 0xe1 && buf.toString("latin1", at + 4, at + 10) === "Exif\0\0") {
-        const tiff = at + 10;
-        const little = buf.toString("latin1", tiff, tiff + 2) === "II";
-        const u16 = (p) => (little ? buf.readUInt16LE(p) : buf.readUInt16BE(p));
-        const u32 = (p) => (little ? buf.readUInt32LE(p) : buf.readUInt32BE(p));
-        const dir = tiff + u32(tiff + 4);
-        for (let n = 0; n < u16(dir); n++) {
-          const entry = dir + 2 + n * 12;
-          if (u16(entry) === 0x0112) return { orientation: u16(entry + 8), byte_order: little ? "II" : "MM" };
-        }
-        return null;
-      }
-      at += 2 + length;
-    }
-  } catch {
-    // a header cut short counts as no tag
-  }
-  return null;
-}
-
-/**
- * The orientation tesseract.js finds in a file. This is its own test, from
- * tesseract.js/src/worker-script/utils/setImage.js, kept word for word so the
- * tables say what the library really does. The pattern is the tag's bytes in
- * big-endian order, so a little-endian tag is not seen.
- */
-export const orientationOcrSees = (buf) => parseInt(Array.from(buf.subarray(0, 500)).join(" ").match(/1 18 0 3 0 0 0 1 0 (\d)/)?.[1], 10) || 1;
+export { orientationOcrSees, readRotationTag } from "../../src/services/ocr.js";
 
 /** A JPEG with a rotation tag put in front of its picture, written in the given byte order. */
 export function withRotationTag(jpeg, orientation, byteOrder) {
