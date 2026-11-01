@@ -177,6 +177,8 @@ export function runMasteryEvaluation(options = {}) {
       skills: skills.size,
       joined_skill_labels: [...skills.keys()].filter((s) => s.includes("_")).length,
       sequences: sequences.length,
+      sequence_length_quartiles: quartiles(sequences.map((q) => q.correct.length)),
+      answers_per_skill_quartiles: quartiles(perSkill.map((s) => s.answers)),
       right_rate: right / y.length,
       first_answer_right_rate: predicted.firstAnswers.right / predicted.firstAnswers.all,
       unseen_skill_answers: predicted.unseen,
@@ -230,7 +232,7 @@ export function resultsMarkdown(r) {
     `| Removed: unreadable answer, student or order | ${count(c.unreadable)} |`,
     `| **Answers used** | **${count(c.kept)}** |`,
     "",
-    `${count(c.students)} students, ${count(c.skills)} skills (${count(c.joined_skill_labels)} of them joined labels such as "a_b", holding ${count(c.joined_skills)} answers), ${count(c.sequences)} student-skill sequences. ` +
+    `${count(c.students)} students, ${count(c.skills)} skills (${count(c.joined_skill_labels)} of them joined labels such as "a_b", holding ${count(c.joined_skills)} answers), ${count(c.sequences)} student-skill sequences (median ${c.sequence_length_quartiles[1]} answers; a median skill has ${count(c.answers_per_skill_quartiles[1])} answers). ` +
       `${(c.right_rate * 100).toFixed(1)}% of the answers are right, and ${(c.first_answer_right_rate * 100).toFixed(1)}% of each student's first answers on a skill. ` +
       `Answer types: ${Object.entries(c.answer_types).sort((a, b) => b[1] - a[1]).map(([t, n]) => `${t || "blank"} ${count(n)}`).join(", ")}.`,
     "",
@@ -243,7 +245,9 @@ export function resultsMarkdown(r) {
       return `| ${x.label} | ${scoreCell(x.auc)} | ${scoreCell(x.rmse)} | ${scoreCell(x.accuracy)} | ${f3(x.mean_prediction)} |`;
     }),
     "",
-    `${count(c.unseen_skill_answers)} test answers are on a skill with no training answers in their fold: the per-skill average uses the overall average for them, the fitted model the default settings.`,
+    "The overall average is one number per test fold, so its AUC is exactly 0.5 inside a fold; pooled across folds it lands just off 0.5.",
+    "",
+    `Test answers on a skill with no training answers in their fold: ${count(c.unseen_skill_answers)}. For those, the per-skill average uses the overall average and the fitted model the default settings.`,
     "",
     "## Differences, over the same resamples",
     "",

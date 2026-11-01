@@ -262,6 +262,7 @@ const c = results.counts;
 const expectedAnswers = 120 * 6 * 2 + 2;
 check("the filters are reported", c.rows === expectedAnswers + 2 && c.not_original === 1 && c.no_skill === 1 && c.kept === expectedAnswers, JSON.stringify({ rows: c.rows, kept: c.kept }));
 check("students and skills are counted", c.students === 241 && c.skills === 4, `${c.students}, ${c.skills}`);
+check("sequence lengths and answers per skill are summarised", c.sequence_length_quartiles[1] === 6 && c.answers_per_skill_quartiles[1] === 360.5, `${c.sequence_length_quartiles[1]}, ${c.answers_per_skill_quartiles[1]}`);
 check("every student is tested exactly once", results.per_fold.reduce((s, f) => s + f.students, 0) === c.students);
 check("every answer is tested exactly once", results.per_fold.reduce((s, f) => s + f.answers, 0) === c.kept);
 check("a single test fold's overall average gives AUC 0.5", results.per_fold.every((f) => near(f.auc.overall, 0.5)));
