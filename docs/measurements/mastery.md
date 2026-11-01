@@ -7,19 +7,23 @@ measurement tests it on the public ASSISTments 2009-10 data: before each answer,
 what chance of a right answer does the model give, and how does that compare
 with what the student actually did?
 
-App behaviour did not change, and `BKT_DEFAULTS` is untouched.
+`BKT_DEFAULTS` is untouched. Checking this measurement found one bug in the app,
+which is now fixed, and the scores below are from the fixed code: see
+[The bug this found](#the-bug-this-found).
 
 ## The result in short
 
 - **With the app's default settings the model has real predictive value, but
-  only moderate.** Its AUC is 0.674. That beats a coin toss (0.5), and it beats
+  only moderate.** Its AUC is 0.681. That beats a coin toss (0.5), and it beats
   knowing only how hard each skill is (0.629).
-- **Its probabilities are no better than simple averages.** Its RMSE (0.465) is
-  no better than the per-skill average's (0.462), and its accuracy (0.659) is the
-  same as always saying "right" (0.658).
+- **Its probabilities are no better than simple averages.** Its RMSE (0.463) is
+  no better than the per-skill average's (0.462), and its accuracy (0.660) is
+  about the same as always saying "right" (0.658).
 - **Settings fitted per skill are clearly better on all three scores**: AUC
-  0.724, RMSE 0.438, accuracy 0.713. The team has not acted on this: see
+  0.725, RMSE 0.438, accuracy 0.713. The team has not acted on this: see
   [The decision left open](#the-decision-left-open).
+- **Mastery could stick at 100% for good, and that is now fixed.** The fix raised
+  the default AUC from 0.674 to 0.681 on the same students.
 - **These are US school maths students, not ours.** Read [the limits](#limits)
   before quoting any of these numbers.
 
@@ -31,7 +35,7 @@ wrong, at random. How often did the model give the right one the higher chance?
 | AUC | Meaning |
 | --- | --- |
 | 0.5 | No better than tossing a coin |
-| 0.674 | The right answer got the higher chance about 67 times in 100 |
+| 0.681 | The right answer got the higher chance about 68 times in 100 |
 | 1.0 | The right answer always got the higher chance |
 
 AUC only looks at the order of the predictions. A model can put answers in a
@@ -59,8 +63,8 @@ same folds.
 | --- | --- | --- | --- | --- |
 | Overall average | Gives every answer the same chance, the training students' average | 0.495 [0.484, 0.506] | 0.474 [0.471, 0.477] | 0.658 [0.649, 0.667] |
 | Per-skill average | Gives every answer on a skill that skill's training average, ignoring the student's history | 0.629 [0.624, 0.633] | 0.462 [0.459, 0.465] | 0.672 [0.665, 0.679] |
-| Mastery model, app's default settings | Follows the student's answers, with `BKT_DEFAULTS` | 0.674 [0.667, 0.680] | 0.465 [0.463, 0.467] | 0.659 [0.656, 0.663] |
-| Mastery model, settings fitted per skill | The same model, with settings fitted on the training students | 0.724 [0.719, 0.729] | 0.438 [0.436, 0.441] | 0.713 [0.708, 0.718] |
+| Mastery model, app's default settings | Follows the student's answers, with `BKT_DEFAULTS` | 0.681 [0.675, 0.688] | 0.463 [0.461, 0.465] | 0.660 [0.657, 0.664] |
+| Mastery model, settings fitted per skill | The same model, with settings fitted on the training students | 0.725 [0.720, 0.730] | 0.438 [0.435, 0.440] | 0.713 [0.708, 0.718] |
 
 The overall average is one number per fold, so inside a fold its AUC is exactly
 0.5. Read its AUC as 0.5: the 0.495 only comes from pooling five folds whose
@@ -71,23 +75,76 @@ means a real difference, for these students.
 
 | Compared | AUC [95%] | RMSE [95%] (lower is better) | Accuracy [95%] |
 | --- | --- | --- | --- |
-| Fitted minus default | +0.050 [+0.046, +0.054] | −0.027 [−0.028, −0.025] | +0.053 [+0.050, +0.057] |
-| Default minus per-skill average | +0.045 [+0.037, +0.053] | +0.003 [+0.000, +0.005] | −0.012 [−0.020, −0.005] |
-| Fitted minus per-skill average | +0.095 [+0.089, +0.101] | −0.024 [−0.026, −0.022] | +0.041 [+0.036, +0.046] |
-| Default minus overall average | +0.179 [+0.166, +0.191]\* | −0.010 [−0.012, −0.007] | +0.001 [−0.007, +0.011] |
+| Fitted minus default | +0.043 [+0.040, +0.046] | −0.025 [−0.027, −0.024] | +0.053 [+0.049, +0.057] |
+| Default minus per-skill average | +0.053 [+0.045, +0.061] | +0.001 [−0.001, +0.004] | −0.012 [−0.019, −0.004] |
+| Fitted minus per-skill average | +0.096 [+0.090, +0.102] | −0.024 [−0.026, −0.022] | +0.041 [+0.036, +0.046] |
+| Default minus overall average | +0.187 [+0.174, +0.199]\* | −0.011 [−0.014, −0.009] | +0.002 [−0.006, +0.012] |
 
-\* This one moves with the split (+0.196 on seed 2), because of the pooling
+\* This one moves with the split (+0.203 on seed 2), because of the pooling
 effect above. Read it as "well above chance".
 
 AUC on each test fold:
 
 | Fold | Students | Answers | Overall average | Per-skill average | Default | Fitted |
 | --- | --- | --- | --- | --- | --- | --- |
-| 1 | 833 | 48,851 | 0.500 | 0.636 | 0.676 | 0.732 |
-| 2 | 833 | 49,790 | 0.500 | 0.620 | 0.671 | 0.717 |
-| 3 | 833 | 55,251 | 0.500 | 0.632 | 0.672 | 0.723 |
-| 4 | 832 | 54,486 | 0.500 | 0.628 | 0.675 | 0.722 |
-| 5 | 832 | 51,021 | 0.500 | 0.630 | 0.676 | 0.724 |
+| 1 | 833 | 48,851 | 0.500 | 0.636 | 0.686 | 0.732 |
+| 2 | 833 | 49,790 | 0.500 | 0.620 | 0.675 | 0.718 |
+| 3 | 833 | 55,251 | 0.500 | 0.632 | 0.681 | 0.724 |
+| 4 | 832 | 54,486 | 0.500 | 0.628 | 0.681 | 0.723 |
+| 5 | 832 | 51,021 | 0.500 | 0.630 | 0.683 | 0.726 |
+
+## The bug this found
+
+The first version of this report missed this. A separate check that did not round
+gave slightly different scores, and the difference turned out to be a real bug.
+
+**The bug.** `updateMastery` rounds mastery to four decimal places. A value near
+the top rounded up to exactly 1, and at exactly 1 the update has no way down, so a
+wrong answer changed nothing. With the default settings it took 8 right MCQs in a
+row on a topic, or 5 full-mark theory answers, and the topic then stayed at 100%
+for good.
+
+| Mastery before the wrong answers | Five wrong answers in a row give |
+| --- | --- |
+| Exactly 1 (before the fix) | 1, 1, 1, 1, 1 |
+| 0.9999 (now) | 0.9994, 0.9962, 0.9764, 0.8696, 0.5501 |
+
+**In this data.** Before the fix, 25,551 answers (9.9%) came after mastery had
+stuck. The model gave those a 90% chance of being right, and 76.8% were. Now,
+20,189 answers (7.8%) are given at the cap and 83.8% of them are right, so the
+model is still somewhat too sure at the top.
+
+**In the app.** Going by the code, a stuck topic stayed on the hard tier, was never
+flagged as shaky for revision and got less weight when questions were picked. How
+many students on the live site this reached has not been checked.
+
+**The fix.** Mastery now stops at 0.9999, the largest value four decimal places can
+hold below 1 (`MASTERY_CAP` in `masteryEngine.js`). The cap also applies to the
+value coming in, so a topic already stored at 1 moves again when next answered.
+Stored values are not rewritten, and 0.9999 still shows as 100% on the page.
+
+**Before and after, on the same students (seed 1).**
+
+| Predictor | AUC [95%] | RMSE [95%] (lower is better) | Accuracy [95%] |
+| --- | --- | --- | --- |
+| Default settings, before the fix | 0.674 [0.667, 0.680] | 0.465 [0.463, 0.467] | 0.659 [0.656, 0.663] |
+| Default settings, after the fix | 0.681 [0.675, 0.688] | 0.463 [0.461, 0.465] | 0.660 [0.657, 0.664] |
+| **After minus before, same resamples** | **+0.0076 [+0.0057, +0.0098]** | **−0.0015 [−0.0021, −0.0011]** | **+0.0008 [+0.0004, +0.0014]** |
+| Fitted settings, before the fix | 0.724 [0.719, 0.729] | 0.438 [0.436, 0.441] | 0.713 [0.708, 0.718] |
+| Fitted settings, after the fix | 0.725 [0.720, 0.730] | 0.438 [0.435, 0.440] | 0.713 [0.708, 0.718] |
+
+- **The gain is real but small overall.** The separate intervals overlap, but the
+  paired row compares the same students both ways, and its intervals do not cross
+  zero. Most answers never come near the top, so the fix matters most for the
+  students who reach it.
+- **The gap between fitted and default settings shrank**, from +0.050 to +0.043
+  AUC, so part of the earlier gap was this bug. Fitted settings are still clearly
+  better.
+
+The "before" rows are from commit `46ba876` and the "after" rows from `839ddc8`. The
+paired row comes from a one-off script with the same 1,000 resamples method, written
+for this comparison and not part of `eval:mastery`, because the old update is no
+longer in the app.
 
 ## Fitted settings beside the defaults
 
@@ -101,7 +158,7 @@ scores.
 | prior | Chance the skill is known before any answer | 0.25 | 0.70 | 0.55 to 0.85 | 21 of 121 |
 | transit | Chance of learning it at each answer | 0.15 | 0.15 | 0.05 to 0.25 | 26 of 121 |
 | slip | Chance of a wrong answer when the skill is known | 0.10 | 0.20 | 0.10 to 0.30 | 20 of 121 |
-| guess | Chance of a right answer when it is not known | 0.25 (`guessMcq`) | 0.20 | 0.10 to 0.35 | 47 of 121 |
+| guess | Chance of a right answer when it is not known | 0.25 (`guessMcq`) | 0.15 | 0.10 to 0.35 | 48 of 121 |
 
 The biggest gap is the prior. With the default settings the model gives every
 student's first answer on a skill a 41.25% chance of being right, and in this
@@ -163,7 +220,7 @@ decision is the team's. Three things bear on it:
   They do not cover any limit above, and the settings are not re-fitted in each
   resample, so the fitted model's intervals may be a little too narrow.
 - **Do not read much into one skill's fitted settings.** Different combinations
-  can fit the same answers about equally well, and the grid has limits: 47 of 121
+  can fit the same answers about equally well, and the grid has limits: 48 of 121
   skills have a guess rate at the edge of the grid (0.05 or 0.45).
 - **Published AUC figures are context only, because their preprocessing differs.**
   The [seewoo5/KT](https://github.com/seewoo5/KT) README gives, for ASSISTments
@@ -228,7 +285,7 @@ npm run eval:mastery
 
 | | |
 | --- | --- |
-| Commit | `46ba876` (this report was added in the next commit) |
+| Commit | `839ddc8` (this version of the report was added in the next commit) |
 | Seed | 1 (the default; `--seed` changes it) |
 | Folds, resamples | 5, 1,000 |
 | Dataset | `skill_builder_data_corrected_collapsed.csv`, 64,412,812 bytes |
@@ -244,12 +301,19 @@ git worktree; nothing else differs from the command above.
 
 Checks on these numbers:
 
-- **Repeatable:** a second run with seed 1 gave exactly the same results.
-- **A second split agrees:** seed 2 gives AUC 0.628 per-skill, 0.674 default and
-  0.723 fitted, and fitted minus default is +0.049 [+0.046, +0.053].
+- **Repeatable:** before the fix, a second run with seed 1 gave exactly the same
+  results. After the fix, each seed was run once.
+- **A second split agrees:** seed 2 gives AUC 0.628 per-skill, 0.681 default and
+  0.724 fitted, and fitted minus default is +0.043 [+0.040, +0.046].
 - **Worked out a second way:** a separate script in Python, with its own file
   reading, update and AUC, gave the same default-settings scores to 6 decimal
-  places. That checks the default row only, not the fitted one.
+  places. It copies the app's rounding and cap, so it cannot catch an error in
+  those: the first such check agreed while the bug was there. It checks the default
+  row only.
+- **A rough check of the fitted row:** separate code with its own folds, 135 settings
+  instead of 13,851 and no rounding gave AUC 0.719. That is close to 0.725 with far
+  fewer settings tried, so it shows no sign of test students leaking into training.
+  These check scripts are not in this repository.
 - **Tested on made-up data:** `server/test/masteryEvaluation.test.mjs` is part of
   `npm test`. It checks the code by hand-worked values and on simulated students,
   and uses none of the real file.
