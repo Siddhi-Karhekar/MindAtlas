@@ -15,6 +15,17 @@ const check = (label, cond, detail = "") => {
 };
 const near = (a, b, eps = 1e-9) => Math.abs(a - b) < eps;
 
+const questionsById = new Map([
+  ["q1", { _id: "q1", type: "mcq", topicId: "n1", topic: "Atoms", options: [1, 2, 3, 4] }],
+  ["q2", { _id: "q2", type: "mcq", topicId: "n1", topic: "Atoms", options: [1, 2, 3, 4] }],
+  ["q3", { _id: "q3", type: "theory", topicId: "n2", topic: "Bonds" }],
+]);
+const responses = [
+  { questionId: "q1", score: 0, answeredAt: "2026-09-19T10:00:00Z" },
+  { questionId: "q2", score: 0, answeredAt: "2026-09-19T10:01:00Z" },
+  { questionId: "q3", score: 1, answeredAt: "2026-09-19T10:02:00Z" },
+];
+
 console.log("\n=== BKT update direction ===");
 const start = BKT_DEFAULTS.prior;
 const afterRight = updateMastery(start, 1, BKT_DEFAULTS.guessMcq);
@@ -47,6 +58,22 @@ check("six correct answers push mastery high", p > 0.9, `${p}`);
 let q = 0.9;
 for (let i = 0; i < 6; i++) q = updateMastery(q, 0, BKT_DEFAULTS.guessMcq);
 check("six wrong answers pull a confident topic down", q < 0.5, `${q}`);
+
+console.log("\n=== Mastery never sticks at 1 ===");
+let mcqStreak = start;
+for (let i = 0; i < 40; i++) mcqStreak = updateMastery(mcqStreak, 1, BKT_DEFAULTS.guessMcq);
+check("a long run of right MCQs stays below 1", mcqStreak < 1, `${mcqStreak}`);
+let theoryStreak = start;
+for (let i = 0; i < 40; i++) theoryStreak = updateMastery(theoryStreak, 1, BKT_DEFAULTS.guessTheory);
+check("a long run of full-mark theory answers stays below 1", theoryStreak < 1, `${theoryStreak}`);
+const afterStreak = updateMastery(mcqStreak, 0, BKT_DEFAULTS.guessMcq);
+check("a wrong answer after that run lowers mastery", afterStreak < mcqStreak, `${mcqStreak} -> ${afterStreak}`);
+let stored = 1;
+for (let i = 0; i < 5; i++) stored = updateMastery(stored, 0, BKT_DEFAULTS.guessMcq);
+check("a topic already stored at 1 comes down with wrong answers", stored < 0.6, `five wrong -> ${stored}`);
+const storedAtOne = new Map([["n1", { pKnown: 1, observations: 20 }]]);
+const unstuck = applyAttemptToMastery({ responses, questionsById, existing: storedAtOne }).get("n1");
+check("so does one folded in from a whole attempt", unstuck.after < 1, `${unstuck.before} -> ${unstuck.after}`);
 
 console.log("\n=== Difficulty tiers ===");
 check("weak mastery opens on easy", difficultyForMastery(0.2) === "easy");
@@ -83,16 +110,6 @@ check("an unseen topic outweighs a well-known one", topicWeight("unseen", mm) > 
 check("every weight is strictly positive so no topic starves", topicWeight("strong", mm) > 0);
 
 console.log("\n=== Folding a whole attempt ===");
-const questionsById = new Map([
-  ["q1", { _id: "q1", type: "mcq", topicId: "n1", topic: "Atoms", options: [1, 2, 3, 4] }],
-  ["q2", { _id: "q2", type: "mcq", topicId: "n1", topic: "Atoms", options: [1, 2, 3, 4] }],
-  ["q3", { _id: "q3", type: "theory", topicId: "n2", topic: "Bonds" }],
-]);
-const responses = [
-  { questionId: "q1", score: 0, answeredAt: "2026-09-19T10:00:00Z" },
-  { questionId: "q2", score: 0, answeredAt: "2026-09-19T10:01:00Z" },
-  { questionId: "q3", score: 1, answeredAt: "2026-09-19T10:02:00Z" },
-];
 const folded = applyAttemptToMastery({ responses, questionsById, existing: new Map() });
 const atoms = folded.get("n1");
 const bonds = folded.get("n2");
